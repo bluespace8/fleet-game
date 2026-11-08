@@ -120,6 +120,7 @@
     base: "base", baseTitle: "Base", bases: "Bases", home: "Home base", newBase: "New base",
     body: { asteroid: "Asteroid", moon: "Moon", iceplanet: "Ice planet", rare: "Rare planet" },
     storm: "Ion storm", shower: "Meteor shower", sector: "Sector", warp: "Warp to next sector",
+    edge: "the edge of space",
   });
   function mergeLabels(base, over) {
     const out = {};
@@ -336,7 +337,7 @@
   // Returns "" when a base can go at (x, y), otherwise the reason it cannot. Allocation free.
   function baseSpotProblem(state, x, y, labels) {
     const m = BASE_R + 6;
-    if (!(x >= m && y >= m && x <= state.w - m && y <= state.h - m)) return "Too close to the edge of space.";
+    if (!(x >= m && y >= m && x <= state.w - m && y <= state.h - m)) return "Too close to " + (labels ? labels.edge : "the edge of space") + ".";
     for (let i = 0; i < state.bases.length; i++) {
       if (Math.hypot(x - state.bases[i].x, y - state.bases[i].y) < BASE_GAP) return "Too close to another " + (labels ? labels.base : "base") + ".";
     }
@@ -824,13 +825,13 @@
           ship: { miner: "Dwarf", hauler: "Mine cart" }, ships: "Dwarves",
           base: "forge", baseTitle: "Forge", bases: "Forges", home: "Great hall", newBase: "New forge",
           body: { asteroid: "Iron vein", moon: "Silver seam", iceplanet: "Silver lode", rare: "Gem geode" },
-          storm: "Flooded tunnel", shower: "Cave-in", sector: "Depth", warp: "Dig to next depth" } },
+          storm: "Flooded tunnel", shower: "Cave-in", sector: "Depth", warp: "Dig to next depth", edge: "the cavern wall" } },
       { id: "hamster", name: "Hamster", cost: 120, scene: "habitat", note: "Hamsters fetch seeds, nuts and carrots for their running wheels.",
         labels: { res: { ore: "seeds", ice: "nuts", crystal: "carrots" }, resTitle: { ore: "Seeds", ice: "Nuts", crystal: "Carrots" },
           ship: { miner: "Hamster", hauler: "Big hamster" }, ships: "Hamsters",
           base: "wheel", baseTitle: "Wheel", bases: "Wheels", home: "Home wheel", newBase: "New wheel",
           body: { asteroid: "Seed pile", moon: "Nut stash", iceplanet: "Nut bowl", rare: "Carrot patch" },
-          storm: "Sticky bedding", shower: "Cat swipes", sector: "Cage", warp: "Move to next cage" } },
+          storm: "Sticky bedding", shower: "Cat swipes", sector: "Cage", warp: "Move to next cage", edge: "the edge of the cage" } },
     ],
     ship: [
       { id: "classic", name: "Classic", cost: 0, miner: "#5b9cf0", hauler: "#f0b020" },

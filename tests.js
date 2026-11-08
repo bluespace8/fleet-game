@@ -1104,7 +1104,8 @@ test("the space labels are the game's current wording", () => {
     ship: { miner: "Miner", hauler: "Hauler" }, ships: "Ships",
     base: "base", baseTitle: "Base", bases: "Bases", home: "Home base", newBase: "New base",
     body: { asteroid: "Asteroid", moon: "Moon", iceplanet: "Ice planet", rare: "Rare planet" },
-    storm: "Ion storm", shower: "Meteor shower", sector: "Sector", warp: "Warp to next sector" });
+    storm: "Ion storm", shower: "Meteor shower", sector: "Sector", warp: "Warp to next sector",
+    edge: "the edge of space" });
   assert.ok(Object.isFrozen(G.SPACE_LABELS) && Object.isFrozen(G.SPACE_LABELS.res), "shared defaults cannot be changed");
 });
 test("labelsFor returns a fresh object each call", () => {
@@ -1248,6 +1249,8 @@ test("error messages that name a ship or base take labels; with none they are un
   assert.strictEqual(G.placeBase(s, s.bases[0].x + 20, s.bases[0].y, G.labelsFor("dwarven")).reason, "Too close to another forge.");
   assert.strictEqual(G.baseSpotProblem(s, s.bases[0].x + 20, s.bases[0].y, ham), "Too close to another wheel.");
   assert.strictEqual(G.baseSpotProblem(s, 1, 1), "Too close to the edge of space.");
+  assert.strictEqual(G.baseSpotProblem(s, 1, 1, ham), "Too close to the edge of the cage.");
+  assert.strictEqual(G.baseSpotProblem(s, 1, 1, G.labelsFor("dwarven")), "Too close to the cavern wall.");
   const b = nearBody(s);
   assert.strictEqual(G.baseSpotProblem(s, b.x, b.y), "Too close to a planet or asteroid.");
   assert.ok(/seed pile/.test(G.baseSpotProblem(s, b.x, b.y, ham)));
