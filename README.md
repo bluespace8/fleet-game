@@ -109,9 +109,9 @@ a Mac) sends. No game key works while it is open.
 ### Themes and backgrounds
 
 - **Themes** are the first section of the Hangar. Space is free and uses the ships, bases and background you
-  picked. **Dwarven** (60 stars) turns ships into dwarves and mine carts, bases into forges (home is the great
+  picked. **Dwarven** (30 stars) turns ships into dwarves and mine carts, bases into forges (home is the great
   hall), ore/ice/crystal into iron/silver/gems, hazards into cave-ins and flooded tunnels, in a torch-lit
-  cavern. **Hamster** (120 stars) turns ships into hamsters, bases into running wheels (they spin while ships
+  cavern. **Hamster** (60 stars) turns ships into hamsters, bases into running wheels (they spin while ships
   unload), resources into seeds/nuts/carrots, hazards into cat swipes and sticky bedding, in a cage with wood
   shavings. A theme also renames things in every panel and message; stars stay "stars". Ship and base colours
   still tint the themed pictures, and trail styles still apply.

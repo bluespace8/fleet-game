@@ -992,7 +992,7 @@ test("the best score only goes up", () => {
 });
 test("stars buy looks only: no look carries any gameplay number", () => {
   for (const k of G.LOOK_KINDS) for (const l of G.LOOKS[k]) {
-    for (const key of Object.keys(l)) assert.ok(["id", "name", "cost", "miner", "hauler", "main", "home", "top", "bottom", "blobs", "note", "scene", "labels"].indexOf(key) >= 0, key);
+    for (const key of Object.keys(l)) assert.ok(["id", "name", "cost", "miner", "hauler", "main", "home", "top", "bottom", "blobs", "note", "scene", "labels", "names"].indexOf(key) >= 0, key);
   }
 });
 
@@ -1005,11 +1005,11 @@ function sameKeys(want, got, path) {   // every key of want is in got, deep, wit
     else assert.ok(typeof got[k] === "string" && got[k].length > 0, "empty " + path + k);
   }
 }
-test("themes are the first look kind, priced space 0, dwarven 60, hamster 120", () => {
+test("themes are the first look kind, priced space 0, dwarven 30, hamster 60", () => {
   assert.deepStrictEqual(G.LOOK_KINDS, ["theme", "ship", "base", "bg", "trail"]);
   assert.strictEqual(G.LOOK_TITLES.theme, "Theme");
   for (const k of G.LOOK_KINDS) assert.ok(G.LOOK_TITLES[k], k);
-  assert.deepStrictEqual(G.LOOKS.theme.map(t => [t.id, t.cost, t.scene]), [["space", 0, null], ["dwarven", 60, "cavern"], ["hamster", 120, "habitat"]]);
+  assert.deepStrictEqual(G.LOOKS.theme.map(t => [t.id, t.cost, t.scene]), [["space", 0, null], ["dwarven", 30, "cavern"], ["hamster", 60, "habitat"]]);
   for (const t of G.LOOKS.theme) assert.ok(t.note && t.labels && typeof t.labels === "object");
 });
 test("Hamster is the priciest item of all, Dwarven second", () => {
@@ -1021,7 +1021,7 @@ test("Hamster is the priciest item of all, Dwarven second", () => {
   assert.ok(all[2].cost < all[1].cost);
 });
 test("buying Dwarven or Hamster takes the stars; too few is refused; owned is refused", () => {
-  for (const [id, cost] of [["dwarven", 60], ["hamster", 120]]) {
+  for (const [id, cost] of [["dwarven", 30], ["hamster", 60]]) {
     const p = G.newProfile();
     p.stars = cost - 1;
     const poor = G.buyLook(p, "theme", id);
@@ -1100,6 +1100,7 @@ test("every theme has every label, with non-empty strings", () => {
 });
 test("the space labels are the game's current wording", () => {
   assert.deepStrictEqual(JSON.parse(JSON.stringify(G.SPACE_LABELS)), {
+    id: "space",
     res: { ore: "ore", ice: "ice", crystal: "crystal" }, resTitle: { ore: "Ore", ice: "Ice", crystal: "Crystal" },
     ship: { miner: "Miner", hauler: "Hauler" }, ships: "Ships",
     base: "base", baseTitle: "Base", bases: "Bases", home: "Home base", newBase: "New base",
@@ -1204,12 +1205,35 @@ test("jobText with theme labels names the theme's resources and bases", () => {
   sh.res = "crystal"; assert.strictEqual(G.jobText(s, sh, ham), "Hauling " + n + " carrots home");
   sh.res = "ice"; assert.strictEqual(G.jobText(s, sh, dw), "Hauling " + n + " silver home");
   sh.cargo = 0; sh.res = "";
-  assert.strictEqual(G.jobText(s, sh, ham), "Back to wheel, then " + body.name);
-  assert.strictEqual(G.jobText(s, sh, dw), "Back to forge, then " + body.name);
+  assert.strictEqual(G.jobText(s, sh, ham), "Back to wheel, then " + G.bodyLabel(body, ham));
+  assert.strictEqual(G.jobText(s, sh, dw), "Back to forge, then " + G.bodyLabel(body, dw));
   sh.target = -1;
   assert.strictEqual(G.jobText(s, sh, ham), "Returning to wheel");
   assert.strictEqual(G.jobText(s, sh, dw), "Returning to forge");
   assert.strictEqual(G.jobText(s, sh, ham).indexOf("base"), -1);
+});
+test("bodyLabel: space keeps the stored name; themes give each body a stable name of its own kind", () => {
+  const s = G.newGame(9), sp = G.labelsFor("space"), ham = G.labelsFor("hamster"), dw = G.labelsFor("dwarven");
+  for (const b of s.bodies) assert.strictEqual(G.bodyLabel(b, sp), b.name);
+  assert.strictEqual(G.bodyLabel(s.bodies[0]), s.bodies[0].name, "no labels: stored name");
+  assert.strictEqual(G.bodyLabel(null, dw), "");
+  for (const [labels, th] of [[ham, "hamster"], [dw, "dwarven"]]) {
+    const theme = G.LOOKS.theme.find(t => t.id === th), seen = {};
+    for (const b of s.bodies) {
+      const name = G.bodyLabel(b, labels);
+      assert.ok(name && name !== b.name && !/^Rock \d+$/.test(name), "themed: " + name);
+      assert.strictEqual(name, G.bodyLabel(b, labels), "stable");
+      assert.ok(theme.names[b.kind].some(n => name.indexOf(n) === 0), name + " comes from the " + b.kind + " list");
+      assert.ok(!seen[name], "unique: " + name); seen[name] = 1;
+    }
+  }
+  const many = { id: 0, kind: "asteroid", name: "Rock 10" }, pool = G.LOOKS.theme[1].names.asteroid;
+  assert.strictEqual(G.bodyLabel(many, dw), pool[0]);
+  many.id = pool.length; assert.strictEqual(G.bodyLabel(many, dw), pool[0] + " 2");
+  assert.strictEqual(G.bodyLabel({ id: 3, kind: "mystery", name: "Zed" }, dw), "Zed", "unknown kind: stored name");
+  const poor = G.newGame(9); poor.bodies[0].amount = 0;
+  assert.strictEqual(G.orderShip(poor, 0, 0, dw).reason, G.bodyLabel(poor.bodies[0], dw) + " is empty.");
+  assert.strictEqual(G.orderShip(poor, 0, 0).reason, poor.bodies[0].name + " is empty.");
 });
 test("shipLabel renames stored 'Type n' names and leaves anything else alone", () => {
   const s = G.newGame(4); s.stock.ore = s.stock.ice = 500; G.buildShip(s, "hauler"); G.buildShip(s, "miner");
