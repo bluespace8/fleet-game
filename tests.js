@@ -1631,6 +1631,15 @@ test("parseRunLog collapses a repeated key and keeps the newest 500", () => {
   const d = G.parseRunLog(JSON.stringify({ runs: [mkRun({ score: 1 }), mkRun({ key: "k", score: 2 }), mkRun({ score: 3 })] }));
   assert.deepStrictEqual(d.log.runs.map(r => r.score), [3, 2]);
 });
+test("parseRunLog collapses repeated run keys that are reserved words", () => {
+  for (const k of ["__proto__", "constructor", "hasOwnProperty", "toString"]) {
+    const p = G.parseRunLog(JSON.stringify({ runs: [mkRun({ key: k, score: 1 }), mkRun({ key: "k", score: 2 }), mkRun({ key: k, score: 3 })] }));
+    assert.ok(p.ok);
+    assert.strictEqual(p.dropped, 1, "key " + k + " counted once");
+    assert.deepStrictEqual(p.log.runs.map(r => r.key), [k, "k"]);
+    assert.deepStrictEqual(p.log.runs.map(r => r.score), [3, 2], "key " + k + ": the later one wins");
+  }
+});
 test("parseBuyLog drops bad entries and keeps the newest 500", () => {
   const p = G.parseBuyLog(JSON.stringify({ buys: [mkBuy(), null, mkBuy({ kind: "nope" }), mkBuy({ item: 4 }), mkBuy({ cost: "2" }), mkBuy({ player: "" }), mkBuy({ junk: 1, name: 5 })] }));
   assert.ok(p.ok);

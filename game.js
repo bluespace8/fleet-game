@@ -1124,7 +1124,7 @@
     if (!isObj(j.raw) || !Array.isArray(j.raw.runs)) return { ok: false, log: newRunLog(), dropped: 0, error: "The run log has the wrong shape." };
     const all = j.raw.runs, tail = all.length > LG.runs ? all.slice(-LG.runs) : all;
     let dropped = all.length - tail.length;
-    const log = newRunLog(), at = {};
+    const log = newRunLog(), at = Object.create(null);   // no prototype: a "__proto__" key is an ordinary key
     for (const r of tail) {
       const c = cleanRun(r);
       if (!c) { dropped++; continue; }
