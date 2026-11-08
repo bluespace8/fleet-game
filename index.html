@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fleet</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <canvas id="game"></canvas>
+    <div id="topbar">
+      <div class="res" id="res"></div>
+      <div class="goal" id="goal"></div>
+      <div class="actions">
+        <button id="b-pause" type="button">Pause</button>
+        <button id="b-save" type="button">Save</button>
+        <button id="b-load" type="button">Load</button>
+        <button id="b-new" type="button">New game</button>
+      </div>
+    </div>
+    <div id="hint"></div>
+    <div id="toast" role="status"></div>
+    <div id="paused">PAUSED</div>
+    <div id="fps" title="Frames per second, and the slowest recent frame"></div>
+    <div id="win" hidden>
+      <div class="card">
+        <h1>Fleet established</h1>
+        <p id="win-text"></p>
+        <div class="row">
+          <button id="w-keep" type="button">Keep playing</button>
+          <button id="w-new" class="primary" type="button">New game</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <aside id="side">
+    <section class="panel">
+      <h2>Build</h2>
+      <div id="build"></div>
+    </section>
+    <section class="panel grow">
+      <h2>Mission board <span id="board-count"></span></h2>
+      <ul id="board"></ul>
+    </section>
+    <section class="panel small">
+      <p class="help">Click a ship, then a planet or asteroid to mine it. Click a base to send a ship home. Esc cancels. Add ?stress to the address for a 30-ship test.</p>
+    </section>
+  </aside>
+</div>
+<script src="game.js"></script>
+<script src="main.js"></script>
+</body>
+</html>
