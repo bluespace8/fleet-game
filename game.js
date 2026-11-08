@@ -78,6 +78,7 @@
                baseTick: 2, baseHit: 0.6, baseMult: 1.5, max: 3 },  // seconds between strikes on bases, chance per base, base damage factor, at once
     // aliens (from firstSector): spawn at a warned point on the map edge, chase loaded ships else bases, and shoot
     aliens: { firstSector: 3, r: 11, sense: 330, range: 150, edge: 20, cd: 1.6, shotSpeed: 300,
+              stay: 90,                                                    // seconds a raider stays; then it flies to the nearest map edge and is gone
               speedFirst: 55, speedPerSector: 3, speedMax: 85,
               countFirst: 2, countEvery: 2, countMax: 6,                   // count: first + floor((n - firstSector) / every), capped
               hpFirst: 40, hpPerSector: 12, hpMax: 120,
@@ -405,7 +406,7 @@
 
   function makeAlien(state, x, y, n) {
     const hp = alienHp(n);
-    return { id: state.alienSeq++, x, y, vx: 0, vy: 0, hp, maxHp: hp, dmg: alienDmg(n), cd: T.aliens.cd, tgtKind: "", tgt: -1 };
+    return { id: state.alienSeq++, x, y, vx: 0, vy: 0, hp, maxHp: hp, dmg: alienDmg(n), cd: T.aliens.cd, tgtKind: "", tgt: -1, age: 0 };
   }
 
   function buildShip(state, type, labels) {
@@ -452,6 +453,7 @@
     const base = state.bases[baseId], bw = labels ? labels.base : "base";
     if (!base) return { ok: false, reason: "No such " + bw + "." };
     if (state.over) return { ok: false, reason: "This run is over." };
+    if (base.down) return { ok: false, reason: "This " + bw + " is down. Repair it first." };
     if ((base.tier | 0) >= MAX_TIER) return { ok: false, reason: "This " + bw + " is fully upgraded." };
     const cost = upgradeCost(state, baseId);
     if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials for the upgrade." };
@@ -1099,6 +1101,17 @@
     const sense2 = A.sense * A.sense;
     for (let i = 0; i < al.length; i++) {
       const a = al[i];
+      a.age = (a.age || 0) + dt;
+      if (a.age > A.stay) {      // time to go: fly to the nearest map edge and leave (no score)
+        const ex = a.x < state.w - a.x ? 0 : state.w, ey = a.y < state.h - a.y ? 0 : state.h;
+        const alongX = Math.abs(a.x - ex) <= Math.abs(a.y - ey);
+        const gx = alongX ? ex : a.x, gy = alongX ? a.y : ey, dx = gx - a.x, dy = gy - a.y, d = Math.sqrt(dx * dx + dy * dy);
+        a.tgtKind = ""; a.tgt = -1;
+        if (d <= sp) { al.splice(i, 1); i--; continue; }
+        a.vx = dx / d * sp / dt; a.vy = dy / d * sp / dt;
+        a.x += dx / d * sp; a.y += dy / d * sp;
+        continue;
+      }
       // target: the nearest loaded ship within sense, else the nearest live base
       let kind = "", tgt = -1, bd = sense2, tx = 0, ty = 0;
       for (let j = 0; j < ships.length; j++) {
@@ -1349,7 +1362,7 @@
   }
 
   function step(state, dt) {
-    if (state.over) return;
+    if (state.over || !(dt > 0)) return;
     state.time += dt;
     state.sectorTime += dt;
     stepHazards(state, dt);
@@ -1539,7 +1552,7 @@
         state.aliens.push({ id: intIn(a.id, 0, 1e9, 0), x: Math.min(state.w, Math.max(0, num(a.x, 0))), y: Math.min(state.h, Math.max(0, num(a.y, 0))),
           vx: Math.min(500, Math.max(-500, num(a.vx, 0))), vy: Math.min(500, Math.max(-500, num(a.vy, 0))), hp, maxHp,
           dmg: Math.min(999, Math.max(0, num(a.dmg, alienDmg(sector)))), cd: Math.min(60, Math.max(0, num(a.cd, 0))),
-          tgtKind: kind, tgt: kind ? intIn(a.tgt, -1, 1e9, -1) : -1 });
+          tgtKind: kind, tgt: kind ? intIn(a.tgt, -1, 1e9, -1) : -1, age: Math.min(3600, Math.max(0, num(a.age, 0))) });
       }
       const seen = Object.create(null);
       let topId = -1;

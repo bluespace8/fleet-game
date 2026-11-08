@@ -3159,13 +3159,84 @@ function scripted(seed, secs, defend) {
   return s;
 }
 test("balance: a sensible run (auto-mine, turret + shield + one warship) survives 5 minutes of sector 3", () => {
+  let spawned = 0, raided = 0;
   for (const seed of [1, 2, 3, 4, 5, 6]) {
     const s = scripted(seed, 300, true);
+    spawned += s.alienSeq; if (s.alienSeq > 0) raided++;
     assert.ok(!s.over && s.bases[0].hp > 0, "seed " + seed + " lost the home base at " + Math.floor(s.time) + " s");
     assert.ok(s.bases[0].turret && s.bases[0].shield, "seed " + seed + " bought its defenses");
     assert.ok(s.ships.some(x => x.type === "warship"), "seed " + seed + " bought a warship");
     assert.ok(s.stats.ore > 100, "and mined");
   }
+  assert.ok(spawned > 0, "the sim really saw aliens");
+  assert.ok(raided >= 3, "at least half the seeds saw a raid (" + raided + " of 6)");
+});
+test("raiders leave: an un-fought raid flies to the nearest edge after 'stay' and is gone, with no score", () => {
+  const A = G.TUNING.aliens;
+  assert.strictEqual(A.stay, 90);
+  const s = hgame(2, 3);
+  s.bases[0].hp = s.bases[0].maxHp = 1e9;
+  const a = alien(s, 300, 600), b = alien(s, s.w - 100, 700);
+  a.age = 0; b.age = 0;
+  const score0 = s.score.kills, kills0 = s.stats.kills;
+  hrun(s, A.stay - 2);
+  assert.strictEqual(s.aliens.length, 2, "still here before stay");
+  hrun(s, 4);
+  assert.ok(s.aliens.every(x => x.tgtKind === ""), "no longer chasing");
+  for (const x of s.aliens) assert.ok(x.vx !== 0 || x.vy !== 0, "moving off");
+  hrun(s, 15);
+  assert.strictEqual(s.aliens.length, 0, "gone");
+  assert.strictEqual(s.score.kills, score0); assert.strictEqual(s.stats.kills, kills0);
+  assert.ok(!s.over);
+});
+test("an old alien does not shoot while leaving, and age is saved and loaded (old saves default 0)", () => {
+  const s = hgame(2, 3);
+  s.bases[0].hp = s.bases[0].maxHp = 1e9;
+  const a = alien(s, s.bases[0].x + 100, s.bases[0].y); a.age = 100; a.cd = 0;
+  hrun(s, 1);
+  assert.strictEqual(s.shots.length, 0);
+  const t = hgame(2, 3), b = alien(t, 500, 500); b.age = 33;
+  const r = G.deserialize(G.serialize(t));
+  assert.ok(r.ok); assert.strictEqual(r.state.aliens[0].age, 33);
+  const raw = JSON.parse(G.serialize(t)); delete raw.aliens[0].age;
+  const o = G.deserialize(JSON.stringify(raw));
+  assert.ok(o.ok); assert.strictEqual(o.state.aliens[0].age, 0);
+  raw.aliens[0].age = "x";
+  assert.strictEqual(G.deserialize(JSON.stringify(raw)).state.aliens[0].age, 0);
+});
+test("balance: with no defence the home base can still be standing at 5 minutes (raiders leave)", () => {
+  let alive = 0;
+  for (let seed = 1; seed <= 12; seed++) {
+    const s = scripted(seed, 300, false);
+    if (!s.over && s.bases[0].hp > 0) alive++;
+  }
+  console.log("      no-defence survivors: " + alive + " of 12");
+  assert.ok(alive >= 1, "at least one seed survives undefended");
+});
+test("step with a zero, negative or NaN dt changes nothing and leaves no NaN", () => {
+  const s = hgame(2, 3);
+  const a = alien(s, 600, 600); alien(s, 700, 650);
+  s.shots.push({ x: 5, y: 5, vx: 1, vy: 1, life: 1, dmg: 1, side: "them" });
+  hrun(s, 3);
+  const before = G.serialize(s);
+  for (const dt of [0, -1, NaN, undefined, Infinity * 0]) G.step(s, dt);
+  assert.strictEqual(G.serialize(s), before);
+  for (const x of s.aliens) assert.ok(isFinite(x.x) && isFinite(x.y) && isFinite(x.vx) && isFinite(x.vy));
+  for (const x of s.shots) assert.ok(isFinite(x.x) && isFinite(x.vx));
+  assert.ok(G.deserialize(G.serialize(s)).ok);
+  assert.ok(a.age > 0);
+});
+test("upgradeBase refuses a down base, like buildAddon", () => {
+  const s = hgame(2, 3);
+  s.stock.ore = s.stock.ice = s.stock.crystal = 99999;
+  s.bases[0].down = true;
+  const stock = JSON.stringify(s.stock), tier = s.bases[0].tier;
+  const r = G.upgradeBase(s, 0);
+  assert.ok(!r.ok && /down/i.test(r.reason) && /Repair/.test(r.reason));
+  assert.strictEqual(r.reason, G.buildAddon(s, 0, "turret").reason);
+  assert.strictEqual(JSON.stringify(s.stock), stock); assert.strictEqual(s.bases[0].tier, tier);
+  s.bases[0].down = false;
+  assert.ok(G.upgradeBase(s, 0).ok);
 });
 test("balance: aliens are a real threat, an undefended base can fall to a long raid", () => {
   const s = hgame(2, 3);
