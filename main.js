@@ -62,6 +62,8 @@
   const LB = () => (G.labelsFor && looks.labels) || G.SPACE_LABELS || FALLBACK_LABELS;
   const labelArg = () => (G.labelsFor ? looks.labels : undefined);   // trailing argument of the game.js calls
   const lc = t => String(t).toLowerCase();
+  const shipWord = () => (themed() ? lc(LB().ship.miner) : "ship");     // "hamster", "dwarf", or "ship"
+  const shipsWord = () => (themed() ? lc(LB().ships) : "ships");
   const an = t => (/^[aeiou]/i.test(t) ? "an " : "a ") + t;
   const shipName = s => (G.shipLabel && G.labelsFor ? G.shipLabel(s, LB()) : s.name);
   const baseName = i => {   // "Home" / "Base 2" in Space; the theme's words otherwise
@@ -570,14 +572,14 @@
     build(n, W, H) {
       const rnd = sceneRnd(2468), u = Math.min(W, H);
       const bg = n.createLinearGradient(0, 0, W, H);
-      bg.addColorStop(0, "#d9b27a"); bg.addColorStop(1, "#a97d4a");
+      bg.addColorStop(0, "#5c3d22"); bg.addColorStop(1, "#432b17");   // mid-dark warm brown, so light sprites and labels stand out
       n.fillStyle = bg; n.fillRect(0, 0, W, H);
-      const tones = ["#e8c994", "#c99a60", "#b78650", "#f0d6a6", "#9c6f3e"];
+      const tones = ["#76563a", "#654528", "#573c24", "#7d5a38", "#3a2513"];
       n.lineCap = "round";
       const count = Math.min(1800, Math.round((W * H) / 700));
       for (let i = 0; i < count; i++) {   // curled shavings
         const x = rnd() * W, y = rnd() * H, len = 8 + rnd() * 16, a = rnd() * Math.PI * 2;
-        n.strokeStyle = tones[(rnd() * tones.length) | 0]; n.globalAlpha = 0.25 + 0.45 * rnd(); n.lineWidth = 1 + rnd() * 1.6;
+        n.strokeStyle = tones[(rnd() * tones.length) | 0]; n.globalAlpha = 0.25 + 0.4 * rnd(); n.lineWidth = 1 + rnd() * 1.6;
         n.beginPath(); n.moveTo(x, y);
         n.quadraticCurveTo(x + Math.cos(a) * len * 0.5 + (rnd() - 0.5) * len * 0.6, y + Math.sin(a) * len * 0.5 + (rnd() - 0.5) * len * 0.6,
           x + Math.cos(a) * len, y + Math.sin(a) * len);
@@ -614,10 +616,10 @@
         n.beginPath(); n.ellipse(fx + Math.cos(a) * r * 32, fy - 3 + Math.sin(a) * r * 12, 3.2, 1.7, rnd() * 3, 0, Math.PI * 2); n.fill();
       }
       const lg = n.createRadialGradient(W * 0.3, H * 0.15, 0, W * 0.3, H * 0.15, Math.max(W, H) * 0.8);   // soft warm light
-      lg.addColorStop(0, "rgba(255,236,170,0.38)"); lg.addColorStop(1, "rgba(255,236,170,0)");
+      lg.addColorStop(0, "rgba(255,226,150,0.10)"); lg.addColorStop(1, "rgba(255,226,150,0)");
       n.fillStyle = lg; n.fillRect(0, 0, W, H);
       const vg = n.createRadialGradient(W / 2, H / 2, u * 0.4, W / 2, H / 2, Math.max(W, H) * 0.75);
-      vg.addColorStop(0, "rgba(60,30,10,0)"); vg.addColorStop(1, "rgba(60,30,10,0.4)");
+      vg.addColorStop(0, "rgba(30,15,5,0)"); vg.addColorStop(1, "rgba(30,15,5,0.4)");
       n.fillStyle = vg; n.fillRect(0, 0, W, H);
       motes = reduceMotion ? [] : Array.from({ length: 14 }, () => ({ x: rnd() * W, y: rnd() * H, r: 0.8 + rnd() * 1.4, vy: -(2 + rnd() * 4), vx: 1 + rnd() * 3, ph: rnd() * 6.28 }));
     },
@@ -767,6 +769,11 @@
 
   // Ship sprites face +x, 40 x 40 CSS px; the caller scales the hauler up.
   function paintHamster(g, big, color) {
+    const ol = "#2a1608";   // dark outline: the same shapes, a little bigger, painted first
+    ell(g, -1, 0, 11.6, 9.1, 0, ol); circ(g, 8, 0, 6.8, ol); circ(g, -11, 0, 3.4, ol);
+    circ(g, 5.2, -4.6, 4.1, ol); circ(g, 5.2, 4.6, 4.1, ol);
+    for (const [x, y] of [[-5, -8], [-5, 8], [4, -8], [4, 8]]) circ(g, x, y, 3.6, ol);
+    if (big) { circ(g, 9, -4.6, 4.9, ol); circ(g, 9, 4.6, 4.9, ol); }
     ell(g, -5, -8, 2.6, 1.6, 0.3, "#f0a8a0"); ell(g, -5, 8, 2.6, 1.6, -0.3, "#f0a8a0");   // feet
     ell(g, 4, -8, 2.6, 1.6, -0.3, "#f0a8a0"); ell(g, 4, 8, 2.6, 1.6, 0.3, "#f0a8a0");
     circ(g, -11, 0, 2, "#f0a8a0");   // tail
@@ -971,7 +978,7 @@
       }
       blobPath(g, r, rnd, 11);
       g.fillStyle = kind === "asteroid" ? "#4a4650" : "#3d4048"; g.fill();
-      g.strokeStyle = "rgba(0,0,0,0.5)"; g.lineWidth = 1; g.stroke();
+      g.strokeStyle = "#8a7e74"; g.lineWidth = 1.4; g.stroke();   // pale rim so the rock reads against the dark cavern
       ell(g, -r * 0.3, -r * 0.35, r * 0.4, r * 0.25, -0.6, "rgba(255,255,255,0.08)");
       const seam = kind === "asteroid" ? "#d8793a" : "#d6dde8", lines = kind === "iceplanet" ? 3 : kind === "moon" ? 1 : 2;
       g.strokeStyle = seam; g.lineWidth = Math.max(1.5, r * (kind === "moon" ? 0.2 : 0.12)); g.lineCap = "round"; g.lineJoin = "round";
@@ -1029,6 +1036,16 @@
     return pts;
   }
 
+  // Canvas text. In themed scenes it gets a dark outline so it reads on the light-ish bedding and the rock.
+  function labelText(t, x, y) {
+    if (themed()) {
+      ctx.lineJoin = "round"; ctx.lineWidth = 3.5; ctx.strokeStyle = "rgba(18,9,3,0.9)";
+      ctx.strokeText(t, x, y);
+      ctx.lineJoin = "miter";
+    }
+    ctx.fillText(t, x, y);
+  }
+
   function drawBody(b) {
     const [light, base, dark] = BODY_HUE[b.kind] || BODY_HUE.asteroid;
     const frac = b.max > 0 ? b.amount / b.max : 0;
@@ -1061,8 +1078,12 @@
     }
     // remaining-amount ring, like the progress ring on mission planets
     const ringR = b.r + 6;
+    if (themed()) {   // dark backing under the ring
+      ctx.lineWidth = 6; ctx.strokeStyle = "rgba(18,9,3,0.7)";
+      ctx.beginPath(); ctx.arc(b.x, b.y, ringR, 0, Math.PI * 2); ctx.stroke();
+    }
     ctx.lineWidth = 2.5;
-    ctx.strokeStyle = "rgba(255,255,255,0.12)";
+    ctx.strokeStyle = themed() ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.12)";
     ctx.beginPath(); ctx.arc(b.x, b.y, ringR, 0, Math.PI * 2); ctx.stroke();
     if (frac > 0) {
       ctx.strokeStyle = RES_COLOR[b.res]; ctx.lineCap = "round";
@@ -1078,10 +1099,10 @@
     ctx.textAlign = "center";
     ctx.font = "600 11.5px system-ui, sans-serif";
     ctx.fillStyle = "rgba(235,240,255,0.92)";
-    ctx.fillText(b.name, b.x, b.y + ringR + 15);
+    labelText(b.name, b.x, b.y + ringR + 15);
     ctx.font = "10px system-ui, sans-serif";
     ctx.fillStyle = empty ? "rgba(200,210,240,0.5)" : hexA(RES_COLOR[b.res], 0.9);
-    ctx.fillText(empty ? "EMPTY" : `${Math.floor(b.amount)} ${(LB().res[b.res] || b.res).toUpperCase()}`, b.x, b.y + ringR + 28);
+    labelText(empty ? "EMPTY" : `${Math.floor(b.amount)} ${(LB().res[b.res] || b.res).toUpperCase()}`, b.x, b.y + ringR + 28);
   }
 
   // Upgraded bases are visibly different: a solid outer ring at Lv 2, plus a counter-turning second ring
@@ -1104,7 +1125,9 @@
     ctx.textAlign = "center";
     ctx.font = "700 11px system-ui, sans-serif";
     ctx.fillStyle = "rgba(245,238,225,0.95)";
-    ctx.fillText((i === 0 ? L.home : L.baseTitle + " " + (i + 1)).toUpperCase() + (tier ? " " + TIER_NAME[tier] : ""), b.x, b.y + G.BASE_R * (tier >= 2 ? 2.3 : 1.5) + 16);
+    // just under the sprite: the wheel's stand (and seed ring at Lv 3), or the forge's foundation
+    const dy = themeId() === "hamster" ? wheelRadius(home) + (tier >= 2 ? 14 : 10) + 13 : 40;
+    labelText((i === 0 ? L.home : L.baseTitle + " " + (i + 1)).toUpperCase() + (tier ? " " + TIER_NAME[tier] : ""), b.x, b.y + dy);
   }
 
   const baseSpin = [];   // wheel angle per base; turns only while a ship is unloading there
@@ -1192,12 +1215,14 @@
     glow.addColorStop(0, "rgba(255,226,110," + (0.35 + pulse * 0.2) + ")"); glow.addColorStop(1, "rgba(255,226,110,0)");
     ctx.fillStyle = glow;
     ctx.beginPath(); ctx.arc(s.x, s.y, R * 3, 0, Math.PI * 2); ctx.fill();
+    if (themed()) { ctx.fillStyle = "rgba(18,9,3,0.5)"; ctx.beginPath(); ctx.arc(s.x, s.y, R * 1.45, 0, Math.PI * 2); ctx.fill(); }   // dark halo
     ctx.beginPath();
     for (let k = 0; k < 10; k++) {
       const a = -Math.PI / 2 + k * Math.PI / 5, rr = k % 2 ? R * 0.45 : R;
       ctx[k ? "lineTo" : "moveTo"](s.x + Math.cos(a) * rr, s.y + Math.sin(a) * rr);
     }
     ctx.closePath();
+    if (themed()) { ctx.lineJoin = "round"; ctx.lineWidth = 4.5; ctx.strokeStyle = "#1c0e04"; ctx.stroke(); ctx.lineJoin = "miter"; }
     ctx.fillStyle = "#ffd84a"; ctx.fill();
     ctx.strokeStyle = "#fff6c4"; ctx.lineWidth = 1.2; ctx.stroke();
     if (ui.selected != null) {
@@ -1351,7 +1376,7 @@
     ctx.rotate(ship.ang);
     ctx.scale(k, k);
     if (themed()) {   // one cached sprite; idle ships are dimmed like the space hull
-      ctx.globalAlpha = busy ? 1 : 0.6;
+      ctx.globalAlpha = busy ? 1 : 0.85;
       ctx.drawImage(shipSprite(ship), -20, -20, 40, 40);
       ctx.globalAlpha = 1;
     } else {
@@ -1377,8 +1402,9 @@
     ctx.restore();
     if (busy) {   // status ring: cargo load, in the colour of what's aboard
       const rr = 15 * k;
+      if (themed()) { ctx.lineWidth = 5; ctx.strokeStyle = "rgba(18,9,3,0.6)"; ctx.beginPath(); ctx.arc(ship.x, ship.y, rr, 0, Math.PI * 2); ctx.stroke(); }
       ctx.lineWidth = 2;
-      ctx.strokeStyle = "rgba(255,255,255,0.14)";
+      ctx.strokeStyle = themed() ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.14)";
       ctx.beginPath(); ctx.arc(ship.x, ship.y, rr, 0, Math.PI * 2); ctx.stroke();
       if (ship.cargo > 0) {
         ctx.strokeStyle = RES_COLOR[ship.res];
@@ -1405,7 +1431,7 @@
       ctx.textAlign = "left";
       ctx.font = "600 10.5px system-ui, sans-serif";
       ctx.fillStyle = "rgba(240,244,255,0.95)";
-      ctx.fillText(shipName(ship).toUpperCase(), ship.x + 16, ship.y - 12);
+      labelText(shipName(ship).toUpperCase(), ship.x + 16, ship.y - 12);
     }
   }
 
@@ -1454,7 +1480,7 @@
     const L = LB();
     const items = [["miner", L.ship.miner, G.SHIP_TYPES.miner.blurb, G.shipCost(game, "miner")],
       ["hauler", L.ship.hauler, G.SHIP_TYPES.hauler.blurb, G.shipCost(game, "hauler")],
-      ["base", L.newBase, "Click empty space to place it", G.baseCost(game)]];
+      ["base", L.newBase, themed() ? "Click an empty spot to place it" : "Click empty space to place it", G.baseCost(game)]];
     const html = items.map(([key, label, note, cost]) => {
       const ok = !game.over && G.canAfford(game, cost);
       return `<button type="button" class="build-btn${key === "base" && ui.placing ? " active" : ""}" data-build="${key}"${ok ? "" : " disabled"}>
@@ -1469,7 +1495,7 @@
       const label = baseName(i) + (tier ? " " + TIER_NAME[tier] : "");
       const next = G.TUNING.upgrades[tier + 1];
       const btn = cost
-        ? `<button type="button" data-up="${i}"${!game.over && G.canAfford(game, cost) ? "" : " disabled"} title="Unloads faster and takes ships from further away">Upgrade<small>${costText(cost)}</small></button>`
+        ? `<button type="button" data-up="${i}"${!game.over && G.canAfford(game, cost) ? "" : " disabled"} title="Unloads faster and takes ${shipsWord()} from further away">Upgrade<small>${costText(cost)}</small></button>`
         : `<small>Fully upgraded</small>`;
       const note = `unloads ${G.TUNING.upgrades[tier].unload}/s` + (next ? `, next ${next.unload}/s` : "");
       return `<div class="base-row"><span class="lbl"><b>${label}</b><small>${note}</small></span>${btn}</div>`;
@@ -1534,8 +1560,8 @@
     if (key === "space") { for (const k in els) els[k].innerHTML = staticText[k]; return; }
     els.warp.textContent = L.warp; els.wwarp.textContent = L.warp;
     els.bases.firstChild.nodeValue = L.bases + " ";
-    els.help.textContent = `Click a ship, then ${an(lc(L.body.asteroid))} or ${an(lc(L.body.iceplanet))} to mine it, a star to collect it, or ${an(L.base)} to send it there. ` +
-      `Build ${lc(L.bases)} to clear the ${lc(L.sector)}, then ${lc(L.warp)}. Pause: Space. Esc cancels. Add ?stress to the address for a 30-ship test (?stress&sector=3 for hazards).`;
+    els.help.textContent = `Click ${an(shipWord())}, then ${an(lc(L.body.asteroid))} or ${an(lc(L.body.iceplanet))} to mine it, a star to collect it, or ${an(L.base)} to send it there. ` +
+      `Build ${lc(L.bases)} to clear the ${lc(L.sector)}, then ${lc(L.warp)}. Pause: Space. Esc cancels. Add ?stress to the address for a 30-${shipWord()} test (?stress&sector=3 for hazards).`;
   }
 
   function refresh() {
@@ -1556,7 +1582,7 @@
     const hint = $("hint");
     hint.style.display = ui.placing || ui.selected != null ? "block" : "none";
     hint.textContent = themed()
-      ? (ui.placing ? `Click empty space to place the ${L.base} (Esc to cancel)`
+      ? (ui.placing ? `Click an empty spot to place the ${L.base} (Esc to cancel)`
         : `Click ${an(lc(L.body.asteroid))} or ${an(lc(L.body.iceplanet))} to mine it, a star to collect it, or ${an(L.base)} to send it there (Esc to deselect)`)
       : ui.placing ? "Click empty space to place the base (Esc to cancel)"
       : "Click a planet or asteroid to mine it, a star to collect it, or a base to send this ship there (Esc to deselect)";
@@ -2242,7 +2268,7 @@
     const h = hit(p);
     if (h && h.kind === "ship") return select(h.o.id === ui.selected ? null : h.o.id);
     if (ui.selected == null) {
-      if (h && h.kind === "star") toast("Select a ship first, then click the star.");
+      if (h && h.kind === "star") toast(`Select ${an(shipWord())} first, then click the star.`);
       return;
     }
     if (h && h.kind === "body") {
