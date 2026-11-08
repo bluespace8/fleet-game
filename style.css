@@ -82,3 +82,34 @@ button[hidden] { display: none; }
 .look .sw i.wide { width: 60px; border-radius: 5px; }
 .look small { display: block; color: #9aa4e0; }
 .look.locked small { color: #ffd84a; }
+
+/* feedback form */
+#paused { text-align: center; }
+#paused span { display: block; }
+#paused button { pointer-events: auto; margin-top: 14px; letter-spacing: normal; font-size: 13px; color: #e6e9ff; }
+#feedback { position: absolute; inset: 0; background: rgba(3, 4, 11, 0.85); display: flex; align-items: center; justify-content: center; z-index: 5; }
+#feedback[hidden] { display: none; }
+#feedback .card { width: min(640px, 94%); }
+#feedback h2 { margin: 16px 0 6px; }
+.f-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.f-col { display: flex; flex-direction: column; gap: 4px; margin-bottom: 4px; }
+#feedback select, #feedback textarea { font: inherit; color: #e6e9ff; background: #0d0f26; border: 1px solid rgba(160, 180, 255, 0.3);
+  border-radius: 6px; padding: 5px 8px; }
+#feedback textarea { resize: vertical; width: 100%; min-height: 90px; }
+#feedback :focus-visible { outline: 2px solid #8fd8ff; outline-offset: 1px; }
+.f-note { color: #7f89c4; font-size: 12px; margin: 4px 0; }
+#f-count.over { color: #ff9a9a; }
+.f-check { display: block; margin: 6px 0; }
+.f-status { min-height: 1.4em; margin: 6px 0; }
+.f-status.err { color: #ff9a9a; }
+.f-status.ok { color: #8fe0b0; }
+.f-bar { display: flex; gap: 8px; margin-bottom: 6px; }
+#f-list { list-style: none; margin: 0; padding: 0; max-height: 200px; overflow-y: auto; }
+#f-list li { display: flex; gap: 8px; align-items: center; padding: 5px 4px; border-top: 1px solid rgba(160, 180, 255, 0.14); }
+#f-list .f-txt { flex: 1; min-width: 0; }
+#f-list .f-first { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#f-list .f-meta { color: #9aa4e0; font-size: 11px; }
+#f-list .f-state { font-size: 11px; padding: 1px 6px; border-radius: 8px; border: 1px solid rgba(160, 180, 255, 0.3); }
+#f-list .f-state.sent { color: #8fe0b0; border-color: #4a9a70; }
+#f-list .f-state.unsent { color: #ffd84a; border-color: #a08a2a; }
+#f-list button { padding: 2px 8px; font-size: 12px; }

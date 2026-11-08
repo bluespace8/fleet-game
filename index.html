@@ -22,17 +22,19 @@
         <button id="b-new" type="button">New game</button>
         <button id="b-retire" type="button">Retire</button>
         <button id="b-hangar" type="button">Hangar</button>
+        <button id="b-feedback" type="button">Feedback</button>
       </div>
     </div>
     <div id="hint"></div>
     <div id="toast" role="status"></div>
-    <div id="paused">PAUSED</div>
+    <div id="paused"><span>PAUSED</span><button id="p-feedback" type="button">Feedback</button></div>
     <div id="fps" title="Frames per second, and the slowest recent frame"></div>
     <div id="win" hidden>
       <div class="card">
         <h1 id="win-title">Sector cleared</h1>
         <p id="win-text"></p>
         <div class="row">
+          <button id="w-feedback" type="button">Feedback</button>
           <button id="w-keep" type="button">Keep playing</button>
           <button id="w-warp" class="primary" type="button">Warp to next sector</button>
         </div>
@@ -46,6 +48,7 @@
         <p id="end-best"></p>
         <div class="row">
           <button id="e-hangar" type="button">Hangar</button>
+          <button id="e-feedback" type="button">Feedback</button>
           <button id="e-new" class="primary" type="button">New run</button>
         </div>
       </div>
@@ -56,6 +59,48 @@
         <p>Stars buy looks only; they never make the fleet stronger. Stars banked: <b id="h-stars"></b></p>
         <div id="h-body"></div>
         <div class="row"><button id="h-close" class="primary" type="button">Close</button></div>
+      </div>
+    </div>
+    <div id="feedback" role="dialog" aria-modal="true" aria-labelledby="f-title" hidden>
+      <div class="card wide">
+        <h1 id="f-title" tabindex="-1">Feedback</h1>
+        <form id="f-form" novalidate>
+          <label class="f-row">Type
+            <select id="f-type">
+              <option value="bug">Bug</option>
+              <option value="idea">Idea</option>
+              <option value="balance">Balance</option>
+              <option value="other">Other</option>
+            </select>
+          </label>
+          <label class="f-row">Rating (optional)
+            <select id="f-rating">
+              <option value="">No rating</option>
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+            </select>
+          </label>
+          <label class="f-col">Message
+            <textarea id="f-message" rows="6" aria-describedby="f-count f-status"></textarea>
+          </label>
+          <div id="f-count" class="f-note"></div>
+          <label class="f-check"><input type="checkbox" id="f-info" checked> Attach game info (version, sector, score, ships, time played, browser)</label>
+          <p id="f-status" class="f-status" role="status"></p>
+          <div class="row">
+            <button id="f-send" class="primary" type="button">Send to team</button>
+            <button id="f-close" type="button">Close</button>
+          </div>
+          <p class="f-note">Ctrl+Enter sends. Enter starts a new line. Esc closes.</p>
+        </form>
+        <h2 id="f-saved-title">Saved feedback <span id="f-unsent"></span></h2>
+        <div class="f-bar">
+          <button id="f-send-unsent" type="button">Send unsent</button>
+          <button id="f-download" type="button">Download all</button>
+        </div>
+        <ul id="f-list"></ul>
       </div>
     </div>
   </div>
