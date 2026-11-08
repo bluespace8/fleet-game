@@ -38,7 +38,7 @@ button.active { outline: 2px solid #8fd8ff; }
 .help { margin: 0; color: #7f89c4; font-size: 12px; }
 #hint { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); background: rgba(10, 11, 29, 0.8);
   padding: 5px 12px; border-radius: 14px; color: #cfd6ff; pointer-events: none; display: none; }
-#toast { position: absolute; top: 58px; left: 50%; transform: translateX(-50%); background: #4a1c2a; border: 1px solid #ee6b6b;
+#toast { z-index: 6; position: absolute; top: 58px; left: 50%; transform: translateX(-50%); background: #4a1c2a; border: 1px solid #ee6b6b;
   padding: 5px 12px; border-radius: 8px; opacity: 0; transition: opacity 0.25s; pointer-events: none; }
 #toast.show { opacity: 1; }
 #paused { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 28px; letter-spacing: 0.4em;

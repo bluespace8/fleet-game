@@ -47,8 +47,9 @@ Plain HTML, Canvas and JavaScript. No installs, no build step, no network calls.
 ## Stars and the Hangar
 
 - 3 to 6 stars sit in each sector, away from home. Send a ship to one to pick it up; it goes into the star
-  bank, which is kept between games per player (localStorage key `fleet-game-players-v1`, separate from the saves). A star
-  pays once, even if you reload an older save.
+  bank, which is kept between games per player (localStorage key `fleet-game-players-v1`, separate from the saves). Each star
+  pays once per save: the save records which stars were paid (`state.starsPaid`), and the star pays whoever is
+  playing when it is taken. Another player loading that save, or reloading an older one, is not paid again.
 - The Hangar (top bar, and the run-end screen) spends stars on looks only, never power: 5 ship colours,
   5 base colours, 4 map backgrounds and 3 engine-trail styles (the first of each is free). Your choices are
   kept and used in every game. Prices are small (2 to 8 stars), so a few runs unlock most things.

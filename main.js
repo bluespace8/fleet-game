@@ -94,7 +94,7 @@
       saveRoster();
       notes.push((r.error || "The players list was damaged.") + " A fresh Player 1 was started; a copy of the old list was kept.");
     } else if (r.migrated) {
-      if (saveRoster() || STRESS) notes.push("Your best score and stars moved to Player 1");
+      if (saveRoster()) notes.push("Your best score and stars moved to Player 1");
     }
     const runsText = readKey(RUNS_KEY), rl = G.parseRunLog(runsText);
     runLog = rl.log;
@@ -927,6 +927,8 @@
   }
 
   function openDlg(view, id) {
+    const cur = ui.dlg[ui.dlg.length - 1];
+    if (cur && cur.view === view && cur.id === id) return;   // already on top
     ui.dlg.push({ view, id });
     showDlg();
   }
@@ -938,6 +940,8 @@
     if (!top) { $("dlg-body").textContent = ""; showCards(); return; }
     $("win").hidden = true; $("end").hidden = true;
     renderDlg();
+    const first = $("dlg-body").querySelector("button:not([disabled])");   // keep focus off the opener under the overlay
+    if (first) first.focus();
   }
   function renderDlg() {
     const top = ui.dlg[ui.dlg.length - 1];
@@ -1030,7 +1034,7 @@
       toast("Added " + r.player.name + ". Press Play to switch to them.");
       renderDlg();
     };
-    input.addEventListener("keydown", ev => { if (ev.key === "Enter") add(); ev.stopPropagation(); });   // typing must not pause or cancel
+    input.addEventListener("keydown", ev => { if (ev.key === "Enter") add(); if (ev.key !== "Escape") ev.stopPropagation(); });   // typing must not pause or cancel
     input.addEventListener("keyup", ev => ev.stopPropagation());
     body.appendChild(el("div", "row", null, [input, btn("Add player", add)]));
     body.appendChild(el("div", "row", null, [btn("Scores", () => openDlg("scores")), btn("Close", closeAllDlg, "primary")]));
