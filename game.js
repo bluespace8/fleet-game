@@ -131,6 +131,7 @@
     return out;
   }
   function lc(t) { return String(t).toLowerCase(); }
+  function an(t) { return (/^[aeiou]/i.test(String(t)) ? "an " : "a ") + t; }   // "a hamster", "an iron vein"
 
   // ---------------------------------------------------------------- sector rules
 
@@ -327,7 +328,7 @@
     if (!def) return { ok: false, reason: "Unknown ship type." };
     if (state.over) return { ok: false, reason: "This run is over." };
     const cost = shipCost(state, type);
-    if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials for a " + lc(labels && labels.ship[type] || def.label) + "." };
+    if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials for " + an(lc(labels && labels.ship[type] || def.label)) + "." };
     pay(state, cost);
     return { ok: true, ship: addShip(state, type) };
   }
@@ -342,7 +343,7 @@
     for (let i = 0; i < state.bodies.length; i++) {
       const b = state.bodies[i];
       if (Math.hypot(x - b.x, y - b.y) < b.r + BASE_R + 24) return labels && labels.body.asteroid !== "Asteroid"
-        ? "Too close to a " + lc(labels.body.asteroid) + " or " + lc(labels.body.iceplanet) + "." : "Too close to a planet or asteroid.";
+        ? "Too close to " + an(lc(labels.body.asteroid)) + " or " + an(lc(labels.body.iceplanet)) + "." : "Too close to a planet or asteroid.";
     }
     return "";
   }
@@ -352,7 +353,7 @@
     const problem = baseSpotProblem(state, x, y, labels);
     if (problem) return { ok: false, reason: problem };
     const cost = baseCost(state);
-    if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials for a " + (labels ? labels.base : "base") + "." };
+    if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials for " + an(labels ? labels.base : "base") + "." };
     pay(state, cost);
     const base = { id: state.bases.length, x, y, home: false, tier: 0 };
     state.bases.push(base);
@@ -857,7 +858,7 @@
         [0.55, 0.5, 0.3, "rgba(255,170,60,0.06)"]] },
       { id: "void", scene: "nebula", name: "Void", cost: 8, top: "#000000", bottom: "#050507", blobs: [
         [0.5, 0.5, 0.7, "rgba(120,120,150,0.07)"], [0.15, 0.15, 0.3, "rgba(170,170,200,0.05)"]] },
-      { id: "black", name: "Deep Black", cost: 4, scene: "sparse", top: "#000000", bottom: "#000000", blobs: [] },
+      { id: "black", name: "Deep Black", cost: 4, scene: "sparse", top: "#000000", bottom: "#000000", blobs: [[0.5, 0.5, 0.01, "rgba(0,0,0,0)"]] },
       { id: "belt", name: "Asteroid Belt", cost: 5, scene: "belt", top: "#05060a", bottom: "#0d0b10", blobs: [
         [0.5, 0.55, 0.6, "rgba(150,120,90,0.07)"]] },
       { id: "spiral", name: "Galaxy Spiral", cost: 7, scene: "spiral", top: "#02030a", bottom: "#070716", blobs: [

@@ -1140,7 +1140,11 @@ test("every background has a scene; the four new ones exist at 4, 5, 7 and 8 sta
     assert.strictEqual(b.cost, want[id][0]); assert.strictEqual(b.scene, want[id][1]);
   }
   assert.strictEqual(G.lookById("bg", "solarsys").name, "Solar System");
-  assert.strictEqual(G.lookById("bg", "black").blobs.length, 0);
+  assert.ok(G.lookById("bg", "black").blobs.every(bl => bl[3] === "rgba(0,0,0,0)"), "Deep Black has no visible colour");
+  for (const b of G.LOOKS.bg) {
+    assert.ok(b.blobs.length >= 1, b.id + " has a blob");
+    for (const bl of b.blobs) assert.strictEqual(bl.length, 4, b.id + " blob shape");
+  }
   assert.deepStrictEqual(G.LOOKS.bg.slice(0, 4).map(b => b.id), ["deep", "aurora", "ember", "void"], "old backgrounds keep their place");
 });
 test("sceneFor: the theme's scene wins, else the background's, else nebula", () => {
@@ -1247,6 +1251,8 @@ test("error messages that name a ship or base take labels; with none they are un
   const b = nearBody(s);
   assert.strictEqual(G.baseSpotProblem(s, b.x, b.y), "Too close to a planet or asteroid.");
   assert.ok(/seed pile/.test(G.baseSpotProblem(s, b.x, b.y, ham)));
+  const dw = G.labelsFor("dwarven");
+  assert.strictEqual(G.baseSpotProblem(s, b.x, b.y, dw), "Too close to an iron vein or a silver lode.");
   assert.strictEqual(G.upgradeBase(s, 9).reason, "No such base.");
   assert.strictEqual(G.upgradeBase(s, 9, ham).reason, "No such wheel.");
   s.stock.ore = s.stock.ice = s.stock.crystal = 9999; G.upgradeBase(s, 0); G.upgradeBase(s, 0);
