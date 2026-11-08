@@ -2243,7 +2243,7 @@ test("an upgraded base takes manual ships from further away and unloads faster",
 test("meteors still hit a loaded ship flown by hand", () => {
   const s = manualShip(1, 3), sh = s.ships[0];
   sh.cargo = 20; sh.res = "ore";
-  s.showers = [{ x: sh.x, y: sh.y, r: 120, age: 3 }]; s.showerIn = 1e6;
+  s.showers = [{ x: sh.x, y: sh.y, r: 120, age: G.TUNING.showers.warn }]; s.showerIn = 1e6;   // live: past the (now 10 s) warning
   stepFor(s, 8);
   assert.ok(s.hits > 0, "hit"); assert.ok(sh.cargo < 20); assert.ok(s.stats.lost > 0);
 });
@@ -2381,6 +2381,856 @@ test("main.js has one key guard, and never cancels Tab inside a dialog", () => {
   const t = /function onTab\(ev\) \{[\s\S]*?\n  \}/.exec(src);
   assert.ok(t && /if \(!keyActive\(ev\)\) return;[\s\S]*preventDefault/.test(t[0]), "Tab is only handled when keyActive");
   assert.ok(/function typeDigit[\s\S]*resolveTargetKeys/.test(src));
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+console.log("hazards and defense: events, fog, flares, showers");
+const HDT = 1 / 30;
+function hrun(s, secs) { for (let i = 0; i < Math.round(secs / HDT); i++) G.step(s, HDT); }
+function quiet(s) { s.showerIn = 3000; s.eventIn = 3000; return s; }       // no new showers or events
+function hgame(seed, sector) { return quiet(G.newGame(seed, sector)); }
+function liveEvent(s, kind, o) {   // an event already past its warning
+  const e = Object.assign({ kind, x: s.w / 2, y: s.h / 2, r: 150, age: G.TUNING.events.warn, warn: G.TUNING.events.warn, dur: 30, power: 1 }, o || {});
+  s.events.push(e); return e;
+}
+function liveShower(s, o) {
+  const W = G.TUNING.showers, e = Object.assign({ kind: "shower", x: s.w / 2, y: s.h / 2, r: 150, age: W.warn, warn: W.warn, dur: 60, power: 10, tick: 0 }, o || {});
+  s.showers.push(e); return e;
+}
+function giveAll(s) { s.stock.ore = s.stock.ice = s.stock.crystal = 5000; }
+function withTuning(obj, key, val, fn) { const old = obj[key]; obj[key] = val; try { fn(); } finally { obj[key] = old; } }
+function noMv(text) { const o = JSON.parse(text); for (const x of o.ships) x.mv = 0; return JSON.stringify(o); }
+function mid(s, ship) { ship.x = s.w / 2; ship.y = s.h / 2; return ship; }
+
+test("TUNING has the new sub-tables and every number the rules use", () => {
+  const T = G.TUNING;
+  for (const k of ["events", "fog", "flare", "showers", "aliens", "combat", "addons", "repair"]) assert.ok(T[k] && typeof T[k] === "object", k);
+  assert.ok(T.ships.warship && T.ships.warship.war && T.ships.warship.cap === 0 && T.ships.warship.rate === 0);
+  assert.strictEqual(T.showers.warn, 10, "the shower warning is 10 s now");
+  assert.strictEqual(T.events.warn, 10);
+  assert.ok(T.addons.shield.range > 0 && T.addons.turret.range > 0 && T.fog.mine > 0 && T.fog.mine < 1);
+});
+test("blankState puts the new fields before delivered and starsPaid, which stay last", () => {
+  const keys = Object.keys(G.newGame(1));
+  assert.deepStrictEqual(keys.slice(-2), ["delivered", "starsPaid"]);
+  for (const k of ["events", "eventIn", "alienSeq", "aliens", "shots", "fx"]) assert.ok(keys.indexOf(k) >= 0 && keys.indexOf(k) < keys.length - 2, k);
+  const s = G.newGame(1);
+  assert.strictEqual(s.score.kills, 0); assert.strictEqual(s.stats.kills, 0);
+  assert.strictEqual(s.ships[0].hp, G.SHIP_TYPES.miner.hp); assert.strictEqual(s.ships[0].dead, false);
+  assert.strictEqual(s.bases[0].hp, G.TUNING.combat.homeHp); assert.strictEqual(s.bases[0].shield, false);
+});
+test("sector 1 is calm: ten minutes bring no event, shower, alien or damage", () => {
+  const s = G.newGame(3);
+  assert.strictEqual(s.eventIn, 0);
+  for (const sh of s.ships) G.orderShip(s, sh.id, nearBody(s).id);
+  hrun(s, 600);
+  assert.strictEqual(s.events.length, 0); assert.strictEqual(s.showers.length, 0); assert.strictEqual(s.aliens.length, 0);
+  assert.strictEqual(s.hz, G.newGame(3).hz, "hrand was never used");
+  assert.ok(s.ships.every(x => x.hp === x.maxHp) && s.bases[0].hp === s.bases[0].maxHp);
+  assert.ok(!G.eventsOn(1) && !G.aliensOn(2) && G.aliensOn(3));
+});
+test("events start in sector 2 after the first delay, and warn for 10 seconds before they take effect", () => {
+  const s = G.newGame(5, 2);
+  assert.strictEqual(s.eventIn, G.TUNING.events.firstDelay);
+  hrun(s, G.TUNING.events.firstDelay - 1);
+  assert.strictEqual(s.events.length, 0, "nothing before the first delay");
+  hrun(s, 2);
+  assert.strictEqual(s.events.length, 1);
+  const e = s.events[0], w = G.eventWarnings(s);
+  assert.ok(e.age < e.warn && e.warn === 10);
+  assert.strictEqual(w.length, 1);
+  assert.strictEqual(w[0].kind, e.kind);
+  assert.ok(w[0].secs >= 9 && w[0].secs <= 10, "10 s countdown, was " + w[0].secs);
+  assert.ok(["x", "y", "r"].every(k => isFinite(w[0][k])));
+  hrun(s, 5);
+  assert.ok(G.eventWarnings(s)[0].secs <= 5);
+  hrun(s, 6);
+  assert.strictEqual(G.eventWarnings(s).filter(x => x.kind === e.kind).length, 0, "the warning is over");
+});
+test("sector 2 has only fog and flares, never showers, raids or aliens", () => {
+  const s = G.newGame(8, 2), kinds = {};
+  s.showerIn = 1e9;
+  for (let i = 0; i < 30 * 900; i++) { G.step(s, HDT); for (const e of s.events) kinds[e.kind] = true; }
+  assert.ok(Object.keys(kinds).length >= 1);
+  assert.ok(Object.keys(kinds).every(k => k === "fog" || k === "flare"), Object.keys(kinds).join());
+  assert.strictEqual(s.aliens.length, 0); assert.strictEqual(s.showers.length, 0);
+});
+test("from sector 3 raids come too, and the event kinds all show up over a long run", () => {
+  const s = G.newGame(9, 3), kinds = {};
+  s.showerIn = 20;
+  s.bases[0].hp = s.bases[0].maxHp = 1e9;      // outlast the raids: this test is about what gets rolled
+  for (let i = 0; i < 30 * 1500; i++) { G.step(s, HDT); for (const e of s.events) kinds[e.kind] = true; if (s.showers.length) kinds.shower = true; if (s.over) break; }
+  assert.ok(kinds.fog && kinds.flare && kinds.raid && kinds.shower, Object.keys(kinds).join());
+});
+test("the gap between events falls with the sector and is floored; strength rises and is capped", () => {
+  let prev = Infinity;
+  for (let n = 2; n <= 12; n++) { const g = G.eventGap(n); assert.ok(g <= prev && g >= G.TUNING.events.gapMin); prev = g; }
+  assert.strictEqual(G.eventGap(12), G.TUNING.events.gapMin);
+  for (const f of [G.eventPower, G.raidOdds, G.alienCount, G.alienHp, G.alienDmg, G.alienSpeed, G.showerDmg, G.showerRadius, G.fogRadius, G.flareDur]) {
+    let last = -1;
+    for (let n = 1; n <= 30; n++) { const v = f(n); assert.ok(v >= last - 1e-9, f.name + " never falls"); last = v; }
+    assert.ok(f(30) === f(60), f.name + " is capped");
+  }
+  assert.ok(G.eventPower(4) > G.eventPower(2) && G.eventPower(2) === 1);
+  assert.strictEqual(G.raidOdds(1), 0); assert.strictEqual(G.raidOdds(2), 0); assert.ok(G.raidOdds(3) > 0);
+  assert.ok(G.alienHp(6) > G.alienHp(3) && G.alienDmg(6) > G.alienDmg(3), "tougher each sector");
+  assert.ok(G.alienCount(10) > G.alienCount(3));
+});
+test("events are deterministic from the seed, with the same warnings and effects", () => {
+  const a = G.newGame(12, 3), b = G.newGame(12, 3);
+  hrun(a, 200); hrun(b, 200);
+  assert.strictEqual(G.serialize(a), G.serialize(b));
+  assert.notStrictEqual(G.serialize(a), G.serialize(G.newGame(13, 3)));
+});
+test("rolling events does not need random numbers outside hrand (the seed fixes the whole run)", () => {
+  const src = require("fs").readFileSync(__dirname + "/game.js", "utf8");
+  const stepArea = src.slice(src.indexOf("// ---- hazards: health"), src.indexOf("function isStranded"));
+  assert.ok(stepArea.length > 5000, "found the hazard code");
+  assert.ok(!/Math\.random|rng\(/.test(stepArea), "hazards use hrand(state) only");
+  const hz = src.slice(src.indexOf("function stepHazards"), src.indexOf("function isStranded"));
+  assert.ok(!/Math\.(cos|sin|tan|atan2)\(/.test(hz), "no trig in the hazard step (vector maths instead)");
+});
+test("fog slows mining inside it, not outside, and not during its warning", () => {
+  const mk = (fog) => {
+    const s = hgame(4, 2), b = nearBody(s);
+    if (fog) liveEvent(s, "fog", { x: b.x, y: b.y, r: 400 });
+    G.orderShip(s, 0, b.id); G.orderShip(s, 1, b.id);
+    return s;
+  };
+  const clear = mk(false), fogged = mk(true);
+  hrun(clear, 20); hrun(fogged, 20);
+  assert.ok(clear.stats.ore > 0 && fogged.stats.ore > 0);
+  assert.ok(fogged.stats.ore < clear.stats.ore * 0.8, fogged.stats.ore + " vs " + clear.stats.ore);
+  const s = hgame(4, 2), b = nearBody(s);
+  assert.ok(!G.fogAt(s, b.x, b.y));
+  const e = liveEvent(s, "fog", { x: b.x, y: b.y, r: 50, age: 0 });
+  assert.ok(!G.fogAt(s, b.x, b.y), "still warning");
+  e.age = e.warn;
+  assert.ok(G.fogAt(s, b.x, b.y) && G.fogAt(s, b.x + 49, b.y) && !G.fogAt(s, b.x + 60, b.y));
+});
+test("fog slows a ship mined by hand too", () => {
+  const mk = (fog) => {
+    const s = hgame(2, 2), b = nearBody(s);
+    G.takeManual(s, 0); placeBeside(s, s.ships[0], b);
+    if (fog) liveEvent(s, "fog", { x: b.x, y: b.y, r: 300 });
+    assert.strictEqual(G.manualAction(s, 0).did, "mine");
+    return s;
+  };
+  const a = mk(false), f = mk(true);
+  hrun(a, 2); hrun(f, 2);
+  assert.ok(Math.abs(f.stats.ore - a.stats.ore * G.TUNING.fog.mine) < 1e-6, f.stats.ore + " vs " + a.stats.ore);
+});
+test("a flare stuns exposed ships (manual ones too) and a live shield generator protects ships near it", () => {
+  const s = hgame(6, 2);
+  const b = nearBody(s);
+  G.orderShip(s, 0, b.id);
+  G.takeManual(s, 1); mid(s, s.ships[1]); G.setManualInput(s, 1, 1, 0);
+  const x0 = s.ships[1].x, d0 = Math.hypot(s.ships[0].x - s.bases[0].x, s.ships[0].y - s.bases[0].y);
+  liveEvent(s, "flare", { r: 0 });
+  hrun(s, 2);
+  assert.ok(s.ships[0].stun > 0 && s.ships[1].stun > 0);
+  assert.strictEqual(s.ships[1].x, x0, "a stunned manual ship does not move");
+  assert.ok(Math.abs(Math.hypot(s.ships[0].x - s.bases[0].x, s.ships[0].y - s.bases[0].y) - d0) < 1e-6, "nor an auto ship");
+  assert.strictEqual(G.jobText(s, s.ships[0]), "Stunned by a solar flare");
+  assert.strictEqual(G.manualAction(s, 1).ok, false);
+  // shielded: next to a shielded base
+  const t = hgame(6, 2); giveAll(t);
+  assert.ok(G.buildAddon(t, 0, "shield").ok);
+  const home = t.bases[0];
+  t.ships[0].x = home.x + 60; t.ships[0].y = home.y;
+  t.ships[1].x = home.x + G.TUNING.addons.shield.range + 40; t.ships[1].y = home.y;
+  assert.ok(G.shielded(t, t.ships[0].x, t.ships[0].y) && !G.shielded(t, t.ships[1].x, t.ships[1].y));
+  G.orderShip(t, 0, nearBody(t).id); G.orderShip(t, 1, nearBody(t).id);
+  liveEvent(t, "flare", { r: 0 });
+  hrun(t, 0.5);
+  assert.strictEqual(t.ships[0].stun, 0, "protected");
+  assert.ok(t.ships[1].stun > 0, "outside the range");
+  t.bases[0].down = true;     // a down base protects nobody
+  assert.ok(!G.shielded(t, t.ships[0].x, t.ships[0].y));
+});
+test("a flare is harmless in its warning and ends: the stun wears off", () => {
+  const s = hgame(6, 2);
+  liveEvent(s, "flare", { r: 0, age: 0, dur: 5 });
+  hrun(s, 5);
+  assert.ok(s.ships.every(x => x.stun === 0), "warning only");
+  hrun(s, 6);
+  assert.ok(s.ships.every(x => x.stun <= G.TUNING.flare.linger));
+  hrun(s, 12);
+  assert.strictEqual(s.events.length, 0, "the flare is over");
+  assert.ok(s.ships.every(x => x.stun === 0), "nobody is still stunned");
+});
+test("a shower damages ships and bases inside, and nothing outside, once its warning is over", () => {
+  const s = hgame(4, 3);
+  const home = s.bases[0];
+  liveShower(s, { x: home.x, y: home.y, r: 200, power: 10 });
+  s.ships[0].x = home.x + 100; s.ships[0].y = home.y;           // inside
+  s.ships[1].x = home.x + 600; s.ships[1].y = home.y;           // outside
+  hrun(s, 12);
+  assert.ok(s.ships[0].hp < s.ships[0].maxHp, "ship hurt");
+  assert.strictEqual(s.ships[1].hp, s.ships[1].maxHp);
+  assert.ok(s.bases[0].hp < s.bases[0].maxHp, "base hurt");
+  const w = hgame(4, 3);
+  const e = liveShower(w, { x: w.bases[0].x, y: w.bases[0].y, r: 300, age: 0 });
+  w.ships[0].x = w.bases[0].x; w.ships[0].y = w.bases[0].y;
+  for (let i = 0; i < 30 * 9; i++) { e.age = Math.min(e.age, e.warn - 0.5); G.step(w, HDT); }
+  assert.strictEqual(w.ships[0].hp, w.ships[0].maxHp); assert.strictEqual(w.bases[0].hp, w.bases[0].maxHp);
+});
+test("a shower's damage grows with the sector and is capped", () => {
+  assert.ok(G.showerDmg(6) > G.showerDmg(3));
+  assert.strictEqual(G.showerDmg(40), G.TUNING.showers.dmgMax);
+  const s = hgame(4, 5);
+  s.showerIn = 0.01; s.showers = [];
+  hrun(s, 1);
+  assert.strictEqual(s.showers.length, 1);
+  assert.strictEqual(s.showers[0].power, G.showerDmg(5));
+  assert.strictEqual(s.showers[0].warn, 10);
+  assert.strictEqual(s.showers[0].kind, "shower");
+  assert.strictEqual(G.eventWarnings(s)[0].kind, "shower");
+});
+test("a live turret blocks shower hits in range (with a tracer), and a down one does not", () => {
+  const run1 = (turret, down) => {
+    const s = hgame(4, 3);
+    giveAll(s);
+    if (turret) { assert.ok(G.buildAddon(s, 0, "turret").ok); s.bases[0].down = !!down; }
+    const home = s.bases[0];
+    liveShower(s, { x: home.x, y: home.y, r: 200, power: 10, dur: 40 });
+    s.ships[0].x = home.x + 80; s.ships[0].y = home.y;
+    let blocks = 0;
+    for (let i = 0; i < 30 * 30; i++) { G.step(s, HDT); for (const f of s.fx) if (f.kind === "block" && f.age < HDT * 1.5) blocks++; }
+    return { s, blocks };
+  };
+  const bare = run1(false), guarded = run1(true);
+  assert.strictEqual(bare.blocks, 0);
+  assert.ok(guarded.blocks > 0, "a tracer was exposed");
+  assert.ok(guarded.s.bases[0].hp > bare.s.bases[0].hp, "base took less: " + guarded.s.bases[0].hp + " vs " + bare.s.bases[0].hp);
+  withTuning(G.TUNING.addons.turret, "block", 1, () => {
+    const all = run1(true);
+    assert.strictEqual(all.s.bases[0].hp, all.s.bases[0].maxHp, "block chance 1 stops everything");
+    assert.strictEqual(all.s.ships[0].hp, all.s.ships[0].maxHp);
+    assert.strictEqual(all.s.hits, 0);
+  });
+  withTuning(G.TUNING.addons.turret, "block", 1, () => {      // a turret that is down blocks nothing
+    const s = hgame(4, 3); giveAll(s); buildGoal(s);
+    assert.ok(G.buildAddon(s, 1, "turret").ok);
+    const b = s.bases[1], sh = s.ships[0];
+    b.down = true; b.hp = 0;
+    sh.x = b.x + 30; sh.y = b.y;
+    liveShower(s, { x: b.x, y: b.y, r: 80, power: 5, dur: 60 });
+    hrun(s, 30);
+    assert.ok(sh.hp < sh.maxHp, "nothing stopped the meteors");
+  });
+});
+test("a shower still knocks cargo off a loaded ship and the loss is counted", () => {
+  const s = hgame(4, 3);
+  liveShower(s, { r: 200, power: 1 });
+  const sh = s.ships[0]; mid(s, sh); sh.cargo = 20; sh.res = "ore"; sh.st = G.IDLE;
+  hrun(s, 30);
+  assert.ok(s.hits > 0 && sh.cargo < 20 && s.stats.lost > 0);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+console.log("hazards and defense: ships, health, add-ons, repair");
+test("a ship at 0 HP is dead for good: it drops its cargo, takes no orders and is skipped", () => {
+  const s = hgame(4, 3);
+  const sh = s.ships[0], lost0 = s.stats.lost;
+  sh.cargo = 15; sh.res = "ore"; sh.st = G.IDLE;
+  liveShower(s, { x: sh.x, y: sh.y, r: 100, power: 99 });
+  for (let i = 0; i < 30 * 20 && !sh.dead; i++) G.step(s, HDT);
+  assert.ok(sh.dead && sh.hp === 0 && sh.cargo === 0 && sh.res === "" && sh.st === G.IDLE);
+  assert.ok(s.stats.lost >= lost0 + 7.4, "the cargo counts as lost");
+  assert.strictEqual(s.ships.length, 2, "the entry stays so ids hold");
+  assert.strictEqual(G.orderShip(s, 0, nearBody(s).id).ok, false);
+  assert.ok(/lost/.test(G.orderShip(s, 0, nearBody(s).id).reason));
+  for (const f of [() => G.takeManual(s, 0), () => G.recallShip(s, 0), () => G.returnToBase(s, 0, 0), () => G.orderShipToStar(s, 0, 0),
+    () => G.orderToTarget(s, 0, 1), () => G.orderNearestBase(s, 0), () => G.repairShip(s, 0)]) assert.strictEqual(f().ok, false);
+  const x = sh.x, y = sh.y;
+  s.showers = [];
+  hrun(s, 5);
+  assert.strictEqual(sh.x, x); assert.strictEqual(sh.y, y);
+  assert.strictEqual(G.jobText(s, sh), "Lost");
+  assert.deepStrictEqual(G.repairCost(s, "ship", 0), { ore: 0, ice: 0, crystal: 0 });
+  assert.ok(G.deserialize(G.serialize(s)).state.ships[0].dead);
+});
+test("mined material is conserved when ships die: stock + cargo + lost", () => {
+  const s = hgame(6, 3);
+  const before = total(s, "ore");
+  for (const sh of s.ships) G.orderShip(s, sh.id, nearBody(s).id);
+  liveShower(s, { x: s.bases[0].x, y: s.bases[0].y, r: 5000, power: 12, dur: 1000 });
+  hrun(s, 120);
+  assert.ok(s.ships.some(x => x.dead), "someone died");
+  assert.ok(Math.abs(total(s, "ore") + s.stats.lost - before - s.stats.ore) < 1e-6);
+});
+test("add-ons cost the scaled price, once per base, and need a standing base", () => {
+  const s = hgame(2, 3);
+  const T = G.TUNING.addons;
+  const cs = G.addonCost(s, "shield"), ct = G.addonCost(s, "turret");
+  assert.deepStrictEqual(cs, { ore: Math.round(T.shield.cost.ore * G.costMult(3)), ice: Math.round(T.shield.cost.ice * G.costMult(3)), crystal: 0 });
+  assert.ok(ct.ore > 0);
+  s.stock.ore = s.stock.ice = s.stock.crystal = 0;
+  const r0 = G.buildAddon(s, 0, "turret");
+  assert.ok(!r0.ok && /Not enough/.test(r0.reason) && !s.bases[0].turret);
+  giveAll(s);
+  const ore0 = s.stock.ore, ice0 = s.stock.ice;
+  assert.ok(G.buildAddon(s, 0, "turret").ok && s.bases[0].turret);
+  assert.strictEqual(s.stock.ore, ore0 - ct.ore); assert.strictEqual(s.stock.ice, ice0 - ct.ice);
+  assert.ok(!G.buildAddon(s, 0, "turret").ok, "only one of each");
+  assert.ok(G.buildAddon(s, 0, "shield").ok && s.bases[0].shield);
+  assert.ok(!G.buildAddon(s, 0, "laser").ok); assert.ok(!G.buildAddon(s, 0, "constructor").ok); assert.ok(!G.buildAddon(s, 9, "shield").ok);
+  buildGoal(s);
+  const b = s.bases[1];
+  b.down = true; b.hp = 0;
+  assert.ok(!G.buildAddon(s, 1, "shield").ok, "a down base takes none");
+  assert.ok(G.costMult(8) > G.costMult(3) && G.addonCost(hgame(2, 8), "turret").ore > ct.ore, "costs scale with the sector");
+  const o = hgame(2, 3); G.retire(o); giveAll(o);
+  assert.ok(!G.buildAddon(o, 0, "shield").ok);
+});
+test("repair: ships must be at a base, cost per HP scaled by the sector, and are held a moment", () => {
+  const s = hgame(2, 3), sh = s.ships[0], home = s.bases[0];
+  assert.ok(!G.repairShip(s, 0).ok, "not damaged");
+  sh.hp = sh.maxHp - 10;
+  const c = G.repairCost(s, "ship", 0);
+  assert.strictEqual(c.ore, Math.ceil(10 * G.TUNING.repair.ship.ore * G.costMult(3) - 1e-9));
+  sh.x = home.x + 400; sh.y = home.y;
+  const far = G.repairShip(s, 0);
+  assert.ok(!far.ok && /base/.test(far.reason));
+  sh.x = home.x + G.BASE_R + 10; sh.y = home.y;
+  s.stock.ore = c.ore - 1;
+  assert.ok(!G.repairShip(s, 0).ok, "too little ore");
+  assert.strictEqual(sh.hp, sh.maxHp - 10);
+  s.stock.ore = c.ore + 5;
+  assert.ok(G.repairShip(s, 0).ok);
+  assert.strictEqual(s.stock.ore, 5); assert.strictEqual(sh.hp, sh.maxHp);
+  assert.strictEqual(G.jobText(s, sh), "Repairing");
+  hrun(s, G.TUNING.repair.time + 0.5);
+  assert.ok(sh.rep === 0 && G.jobText(s, sh) !== "Repairing");
+  const bigger = hgame(2, 9); bigger.ships[0].hp = bigger.ships[0].maxHp - 10;
+  assert.ok(G.repairCost(bigger, "ship", 0).ore > c.ore);
+});
+test("a base that reaches 0 HP goes down (not home): no drop-off, no add-ons, still counted; repair brings it back", () => {
+  const s = hgame(2, 3);
+  giveAll(s); buildGoal(s);
+  const b = s.bases[1];
+  assert.ok(G.buildAddon(s, 1, "turret").ok && G.buildAddon(s, 1, "shield").ok);
+  const goal = s.bases.length - 1;
+  liveShower(s, { x: b.x, y: b.y, r: 40, power: 99, dur: 100 });
+  hrun(s, 20);
+  assert.ok(b.down && b.hp === 0, "down");
+  assert.strictEqual(s.bases.length - 1, goal, "still counts toward the goal"); assert.ok(s.won);
+  assert.ok(!s.over, "only the home base ends the run");
+  assert.ok(!G.shielded(s, b.x, b.y));
+  assert.notStrictEqual(G.nearestBase(s, b.x + 1, b.y), 1, "no drop-offs at a down base");
+  const c = G.repairCost(s, "base", 1);
+  assert.strictEqual(c.ore, Math.ceil(b.maxHp * G.TUNING.repair.base.ore * G.costMult(3) - 1e-9));
+  assert.strictEqual(c.ice, Math.ceil(b.maxHp * G.TUNING.repair.base.ice * G.costMult(3) - 1e-9));
+  s.showers = [];
+  s.stock.ore = c.ore - 1; s.stock.ice = 999;
+  assert.ok(!G.repairBase(s, 1).ok && b.down);
+  s.stock.ore = c.ore + 3;
+  assert.ok(G.repairBase(s, 1).ok);
+  assert.ok(!b.down && b.hp === b.maxHp && b.turret && b.shield, "back, add-ons intact");
+  assert.strictEqual(s.stock.ore, 3);
+  assert.ok(!G.repairBase(s, 1).ok, "not damaged");
+  // a ship heading for a down base's drop-off goes to a live one
+  b.down = true; b.hp = 0;
+  const sh = s.ships[0]; sh.cargo = 10; sh.res = "ore"; sh.st = G.TO_BASE; sh.dest = 1; sh.x = b.x + 30; sh.y = b.y;
+  hrun(s, 40);
+  assert.strictEqual(sh.cargo, 0, "it unloaded somewhere");
+});
+test("the home base at 0 HP ends the run as destroyed", () => {
+  const s = hgame(2, 3), home = s.bases[0];
+  home.hp = 5;
+  liveShower(s, { x: home.x, y: home.y, r: 100, power: 99, dur: 100 });
+  hrun(s, 20);
+  assert.ok(s.over && s.endReason === "destroyed" && home.hp === 0 && !home.down);
+  const t = s.time;
+  hrun(s, 5);
+  assert.strictEqual(s.time, t, "the sim stops");
+  assert.ok(!G.buildAddon(s, 0, "turret").ok && !G.repairBase(s, 0).ok);
+  const back = G.deserialize(G.serialize(s)).state;
+  assert.ok(back.over && back.endReason === "destroyed" && back.bases[0].hp === 0);
+  assert.strictEqual(G.serialize(back), G.serialize(s));
+});
+test("health is capped and a garbage-hp ship or base loads clamped", () => {
+  const s = hgame(2, 3), raw = JSON.parse(G.serialize(s));
+  raw.ships[0].hp = 99999; raw.ships[1].hp = "x"; raw.bases[0].hp = -50; raw.bases[0].shield = "yes"; raw.bases[0].turret = 1;
+  const r = G.deserialize(JSON.stringify(raw)).state;
+  assert.strictEqual(r.ships[0].hp, r.ships[0].maxHp); assert.strictEqual(r.ships[1].hp, r.ships[1].maxHp);
+  assert.strictEqual(r.bases[0].hp, 1, "a home base cannot sit at 0 HP in a running game");
+  assert.strictEqual(r.bases[0].shield, false); assert.strictEqual(r.bases[0].turret, false);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+console.log("hazards and defense: aliens");
+function raid(s, o) {   // a live raid warning with a chosen point; it spawns after the warning
+  const e = { kind: "raid", x: 20, y: 300, r: 40, age: 0, warn: G.TUNING.events.warn, dur: 0, power: G.alienCount(s.sector) };
+  Object.assign(e, o || {}); s.events.push(e); return e;
+}
+function alien(s, x, y) {
+  const al = { id: s.alienSeq++, x, y, vx: 0, vy: 0, hp: G.alienHp(s.sector), maxHp: G.alienHp(s.sector), dmg: G.alienDmg(s.sector), cd: 0.5, tgtKind: "", tgt: -1 };
+  s.aliens.push(al); return al;
+}
+test("aliens never come before sector 3, however long you wait", () => {
+  for (const n of [1, 2]) {
+    const s = G.newGame(14, n);
+    s.showerIn = 1e9;
+    for (let i = 0; i < 30 * 900; i++) { G.step(s, HDT); assert.strictEqual(s.aliens.length, 0); for (const e of s.events) assert.notStrictEqual(e.kind, "raid"); }
+  }
+});
+test("a raid warns for 10 s at an edge point, then spawns the sector's count of aliens there", () => {
+  const s = hgame(5, 3);
+  raid(s);
+  assert.strictEqual(G.eventWarnings(s)[0].kind, "raid");
+  hrun(s, 9);
+  assert.strictEqual(s.aliens.length, 0);
+  hrun(s, 2);
+  assert.strictEqual(s.aliens.length, G.alienCount(3));
+  assert.strictEqual(s.events.length, 0, "the raid event is spent");
+  for (const a of s.aliens) {
+    assert.ok(a.hp === G.alienHp(3) && a.maxHp === a.hp && a.dmg === G.alienDmg(3));
+    assert.ok(a.x >= 0 && a.x <= s.w && a.y >= 0 && a.y <= s.h);
+  }
+  assert.deepStrictEqual(s.aliens.map(a => a.id), s.aliens.map((a, i) => i), "ids from alienSeq");
+  assert.strictEqual(s.alienSeq, G.alienCount(3));
+  // rolled raids sit on an edge
+  const t = G.newGame(21, 4); t.showerIn = 1e9;
+  let seen = 0;
+  for (let i = 0; i < 30 * 2000 && seen < 3; i++) {
+    G.step(t, HDT);
+    for (const ev of t.events) if (ev.kind === "raid" && ev.age < HDT * 1.5) {
+      seen++;
+      assert.ok(ev.x === G.TUNING.aliens.edge || ev.x === t.w - G.TUNING.aliens.edge || ev.y === G.TUNING.aliens.edge || ev.y === t.h - G.TUNING.aliens.edge, "edge");
+      assert.strictEqual(ev.power, G.alienCount(4));
+    }
+  }
+  assert.ok(seen >= 1, "a raid was rolled");
+});
+test("the alien count is capped by TUNING.aliens.max", () => {
+  const s = hgame(5, 10);
+  s.aliens = []; for (let i = 0; i < G.TUNING.aliens.max - 1; i++) alien(s, 5, 5);
+  raid(s, { age: 10 });
+  hrun(s, 0.2);
+  assert.strictEqual(s.aliens.length, G.TUNING.aliens.max);
+});
+test("an alien chases the nearest loaded ship in sense range, else the nearest base, and shoots", () => {
+  const s = hgame(5, 3), home = s.bases[0], A = G.TUNING.aliens;
+  const a = alien(s, home.x + 800, home.y);
+  s.ships[0].x = home.x + 800 - 200; s.ships[0].y = home.y; s.ships[0].cargo = 10; s.ships[0].res = "ore";   // loaded, in sense
+  s.ships[1].x = home.x + 800 - 100; s.ships[1].y = home.y;                                                      // empty and nearer
+  s.ships[0].st = G.IDLE;
+  G.step(s, HDT);
+  assert.strictEqual(a.tgtKind, "ship"); assert.strictEqual(a.tgt, 0, "the loaded one, not the nearer empty one");
+  const d0 = Math.hypot(a.x - s.ships[0].x, a.y - s.ships[0].y);
+  hrun(s, 1);
+  assert.ok(Math.hypot(a.x - s.ships[0].x, a.y - s.ships[0].y) < d0, "closing in");
+  s.ships[0].cargo = 0;                         // now nothing loaded: it heads for the base
+  G.step(s, HDT);
+  assert.strictEqual(a.tgtKind, "base"); assert.strictEqual(a.tgt, 0);
+  const far = alien(s, home.x + 1200, home.y + 300);
+  s.ships[0].cargo = 10; s.ships[0].x = home.x; s.ships[0].y = home.y;      // loaded but outside sense
+  G.step(s, HDT);
+  assert.strictEqual(far.tgtKind, "base");
+  assert.ok(A.sense < 1200);
+  // it stops at range and fires
+  const t = hgame(5, 3), h2 = t.bases[0];
+  for (const sh of t.ships) { sh.x = 5; sh.y = 5; }        // keep the ships out of the line of fire
+  const b = alien(t, h2.x + 400, h2.y);
+  hrun(t, 12);
+  const d = Math.hypot(b.x - h2.x, b.y - h2.y);
+  assert.ok(d < A.range + G.BASE_R + 5 && d > 50, "holds at range, was " + d);
+  assert.ok(h2.hp < h2.maxHp, "it hurt the base");
+});
+test("alien shots hurt ships, a shot is removed when it hits, and the shot list is capped", () => {
+  const s = hgame(5, 3), A = G.TUNING.aliens;
+  const a = alien(s, 400, 400);
+  const sh = s.ships[0]; sh.x = 500; sh.y = 400; sh.cargo = 10; sh.res = "ore"; sh.st = G.IDLE;
+  const hp0 = sh.hp;
+  a.cd = 0;
+  hrun(s, 3);
+  assert.ok(sh.hp < hp0 || sh.dead, "ship took damage");
+  const c = hgame(5, 3);
+  for (let i = 0; i < G.TUNING.combat.maxShots; i++) c.shots.push({ x: 5, y: 5, vx: 0, vy: 0, life: 100, dmg: 1, side: "them" });
+  const al = alien(c, 600, 600); al.cd = 0;
+  c.bases[0].x = 650; c.bases[0].y = 600;
+  hrun(c, 1);
+  assert.strictEqual(c.shots.length, G.TUNING.combat.maxShots, "a full list takes no more shots");
+  assert.strictEqual(al.cd, 0, "and the alien holds its fire for the next chance");
+  const raw = JSON.parse(G.serialize(c));
+  for (let i = 0; i < 200; i++) raw.shots.push({ x: 5, y: 5, vx: 0, vy: 0, life: 100, dmg: 1, side: "them" });
+  const r = G.deserialize(JSON.stringify(raw)).state;
+  assert.ok(r.shots.length <= G.TUNING.combat.maxShots, "loaded shots are capped");
+});
+test("a turret shoots aliens in range; a kill scores points and counts, and may leave a star", () => {
+  const s = hgame(7, 3); giveAll(s);
+  G.buildAddon(s, 0, "turret");
+  const home = s.bases[0], T = G.TUNING.addons.turret;
+  const a = alien(s, home.x + 120, home.y); a.hp = 20; a.maxHp = 20; a.cd = 100;
+  const stars0 = s.stars.length, sc0 = G.scoreTotal(s);
+  withTuning(G.TUNING.aliens, "starChance", 1, () => hrun(s, 4));
+  assert.strictEqual(s.aliens.length, 0, "dead");
+  assert.strictEqual(s.stats.kills, 1); assert.strictEqual(s.score.kills, G.TUNING.aliens.score);
+  assert.strictEqual(G.scoreTotal(s) - sc0, G.TUNING.aliens.score, "scoreTotal adds the kills");
+  assert.strictEqual(s.stars.length, stars0 + 1, "a star where it fell");
+  const st = s.stars[stars0];
+  assert.ok(!st.taken && st.id === stars0 && st.x > 0 && st.x < s.w && Math.abs(st.x - (home.x + 120)) < 60);
+  assert.ok(T.range > 120);
+  // chance zero: no star; out of range: no shot
+  const t = hgame(7, 3); giveAll(t); G.buildAddon(t, 0, "turret");
+  const b = alien(t, t.bases[0].x + T.range + 200, t.bases[0].y); b.hp = 1; b.cd = 100; b.vx = 0;
+  withTuning(G.TUNING.aliens, "starChance", 0, () => hrun(t, 0.5));
+  assert.strictEqual(t.shots.filter(x => x.side === "us").length, 0, "out of range, no shooting");
+  const u = hgame(7, 3); giveAll(u); G.buildAddon(u, 0, "turret");
+  const c = alien(u, u.bases[0].x + 100, u.bases[0].y); c.hp = 1; c.cd = 100;
+  const n0 = u.stars.length;
+  withTuning(G.TUNING.aliens, "starChance", 0, () => hrun(u, 3));
+  assert.strictEqual(u.aliens.length, 0); assert.strictEqual(u.stars.length, n0);
+  // a star picked up from a kill pays like any star
+  const k = hgame(7, 3); giveAll(k); G.buildAddon(k, 0, "turret");
+  const d = alien(k, k.bases[0].x + 100, k.bases[0].y); d.hp = 1; d.cd = 100;
+  withTuning(G.TUNING.aliens, "starChance", 1, () => hrun(k, 3));
+  const star = k.stars[k.stars.length - 1];
+  assert.ok(G.orderShipToStar(k, 0, star.id).ok);
+  hrun(k, 60);
+  assert.ok(star.taken);
+  const p = G.newProfile(); assert.ok(G.claimStars(p, k) >= 1);
+});
+test("kills survive a save; score.kills is part of the total", () => {
+  const s = hgame(7, 3); s.score.kills = 75; s.stats.kills = 3;
+  const r = G.deserialize(G.serialize(s)).state;
+  assert.strictEqual(r.score.kills, 75); assert.strictEqual(r.stats.kills, 3);
+  assert.strictEqual(G.scoreTotal(r), G.scoreTotal(s));
+  assert.strictEqual(G.runRecord(r, "p1", "retired", NOW).parts.kills, 75);
+  const raw = JSON.parse(G.serialize(s)); raw.score.kills = "x"; raw.stats.kills = -5;
+  const b = G.deserialize(JSON.stringify(raw)).state;
+  assert.strictEqual(b.score.kills, 0); assert.strictEqual(b.stats.kills, 0);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+console.log("hazards and defense: warships");
+function warship(s) { giveAll(s); const r = G.buildShip(s, "warship"); assert.ok(r.ok, r.reason); return r.ship; }
+test("a warship costs the scaled price, carries nothing and has its own health", () => {
+  const s = hgame(3, 3);
+  const c = G.shipCost(s, "warship");
+  assert.ok(c.ore > 0);
+  s.stock.ore = c.ore - 1; s.stock.ice = 999;
+  assert.ok(!G.buildShip(s, "warship").ok);
+  s.stock.ore = c.ore;
+  const r = G.buildShip(s, "warship");
+  assert.ok(r.ok && r.ship.name === "Warship 1" && r.ship.hp === G.SHIP_TYPES.warship.hp && r.ship.wo === "");
+  assert.strictEqual(r.ship.id, 2);
+  assert.strictEqual(G.shipLabel(r.ship, G.labelsFor("hamster")), "Warship 1");
+  assert.strictEqual(G.jobText(s, r.ship).indexOf("On guard"), 0);
+});
+test("a warship refuses every mining order with a clear reason", () => {
+  const s = hgame(3, 3), w = warship(s), b = nearBody(s);
+  for (const f of [() => G.orderShip(s, w.id, b.id), () => G.orderToTarget(s, w.id, 1), () => G.orderShipToStar(s, w.id, 0),
+    () => G.orderToTarget(s, w.id, s.bodies.length + 1)]) {
+    const r = f(); assert.strictEqual(r.ok, false); assert.ok(/warship/i.test(r.reason) && /mine/.test(r.reason), r.reason);
+  }
+  assert.ok(G.takeManual(s, w.id).ok, "may be hand-flown");
+  mid(s, w); placeBeside(s, w, b);
+  const m = G.manualAction(s, w.id);
+  assert.strictEqual(m.ok, false); assert.ok(/mine/.test(m.reason));
+  assert.strictEqual(w.mm, 0); assert.strictEqual(w.cargo, 0);
+  w.x = mid(s, w).x; G.setManualInput(s, w.id, 1, 0);
+  const x0 = w.x;
+  hrun(s, 1);
+  assert.ok(w.x > x0 + 50, "flies by hand");
+  assert.ok(!G.orderPatrol(s, 0, 100, 100).ok, "a miner takes no warship orders");
+  assert.ok(!G.orderEscort(s, 0, 1).ok && !G.orderAttack(s, 0, 0).ok);
+});
+test("patrol: the warship flies to the point and holds; recall sends it to guard the base", () => {
+  const s = hgame(3, 3), w = warship(s), home = s.bases[0];
+  assert.ok(G.orderPatrol(s, w.id, home.x + 300, home.y + 100).ok);
+  assert.strictEqual(w.wo, "patrol"); assert.strictEqual(G.jobText(s, w), "Patrolling");
+  hrun(s, 6);
+  assert.ok(Math.hypot(w.x - (home.x + 300), w.y - (home.y + 100)) < 1, "arrived");
+  const x = w.x; hrun(s, 2); assert.strictEqual(w.x, x);
+  assert.ok(!G.orderPatrol(s, w.id, -5, 10).ok && !G.orderPatrol(s, w.id, NaN, 10).ok && !G.orderPatrol(s, w.id, 10, s.h + 5).ok);
+  assert.ok(G.recallShip(s, w.id).ok && w.wo === "patrol");
+  hrun(s, 8);
+  assert.ok(Math.hypot(w.x - home.x, w.y - home.y) < 80);
+  assert.ok(G.orderNearestBase(s, w.id).ok);
+});
+test("escort: the warship follows its ship; if that ship is lost it holds where it is", () => {
+  const s = hgame(3, 3), w = warship(s);
+  const m = s.ships[0]; G.orderShip(s, 0, nearBody(s).id);
+  assert.ok(G.orderEscort(s, w.id, 0).ok && w.wo === "escort" && w.wt === 0);
+  assert.ok(/Escorting Miner 1/.test(G.jobText(s, w)));
+  hrun(s, 20);
+  assert.ok(Math.hypot(w.x - m.x, w.y - m.y) < G.SHIP_TYPES.warship.follow + 40, "stays close");
+  assert.ok(!G.orderEscort(s, w.id, w.id).ok && !G.orderEscort(s, w.id, 99).ok);
+  m.dead = true; m.hp = 0;
+  assert.ok(!G.orderEscort(s, w.id, 0).ok, "cannot escort a lost ship");
+  hrun(s, 1);
+  assert.strictEqual(w.wo, "patrol");
+  const x = w.x; hrun(s, 2); assert.strictEqual(w.x, x);
+});
+test("attack: the warship hunts the ordered alien, shoots it down, and fires automatically at others in range", () => {
+  const s = hgame(3, 3), w = warship(s), home = s.bases[0];
+  const a = alien(s, home.x + 500, home.y); a.cd = 1000;
+  assert.ok(!G.orderAttack(s, w.id, 99).ok);
+  assert.strictEqual(G.nearestAlien(s, w.x, w.y), a.id);
+  assert.ok(G.orderAttack(s, w.id, a.id).ok && w.wo === "attack" && w.wt === a.id);
+  assert.ok(/Attacking/.test(G.jobText(s, w)));
+  hrun(s, 40);
+  assert.strictEqual(s.aliens.length, 0, "killed");
+  assert.strictEqual(s.stats.kills, 1);
+  assert.strictEqual(w.wo, "patrol", "then it holds its position");
+  assert.strictEqual(G.nearestAlien(s, 0, 0), -1);
+  // auto-fire without an order, only inside the range
+  const t = hgame(3, 3), w2 = warship(t), h2 = t.bases[0];
+  w2.x = h2.x + 60; w2.y = h2.y; w2.st = G.IDLE;
+  assert.strictEqual(w2.wo, "");
+  const near = alien(t, h2.x + 260, h2.y); near.cd = 1000;
+  hrun(t, 15);
+  assert.strictEqual(t.aliens.length, 0, "shot without any order, as it came to the base");
+  assert.strictEqual(t.stats.kills, 1);
+  const u = hgame(3, 3), w3 = warship(u);
+  w3.x = 800; w3.y = 500;
+  const farA = alien(u, 800 + G.SHIP_TYPES.warship.range + 100, 500); farA.cd = 1000;
+  u.bases[0].x = 3000; u.bases[0].y = 3000;
+  hrun(u, 0.3);
+  assert.strictEqual(u.shots.filter(x => x.side === "us").length, 0, "out of range: no shot");
+  // hand-flown warships fire too
+  const m = hgame(3, 3), w4 = warship(m);
+  G.takeManual(m, w4.id); w4.x = 700; w4.y = 500;
+  const na = alien(m, 760, 500); na.cd = 1000;
+  hrun(m, 6);
+  assert.ok(na.hp < na.maxHp || m.aliens.length === 0, "it fired without any order");
+});
+test("a warship is stunned by flares like any ship, and a down order target is dropped", () => {
+  const s = hgame(3, 3), w = warship(s);
+  G.orderPatrol(s, w.id, 100, 100);
+  const x0 = w.x;
+  liveEvent(s, "flare", { r: 0 });
+  hrun(s, 1);
+  assert.ok(w.stun > 0 && w.x === x0);
+  const t = hgame(3, 3), w2 = warship(t);
+  assert.ok(t.ships.length === 3);
+  G.orderAttack(t, w2.id, alien(t, 900, 900).id);
+  t.aliens.length = 0;
+  hrun(t, 0.2);
+  assert.strictEqual(w2.wo, "patrol", "its target is gone");
+});
+test("a warship can be lost like any ship, and then takes no orders", () => {
+  const s = hgame(3, 3), w = warship(s);
+  G.orderPatrol(s, w.id, 700, 500);
+  hrun(s, 10);
+  liveShower(s, { x: 700, y: 500, r: 100, power: 99 });
+  hrun(s, 15);
+  assert.ok(w.dead && w.wo === "" && G.jobText(s, w) === "Lost");
+  for (const f of [() => G.orderPatrol(s, w.id, 100, 100), () => G.orderEscort(s, w.id, 0), () => G.orderAttack(s, w.id, 0)]) assert.strictEqual(f().ok, false);
+  assert.ok(G.deserialize(G.serialize(s)).state.ships[w.id].dead);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+console.log("hazards and defense: save and load");
+test("a save in the middle of a raid round-trips exactly and plays on identically", () => {
+  const a = G.newGame(17, 3);
+  giveAll(a); G.buildAddon(a, 0, "turret"); G.buildAddon(a, 0, "shield"); warship(a);
+  G.orderPatrol(a, 2, a.bases[0].x + 200, a.bases[0].y);
+  for (const sh of a.ships) if (!sh.dead && sh.type !== "warship") G.orderShip(a, sh.id, nearBody(a).id);
+  a.events.push({ kind: "raid", x: 20, y: 400, r: 40, age: 6, warn: 10, dur: 0, power: 3 });
+  a.events.push({ kind: "fog", x: 500, y: 400, r: 150, age: 12, warn: 10, dur: 40, power: 1 });
+  a.events.push({ kind: "flare", x: 0, y: 0, r: 0, age: 3, warn: 10, dur: 12, power: 1 });
+  alien(a, 900, 500); alien(a, 950, 520);
+  hrun(a, 20);
+  assert.ok(a.aliens.length >= 2 && a.shots.length + a.fx.length >= 0);
+  const text = G.serialize(a);
+  const r = G.deserialize(text);
+  assert.ok(r.ok, r.error);
+  assert.strictEqual(noMv(G.serialize(r.state)), noMv(text), "identical state (mv, the draw-only moving flag, is not saved)");
+  hrun(a, 60); hrun(r.state, 60);
+  assert.strictEqual(noMv(G.serialize(a)), noMv(G.serialize(r.state)), "and the same future");
+});
+test("a save with shots in flight, dead ships, down bases and add-ons round-trips", () => {
+  const s = hgame(18, 3); giveAll(s); buildGoal(s);
+  G.buildAddon(s, 1, "turret");
+  s.bases[2].down = true; s.bases[2].hp = 0;
+  s.ships[1].dead = true; s.ships[1].hp = 0;
+  s.shots.push({ x: 100, y: 100, vx: 50, vy: -20, life: 0.5, dmg: 4, side: "them" });
+  s.fx.push({ kind: "block", x: 1, y: 2, x2: 3, y2: 4, age: 0.1, life: 0.4 });
+  const w = warship(s); G.orderEscort(s, w.id, 0);
+  const r = G.deserialize(G.serialize(s)).state;
+  assert.strictEqual(G.serialize(r), G.serialize(s));
+  assert.ok(r.bases[2].down && r.bases[1].turret && r.ships[1].dead && r.ships[w.id].wo === "escort");
+});
+test("an old save (before this branch) loads with full health, no add-ons and no hazards in progress", () => {
+  const s = G.newGame(23, 3);
+  const raw = JSON.parse(G.serialize(s));
+  for (const k of ["events", "eventIn", "alienSeq", "aliens", "shots", "fx"]) delete raw[k];
+  delete raw.score.kills; delete raw.stats.kills;
+  for (const b of raw.bases) for (const k of ["hp", "maxHp", "shield", "turret", "down", "cd"]) delete b[k];
+  for (const x of raw.ships) for (const k of ["hp", "maxHp", "dead", "stun", "rep", "wo", "wx", "wy", "wt", "cd"]) delete x[k];
+  raw.showerIn = 17; raw.showers = [{ x: 400, y: 300, r: 120, age: 4 }];
+  const r = G.deserialize(JSON.stringify(raw));
+  assert.ok(r.ok, r.error);
+  const o = r.state;
+  assert.ok(o.ships.every(x => x.hp === x.maxHp && !x.dead && x.stun === 0 && x.wo === ""));
+  assert.ok(o.bases.every(b => b.hp === b.maxHp && !b.shield && !b.turret && !b.down));
+  assert.strictEqual(o.bases[0].maxHp, G.TUNING.combat.homeHp);
+  assert.strictEqual(o.aliens.length, 0); assert.strictEqual(o.shots.length, 0); assert.strictEqual(o.events.length, 0);
+  assert.strictEqual(o.score.kills, 0); assert.strictEqual(o.stats.kills, 0);
+  assert.strictEqual(o.showerIn, 17); assert.strictEqual(o.showers[0].age, 4);
+  assert.strictEqual(o.showers[0].warn, 10, "an old shower now warns for the new 10 s");
+  assert.strictEqual(o.eventIn, G.TUNING.events.firstDelay);
+  assert.strictEqual(o.ver, G.VERSION);
+  hrun(o, 30);
+  for (const x of o.ships) assert.ok(isFinite(x.x) && isFinite(x.hp));
+  const v1 = oldSave();
+  const l1 = G.deserialize(JSON.stringify(v1));
+  assert.ok(l1.ok && l1.state.bases[0].hp === G.TUNING.combat.homeHp && l1.state.eventIn === 0 && l1.state.ships[0].hp > 0);
+  assert.strictEqual(Object.keys(l1.state).join(), Object.keys(G.newGame(1)).join(), "same key order as a fresh state");
+});
+test("damaged hazard data in a save clamps or is dropped, and never throws", () => {
+  const good = JSON.parse(G.serialize((() => { const s = G.newGame(24, 3); alien(s, 100, 100); s.events.push({ kind: "fog", x: 5, y: 5, r: 100, age: 1, warn: 10, dur: 40, power: 1 }); return s; })()));
+  const junk = [null, 5, "x", [], {}, NaN, -1, 1e12, true];
+  for (const key of ["events", "eventIn", "alienSeq", "aliens", "shots", "fx", "showers"]) {
+    for (const v of junk) {
+      const c = JSON.parse(JSON.stringify(good)); c[key] = v;
+      const r = G.deserialize(JSON.stringify(c));
+      assert.ok(typeof r.ok === "boolean");
+      if (r.ok) { hrun(r.state, 3); for (const x of r.state.ships) assert.ok(isFinite(x.x)); for (const a of r.state.aliens) assert.ok(isFinite(a.x) && isFinite(a.hp)); }
+    }
+  }
+  const c = JSON.parse(JSON.stringify(good));
+  c.aliens = [null, { id: 1, x: "a", y: 1e9, hp: -5 }, { id: 7, x: 10, y: 10, hp: 999999, maxHp: 50, dmg: -4, tgtKind: "zzz", tgt: 5 }, { id: 7, x: 20, y: 20, hp: 5, maxHp: 5 }];
+  c.events = [{ kind: "meteor" }, { kind: "fog", x: -50, y: 1e9, r: 1e9, age: -3, warn: -4, dur: 1e9, power: -2 }, null, 4];
+  c.shots = [{ side: "x" }, { side: "us", x: 1, y: 1, vx: 1e9, life: 1e9, dmg: 1e9 }, null];
+  c.ships[0].hp = -3; c.ships[1].stun = 1e9; c.ships[1].wo = "attack"; c.ships[1].rep = -4;
+  c.bases[0].hp = "x";
+  const r = G.deserialize(JSON.stringify(c));
+  assert.ok(r.ok, r.error);
+  const o = r.state;
+  assert.strictEqual(o.aliens.length, 2, "the dead-on-arrival and the empty entries are dropped");
+  assert.strictEqual(new Set(o.aliens.map(a => a.id)).size, 2, "ids stay unique");
+  assert.ok(o.alienSeq > Math.max(...o.aliens.map(a => a.id)));
+  assert.ok(o.aliens.every(a => a.hp <= a.maxHp && a.dmg >= 0 && (a.tgtKind === "" || a.tgtKind === "ship" || a.tgtKind === "base")));
+  assert.strictEqual(o.events.length, 1);
+  assert.ok(o.events[0].x === 0 && o.events[0].y === o.h && o.events[0].r <= 600 && o.events[0].age === 0 && o.events[0].dur <= 300);
+  assert.strictEqual(o.shots.length, 1); assert.ok(Math.abs(o.shots[0].vx) <= 2000 && o.shots[0].life <= 10);
+  assert.ok(o.ships[0].dead, "hp <= 0 means lost"); assert.ok(o.ships[1].stun <= 60 && o.ships[1].rep === 0 && o.ships[1].wo === "");
+  assert.strictEqual(o.bases[0].hp, o.bases[0].maxHp);
+  hrun(o, 5);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+console.log("hazards and defense: balance and cost");
+// A simple scripted player: keep every miner mining (ice when it is short, else ore), buy a turret, a shield and
+// one warship in that order when affordable (all in the first minutes of sector 3), park the warship at home, repair what
+// is damaged when it can. Returns the finished state.
+function scripted(seed, secs, defend) {
+  const s = G.newGame(seed, 3);
+  let warId = -1;
+  const pick = (res, ship) => {
+    let best = null, bd = Infinity;
+    for (const b of s.bodies) {
+      if (b.res !== res || b.amount <= 1e-6) continue;
+      const d = Math.hypot(b.x - ship.x, b.y - ship.y);
+      if (d < bd) { bd = d; best = b; }
+    }
+    return best;
+  };
+  const brain = () => {
+    const iceNeed = defend ? 40 * 3 : 0;
+    let n = 0;
+    for (const sh of s.ships) {
+      if (sh.dead || sh.type === "warship") continue;
+      if (sh.st === G.IDLE) {
+        const wantIce = s.stock.ice < iceNeed && n % 2 === 1;
+        const b = (wantIce && pick("ice", sh)) || pick("ore", sh) || pick("ice", sh);
+        if (b) G.orderShip(s, sh.id, b.id);
+      }
+      n++;
+    }
+    if (defend) {
+      if (!s.bases[0].turret) G.buildAddon(s, 0, "turret");
+      else if (!s.bases[0].shield) G.buildAddon(s, 0, "shield");
+      else if (warId < 0) { const r = G.buildShip(s, "warship"); if (r.ok) { warId = r.ship.id; G.orderPatrol(s, warId, s.bases[0].x + 70, s.bases[0].y + 40); } }
+      else if (s.bases[0].hp < s.bases[0].maxHp * 0.6) G.repairBase(s, 0);
+    }
+    for (const sh of s.ships) if (!sh.dead && sh.hp < sh.maxHp * 0.5 && sh.st === G.IDLE) G.repairShip(s, sh.id);
+  };
+  for (let i = 0; i < Math.round(secs * 30); i++) {
+    if (i % 30 === 0) brain();
+    G.step(s, HDT);
+    if (s.over) break;
+  }
+  return s;
+}
+test("balance: a sensible run (auto-mine, turret + shield + one warship) survives 5 minutes of sector 3", () => {
+  for (const seed of [1, 2, 3, 4, 5, 6]) {
+    const s = scripted(seed, 300, true);
+    assert.ok(!s.over && s.bases[0].hp > 0, "seed " + seed + " lost the home base at " + Math.floor(s.time) + " s");
+    assert.ok(s.bases[0].turret && s.bases[0].shield, "seed " + seed + " bought its defenses");
+    assert.ok(s.ships.some(x => x.type === "warship"), "seed " + seed + " bought a warship");
+    assert.ok(s.stats.ore > 100, "and mined");
+  }
+});
+test("balance: aliens are a real threat, an undefended base can fall to a long raid", () => {
+  const s = hgame(2, 3);
+  for (let i = 0; i < 4; i++) alien(s, s.bases[0].x + 200 + i * 10, s.bases[0].y);
+  hrun(s, 120);
+  assert.ok(s.over && s.endReason === "destroyed", "four aliens beat an undefended home base");
+});
+test("losing every miner with no stock for a new one strands the run; with stock it plays on", () => {
+  const s = hgame(26, 3);
+  for (const sh of s.ships) { sh.dead = true; sh.hp = 0; }
+  s.stock.ore = G.shipCost(s, "miner").ore;
+  assert.ok(!G.isStranded(s), "can still buy a miner");
+  s.stock.ore = G.shipCost(s, "miner").ore - 1;
+  assert.ok(G.isStranded(s));
+  hrun(s, 3);
+  assert.ok(s.over && s.endReason === "stranded");
+  const t = hgame(26, 3);
+  t.ships[0].dead = true; t.ships[0].hp = 0; t.stock.ore = 0;
+  assert.ok(!G.isStranded(t), "one miner left");
+});
+test("stress: 30 ships and 15 aliens stay cheap and finite", () => {
+  const s = G.spawnStress(G.newGame(7, 3), 30, 15);
+  assert.strictEqual(s.ships.length, 30); assert.strictEqual(s.aliens.length, 15);
+  assert.ok(s.stress && s.ships.every(x => x.st === G.TO_BODY));
+  assert.deepStrictEqual(G.spawnStress(s, 30, 15).aliens.length, 15, "topping up twice adds none");
+  const t0 = Date.now();
+  for (let i = 0; i < 60 * 60; i++) G.step(s, DT);
+  const ms = Date.now() - t0;
+  assert.ok(ms < 2500, "60 simulated seconds took " + ms + " ms");
+  assert.ok(s.shots.length <= G.TUNING.combat.maxShots);
+  for (const x of s.ships) assert.ok(isFinite(x.x) && isFinite(x.y) && isFinite(x.hp));
+  for (const a of s.aliens) assert.ok(isFinite(a.x) && isFinite(a.y));
+  const only = G.spawnStress(G.newGame(7), 30);
+  assert.strictEqual(only.aliens.length, 0, "the old call has no aliens");
+  const one = G.spawnStress(G.newGame(7), 4, 2);
+  assert.strictEqual(one.aliens.length, 2, "even in sector 1, for ?stress");
+  assert.strictEqual(G.serialize(G.spawnStress(G.newGame(7), 30, 15)), G.serialize(G.spawnStress(G.newGame(7), 30, 15)), "deterministic");
+});
+test("everything main.js takes from FleetGame (G.name) and from the game state still exists", () => {
+  const src = require("fs").readFileSync(__dirname + "/main.js", "utf8");
+  const names = new Set([...src.matchAll(/\bG\.([A-Za-z_]+)/g)].map(m => m[1]));
+  assert.ok(names.size > 40);
+  for (const n of names) assert.ok(n in G, "G." + n);
+  const s = G.newGame(1, 3), fields = new Set([...src.matchAll(/\bgame\.([A-Za-z_]+)/g)].map(m => m[1]));
+  fields.delete("js");
+  for (const f of fields) assert.ok(f in s, "game." + f);
+});
+test("a quiet sector 1 costs nothing extra per step", () => {
+  const s = G.spawnStress(G.newGame(7), 30);
+  const t0 = Date.now();
+  for (let i = 0; i < 60 * 30; i++) G.step(s, DT);
+  assert.ok(Date.now() - t0 < 1000);
+});
+test("warping to the next sector clears events, aliens and shots and keeps lost ships lost", () => {
+  const s = hgame(25, 3);
+  buildGoal(s);
+  alien(s, 100, 100); s.shots.push({ x: 1, y: 1, vx: 1, vy: 1, life: 1, dmg: 1, side: "them" });
+  liveEvent(s, "fog"); s.ships[1].dead = true; s.ships[1].hp = 0; s.ships[0].stun = 3;
+  const w = warship(s); G.orderPatrol(s, w.id, 100, 100);
+  assert.ok(G.warpToNextSector(s).ok);
+  assert.strictEqual(s.sector, 4);
+  assert.strictEqual(s.aliens.length + s.shots.length + s.events.length + s.fx.length, 0);
+  assert.ok(s.ships[1].dead && s.ships[0].stun === 0 && s.ships[w.id].wo === "");
+  assert.ok(s.bases.length === 1 && s.bases[0].hp === s.bases[0].maxHp);
+  assert.strictEqual(s.eventIn, G.TUNING.events.firstDelay);
 });
 
 console.log("\n" + passed + " passed, " + failed + " failed");
