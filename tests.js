@@ -894,6 +894,49 @@ test("stars from different sectors of one run are different stars", () => {
   assert.strictEqual(G.claimStars(p, s), 1);
   assert.strictEqual(p.stars, 2);
 });
+test("a star pays once per save, to whoever took it, not again to another player", () => {
+  const a = G.newProfile(), b = G.newProfile(), s = G.newGame(2);
+  s.stars[0].taken = true; s.stars[1].taken = true;
+  assert.strictEqual(G.claimStars(a, s), 2);
+  assert.strictEqual(G.claimStars(b, s), 0, "same state object, other player");
+  const t = G.deserialize(G.serialize(s)).state;     // saved and loaded by the other player
+  G.syncClaimed(t, b);
+  assert.strictEqual(G.claimStars(b, t), 0, "after serialize/deserialize");
+  assert.strictEqual(b.stars, 0);
+  t.stars[2].taken = true;
+  assert.strictEqual(G.claimStars(b, t), 1, "a new star pays the current player");
+  assert.strictEqual(G.claimStars(a, t), 0, "and not the first player afterwards");
+  assert.strictEqual(b.stars, 1);
+  assert.strictEqual(a.stars, 2);
+});
+test("a save without the paid-stars field still loads and does not pay its taken stars again", () => {
+  const s = G.newGame(2); s.stars[0].taken = true;
+  const raw = JSON.parse(G.serialize(s)); delete raw.starsPaid;
+  const r = G.deserialize(JSON.stringify(raw));
+  assert.ok(r.ok);
+  assert.strictEqual(r.state.stars[0].taken, true);
+  const p = G.newProfile();
+  assert.strictEqual(G.claimStars(p, r.state), 0, "already paid under the old rules");
+  r.state.stars[1].taken = true;
+  assert.strictEqual(G.claimStars(p, r.state), 1);
+  const bad = JSON.parse(G.serialize(s)); bad.starsPaid = "x";
+  assert.ok(G.deserialize(JSON.stringify(bad)).ok, "a damaged field falls back, not fails");
+});
+test("player names and ids that are reserved words survive a reload", () => {
+  const r = G.newRoster("2026-11-07T10:00:00.000Z");
+  assert.ok(G.addPlayer(r, "constructor", "2026-11-07T10:00:00.000Z").ok);
+  assert.ok(G.addPlayer(r, "__proto__", "2026-11-07T10:00:00.000Z").ok);
+  assert.ok(G.addPlayer(r, "hasOwnProperty", "2026-11-07T10:00:00.000Z").ok);
+  const back = G.parseRoster(G.serializeRoster(r), null, "2026-11-07T10:00:00.000Z");
+  assert.ok(back.ok);
+  assert.deepStrictEqual(back.roster.players.map(p => p.name), ["Player 1", "constructor", "__proto__", "hasOwnProperty"]);
+  for (const bad of ["__proto__", "constructor", "hasOwnProperty", "toString"]) {
+    const raw = JSON.parse(G.serializeRoster(r)); raw.current = bad;
+    const q = G.parseRoster(JSON.stringify(raw), null, "2026-11-07T10:00:00.000Z");
+    assert.ok(q.ok);
+    assert.strictEqual(q.roster.current, q.roster.players[0].id, "current " + bad + " falls back to the first player");
+  }
+});
 test("buying needs stars, charges once, and unlocks the item", () => {
   const p = G.newProfile();
   const item = G.LOOKS.ship[1];
@@ -1066,6 +1109,425 @@ test("stepping 30 ships through storms and showers is cheap too", () => {
 test("main.js writes no damaged-save backup in stress mode", () => {
   const src = require("fs").readFileSync(__dirname + "/main.js", "utf8");
   assert.ok(/function addBackup\(from, text\) \{\s*if \(STRESS\) return;/.test(src));
+});
+
+console.log("scoreboard, stats and purchase logs");
+const NOW = "2026-11-07T10:00:00.000Z";
+function mkRun(over) {
+  return Object.assign({ key: "1:p1", player: "p1", at: NOW, score: 100, parts: { mat: 100, bases: 0, sectors: 0, time: 0 },
+    sector: 1, cleared: 0, delivered: { ore: 10, ice: 0, crystal: 0 }, ships: 0, bases: 0, stars: 0, secs: 60, result: "retired" }, over || {});
+}
+function mkBuy(over) { return Object.assign({ player: "p1", at: NOW, kind: "ship", item: "crimson", name: "Crimson", cost: 2, left: 1 }, over || {}); }
+const GARBAGE = [null, undefined, "", "   ", "{", "null", "[]", "42", "\"x\"", "{}", "true", 42, {}, [], "{\"players\":5}", "{\"runs\":{}}", "{\"buys\":\"no\"}",
+  JSON.stringify({ runs: [null, 1, "x", [], {}, { key: 5 }] }), JSON.stringify({ players: [null, 1, {}, { id: 5 }] })];
+
+test("tuning has the log limits", () => {
+  assert.deepStrictEqual(G.TUNING.logs, { runs: 500, buys: 500, players: 50, nameMax: 24, minSecs: 5 });
+});
+test("delivered counts units by type, including the warp hand-in, and survives a save", () => {
+  const s = G.newGame(3);
+  assert.deepStrictEqual(s.delivered, { ore: 0, ice: 0, crystal: 0 });
+  assert.deepStrictEqual(Object.keys(s).slice(-2), ["delivered", "starsPaid"], "delivered then starsPaid, added last in blankState");
+  s.ships[0].res = "ice"; s.ships[0].cargo = 7;
+  s.ships[1].res = "crystal"; s.ships[1].cargo = 3;
+  buildGoal(s);
+  G.warpToNextSector(s);
+  assert.strictEqual(s.delivered.ice, 7);
+  assert.strictEqual(s.delivered.crystal, 3);
+  assert.strictEqual(s.delivered.ore, 0);
+  const r = G.deserialize(G.serialize(s));
+  assert.ok(r.ok);
+  assert.deepStrictEqual(r.state.delivered, s.delivered);
+  assert.strictEqual(G.VERSION, 2);
+});
+test("mining and unloading adds to delivered", () => {
+  const s = G.newGame(5);
+  G.orderShip(s, 0, nearBody(s).id);
+  run(s, 90);
+  assert.ok(s.delivered.ore > 0);
+  assert.ok(Math.abs(s.delivered.ore - s.score.mat) < 1e-6, "ore only: units equal material points");
+});
+test("a save without delivered loads with zeros, and a bad value is clamped", () => {
+  const o = JSON.parse(G.serialize(G.newGame(9)));
+  delete o.delivered;
+  let r = G.deserialize(JSON.stringify(o));
+  assert.ok(r.ok);
+  assert.deepStrictEqual(r.state.delivered, { ore: 0, ice: 0, crystal: 0 });
+  o.delivered = { ore: "x", ice: -5, crystal: 4 };
+  r = G.deserialize(JSON.stringify(o));
+  assert.deepStrictEqual(r.state.delivered, { ore: 0, ice: 0, crystal: 4 });
+  o.delivered = 7;
+  assert.ok(G.deserialize(JSON.stringify(o)).ok);
+});
+
+test("a new roster has Player 1 with a fresh profile", () => {
+  const r = G.newRoster(NOW);
+  assert.strictEqual(r.players.length, 1);
+  assert.strictEqual(r.current, "p1");
+  assert.strictEqual(r.next, 2);
+  assert.strictEqual(r.players[0].name, "Player 1");
+  assert.strictEqual(r.players[0].created, NOW);
+  assert.deepStrictEqual(r.players[0].profile, G.newProfile());
+});
+test("roster round trip", () => {
+  const r = G.newRoster(NOW);
+  G.addPlayer(r, "Ann", NOW); G.choosePlayer(r, "p2");
+  r.players[1].profile.stars = 3; r.players[1].profile.best = 77;
+  G.buyLook(r.players[1].profile, "ship", "crimson");
+  const p = G.parseRoster(G.serializeRoster(r), null, NOW);
+  assert.ok(p.ok && !p.migrated);
+  assert.deepStrictEqual(p.roster, r);
+});
+test("empty roster text migrates the legacy bank once", () => {
+  const bank = G.newProfile(); bank.stars = 6; bank.best = 900; G.buyLook(bank, "ship", "crimson");
+  const text = G.serializeProfile(bank);
+  for (const empty of [null, undefined, ""]) {
+    const p = G.parseRoster(empty, text, NOW);
+    assert.ok(p.ok && p.migrated);
+    assert.deepStrictEqual(p.roster.players[0].profile, G.parseProfile(text).profile);
+    assert.strictEqual(p.roster.players[0].profile.best, 900);
+  }
+  const again = G.parseRoster(G.serializeRoster(G.parseRoster(null, text, NOW).roster), text, NOW);
+  assert.ok(again.ok && !again.migrated, "an existing roster is not migrated again");
+  const none = G.parseRoster(null, null, NOW);
+  assert.ok(none.ok && !none.migrated);
+  assert.ok(!G.parseRoster(null, "{broken", NOW).migrated, "a damaged bank is not migrated");
+  assert.ok(!G.parseRoster(null, "   ", NOW).migrated);
+});
+test("a damaged roster gives ok false, a fresh roster, and no re-migration", () => {
+  const bank = G.serializeProfile(Object.assign(G.newProfile(), { stars: 9 }));
+  for (const t of ["{oops", "[]", "{\"players\":[]}", "{\"players\":[1,null,{}]}", "\"x\"", 12]) {
+    const p = G.parseRoster(t, bank, NOW);
+    assert.strictEqual(p.ok, false, String(t));
+    assert.ok(p.error);
+    assert.strictEqual(p.migrated, false);
+    assert.strictEqual(p.roster.players.length, 1);
+    assert.strictEqual(p.roster.players[0].profile.stars, 0);
+  }
+});
+test("parseRoster rebuilds players field by field", () => {
+  const raw = { ver: 1, current: "zz", next: "x", players: [
+    null, { id: 3 }, { id: "p4", name: "  Bo\u0000b\n ", created: 5, profile: { stars: "9", best: 12, owned: { ship: ["crimson", "nope"] }, pick: { ship: "crimson" }, junk: 1 }, extra: 1 },
+    { id: "p4", name: "dup id" }, { id: "p7", name: "bob" }, { id: "p8", name: "x".repeat(60) }, { id: "p9" }] };
+  const p = G.parseRoster(JSON.stringify(raw), null, NOW);
+  assert.ok(p.ok);
+  const r = p.roster;
+  assert.deepStrictEqual(r.players.map(x => x.id), ["p4", "p7", "p8", "p9"]);
+  assert.strictEqual(r.players[0].name, "Bo b");
+  assert.strictEqual(r.players[0].created, "");
+  assert.strictEqual(r.players[0].extra, undefined);
+  assert.strictEqual(r.players[0].profile.stars, 0);
+  assert.strictEqual(r.players[0].profile.best, 12);
+  assert.deepStrictEqual(r.players[0].profile.owned.ship, ["classic", "crimson"]);
+  assert.strictEqual(r.players[0].profile.pick.ship, "crimson");
+  assert.notStrictEqual(r.players[1].name.toLowerCase(), r.players[0].name.toLowerCase(), "duplicate names are made unique");
+  assert.strictEqual(r.players[2].name.length, G.TUNING.logs.nameMax);
+  assert.strictEqual(r.players[3].name, "Player 9");
+  assert.strictEqual(r.current, "p4", "unknown current falls back to the first player");
+  assert.strictEqual(r.next, 10);
+  assert.strictEqual(Object.keys(r.players[0]).join(), "id,name,created,profile");
+});
+test("parseRoster keeps at most 50 players", () => {
+  const players = []; for (let i = 1; i <= 80; i++) players.push({ id: "p" + i, name: "N" + i });
+  const p = G.parseRoster(JSON.stringify({ ver: 1, current: "p2", next: 81, players }), null, NOW);
+  assert.ok(p.ok);
+  assert.strictEqual(p.roster.players.length, 50);
+  assert.strictEqual(p.roster.current, "p2");
+});
+test("currentPlayer is always valid", () => {
+  const r = G.newRoster(NOW);
+  r.current = "gone";
+  assert.strictEqual(G.currentPlayer(r).id, "p1");
+  assert.strictEqual(r.current, "p1");
+  r.players = [];
+  assert.ok(G.currentPlayer(r).profile);
+});
+test("addPlayer: trims, checks length, unique ignoring case, max players, does not switch", () => {
+  const r = G.newRoster(NOW);
+  const a = G.addPlayer(r, "  Ann  ", NOW);
+  assert.ok(a.ok);
+  assert.strictEqual(a.player.name, "Ann");
+  assert.strictEqual(a.player.id, "p2");
+  assert.strictEqual(a.player.created, NOW);
+  assert.strictEqual(r.current, "p1");
+  assert.strictEqual(r.next, 3);
+  for (const bad of ["", "   ", "ANN", "player 1", "x".repeat(25), null, 5, undefined, "\u0001\u0002"]) {
+    const x = G.addPlayer(r, bad, NOW);
+    assert.strictEqual(x.ok, false, String(bad));
+    assert.ok(x.reason);
+  }
+  assert.ok(G.addPlayer(r, "x".repeat(24), NOW).ok);
+  assert.strictEqual(G.addPlayer(r, "a\u0000b", NOW).player.name, "a b");
+  while (r.players.length < 50) assert.ok(G.addPlayer(r, "P" + r.players.length + "x", NOW).ok);
+  const full = G.addPlayer(r, "One more", NOW);
+  assert.strictEqual(full.ok, false);
+  assert.strictEqual(r.players.length, 50);
+  assert.strictEqual(new Set(r.players.map(p => p.id)).size, 50);
+});
+test("renamePlayer and choosePlayer", () => {
+  const r = G.newRoster(NOW);
+  G.addPlayer(r, "Ann", NOW);
+  assert.ok(G.renamePlayer(r, "p1", "PLAYER 1").ok, "own name may change case");
+  assert.strictEqual(r.players[0].name, "PLAYER 1");
+  assert.strictEqual(G.renamePlayer(r, "p1", "ann").ok, false);
+  assert.strictEqual(G.renamePlayer(r, "p1", "").ok, false);
+  assert.strictEqual(G.renamePlayer(r, "p1", "y".repeat(25)).ok, false);
+  assert.strictEqual(G.renamePlayer(r, "nope", "Zed").ok, false);
+  assert.strictEqual(r.players[0].name, "PLAYER 1");
+  assert.ok(G.choosePlayer(r, "p2").ok);
+  assert.strictEqual(G.currentPlayer(r).name, "Ann");
+  const bad = G.choosePlayer(r, "nope");
+  assert.strictEqual(bad.ok, false);
+  assert.ok(bad.reason);
+  assert.strictEqual(r.current, "p2");
+});
+
+test("run and purchase logs start empty and round trip", () => {
+  const rl = G.newRunLog(); G.addRun(rl, mkRun());
+  const p = G.parseRunLog(G.serializeRunLog(rl));
+  assert.ok(p.ok); assert.strictEqual(p.dropped, 0);
+  assert.deepStrictEqual(p.log, rl);
+  const bl = G.newBuyLog(); G.addBuy(bl, mkBuy());
+  const q = G.parseBuyLog(G.serializeBuyLog(bl));
+  assert.ok(q.ok); assert.strictEqual(q.dropped, 0);
+  assert.deepStrictEqual(q.log, bl);
+  for (const e of [null, undefined, "", "  "]) {
+    assert.deepStrictEqual(G.parseRunLog(e), { ok: true, log: { ver: 1, runs: [] }, dropped: 0 });
+    assert.deepStrictEqual(G.parseBuyLog(e), { ok: true, log: { ver: 1, buys: [] }, dropped: 0 });
+  }
+});
+test("parsers never throw and give ok false with an empty log for bad shapes", () => {
+  for (const g of GARBAGE) {
+    const a = G.parseRunLog(g), b = G.parseBuyLog(g), c = G.parseRoster(g, g, NOW);
+    assert.ok(Array.isArray(a.log.runs) && Array.isArray(b.log.buys) && c.roster.players.length >= 1);
+    if (!a.ok) { assert.ok(a.error); assert.strictEqual(a.log.runs.length, 0); }
+    if (!b.ok) { assert.ok(b.error); assert.strictEqual(b.log.buys.length, 0); }
+  }
+  for (const t of ["{", "[]", "42", "{\"runs\":{}}", 7]) {
+    assert.strictEqual(G.parseRunLog(t).ok, false);
+    assert.strictEqual(G.parseBuyLog(t).ok, false);
+  }
+});
+test("parseRunLog drops bad entries one by one and rebuilds the good ones", () => {
+  const good = mkRun({ key: "2:p1", score: 55.9, junk: 1, delivered: { ore: 3, ice: "x", crystal: -2 }, parts: { mat: 5, aliens: 20, bad: "x", nan: null } });
+  const txt = JSON.stringify({ ver: 1, runs: [null, 5, "s", good, mkRun({ key: "" }), mkRun({ result: "Retired" }), mkRun({ result: "x".repeat(17) }),
+    mkRun({ score: "5" }), mkRun({ player: 3 }), mkRun({ key: "3:p1" })] });
+  const p = G.parseRunLog(txt);
+  assert.ok(p.ok);
+  assert.strictEqual(p.dropped, 8);
+  assert.strictEqual(p.log.runs.length, 2);
+  const r = p.log.runs[0];
+  assert.strictEqual(r.junk, undefined);
+  assert.strictEqual(r.score, 55);
+  assert.deepStrictEqual(r.delivered, { ore: 3, ice: 0, crystal: 0 });
+  assert.deepStrictEqual(r.parts, { mat: 5, aliens: 20 });
+  assert.strictEqual(Object.keys(r).join(), "key,player,at,score,parts,sector,cleared,delivered,ships,bases,stars,secs,result");
+});
+test("parseRunLog collapses a repeated key and keeps the newest 500", () => {
+  const runs = []; for (let i = 0; i < 700; i++) runs.push(mkRun({ key: i + ":p1", score: i }));
+  const p = G.parseRunLog(JSON.stringify({ runs }));
+  assert.strictEqual(p.log.runs.length, 500);
+  assert.strictEqual(p.log.runs[0].key, "200:p1");
+  assert.strictEqual(p.log.runs[499].key, "699:p1");
+  assert.strictEqual(p.dropped, 200);
+  const d = G.parseRunLog(JSON.stringify({ runs: [mkRun({ score: 1 }), mkRun({ key: "k", score: 2 }), mkRun({ score: 3 })] }));
+  assert.deepStrictEqual(d.log.runs.map(r => r.score), [3, 2]);
+});
+test("parseBuyLog drops bad entries and keeps the newest 500", () => {
+  const p = G.parseBuyLog(JSON.stringify({ buys: [mkBuy(), null, mkBuy({ kind: "nope" }), mkBuy({ item: 4 }), mkBuy({ cost: "2" }), mkBuy({ player: "" }), mkBuy({ junk: 1, name: 5 })] }));
+  assert.ok(p.ok);
+  assert.strictEqual(p.dropped, 5);
+  assert.strictEqual(p.log.buys.length, 2);
+  assert.strictEqual(p.log.buys[1].name, "crimson", "a missing name falls back to the item id");
+  assert.strictEqual(p.log.buys[1].junk, undefined);
+  const buys = []; for (let i = 0; i < 900; i++) buys.push(mkBuy({ left: i }));
+  const q = G.parseBuyLog(JSON.stringify({ buys }));
+  assert.strictEqual(q.log.buys.length, 500);
+  assert.strictEqual(q.log.buys[0].left, 400);
+});
+test("huge arrays parse without throwing", () => {
+  const runs = new Array(200000).fill(5);
+  const p = G.parseRunLog(JSON.stringify({ runs }));
+  assert.ok(p.ok); assert.strictEqual(p.log.runs.length, 0); assert.strictEqual(p.dropped, 200000);
+  const r = G.parseRoster(JSON.stringify({ players: new Array(100000).fill(null) }), null, NOW);
+  assert.strictEqual(r.ok, false);
+});
+
+test("shouldLogRun: not for stress, not for a blink-and-gone empty run", () => {
+  const s = G.newGame(1);
+  assert.strictEqual(G.shouldLogRun(s), false, "0 s and 0 points");
+  s.time = 4.9;
+  assert.strictEqual(G.shouldLogRun(s), false);
+  s.time = 5;
+  assert.strictEqual(G.shouldLogRun(s), true);
+  s.time = 1; s.score.mat = 3;
+  assert.strictEqual(G.shouldLogRun(s), true, "points count even in a short run");
+  s.stress = true; s.time = 600;
+  assert.strictEqual(G.shouldLogRun(s), false);
+  assert.strictEqual(G.shouldLogRun(G.spawnStress(G.newGame(2), 12)), false);
+});
+test("runRecord copies the state and is pure", () => {
+  const s = G.newGame(11);
+  G.addShip(s, "miner"); G.addShip(s, "hauler");
+  s.time = 125.9; s.sector = 3; s.cleared = 2; s.starsGot = 4;
+  s.score = { mat: 250.5, bases: 300, sectors: 800, time: 40, aliens: 60 };
+  s.score.bad = NaN; s.score.nope = "x";
+  s.delivered = { ore: 100.4, ice: 20, crystal: 3 };
+  const before = G.serialize(s);
+  const r = G.runRecord(s, "p3", "stranded", NOW);
+  assert.strictEqual(G.serialize(s), before, "state untouched");
+  assert.strictEqual(r.key, "11:p3");
+  assert.strictEqual(r.player, "p3");
+  assert.strictEqual(r.at, NOW);
+  assert.strictEqual(r.score, G.scoreTotal(s));
+  assert.deepStrictEqual(r.parts, { mat: 250.5, bases: 300, sectors: 800, time: 40, aliens: 60 });
+  assert.strictEqual(r.sector, 3); assert.strictEqual(r.cleared, 2);
+  assert.deepStrictEqual(r.delivered, { ore: 100, ice: 20, crystal: 3 });
+  assert.strictEqual(r.ships, 2); assert.strictEqual(r.bases, 3);
+  assert.strictEqual(r.stars, 4); assert.strictEqual(r.secs, 125);
+  assert.strictEqual(r.result, "stranded");
+  assert.strictEqual(G.runRecord(G.newGame(1), "p1", "destroyed", NOW).result, "destroyed");
+  assert.strictEqual(G.runRecord(G.newGame(1), "p1", "", NOW).ships, 0);
+  assert.ok(/^[a-z]{1,16}$/.test(G.runRecord(G.newGame(1), "p1", "Bad Word 9!!", NOW).result));
+  assert.ok(/^[a-z]{1,16}$/.test(G.runRecord(G.newGame(1), "p1", null, NOW).result));
+  const log = G.addRun(G.newRunLog(), r);
+  assert.ok(G.parseRunLog(G.serializeRunLog(log)).log.runs[0].parts.aliens === 60, "extra parts survive a reload");
+});
+test("addRun replaces the same key in place, appends otherwise, trims the oldest", () => {
+  const log = G.newRunLog();
+  G.addRun(log, mkRun({ key: "a:p1", score: 1 }));
+  G.addRun(log, mkRun({ key: "b:p1", score: 2 }));
+  assert.strictEqual(G.addRun(log, mkRun({ key: "a:p1", score: 9 })), log);
+  assert.deepStrictEqual(log.runs.map(r => r.key + "=" + r.score), ["a:p1=9", "b:p1=2"]);
+  G.addRun(log, mkRun({ key: "a:p2", score: 4 }));
+  assert.strictEqual(log.runs.length, 3, "same seed, other player is a different run");
+  for (let i = 0; i < 600; i++) G.addRun(log, mkRun({ key: "n" + i + ":p1" }));
+  assert.strictEqual(log.runs.length, 500);
+  assert.strictEqual(log.runs[499].key, "n599:p1");
+  assert.strictEqual(log.runs[0].key, "n100:p1");
+});
+test("buyRecord takes the name from the hangar and addBuy caps at 500", () => {
+  const b = G.buyRecord("p2", "bg", "aurora", 4, 1, NOW);
+  assert.deepStrictEqual(b, { player: "p2", at: NOW, kind: "bg", item: "aurora", name: "Aurora", cost: 4, left: 1 });
+  assert.strictEqual(G.buyRecord("p2", "nope", "x", 1, 0, NOW).name, "x");
+  const log = G.newBuyLog();
+  for (let i = 0; i < 520; i++) G.addBuy(log, mkBuy({ left: i }));
+  assert.strictEqual(log.buys.length, 500);
+  assert.strictEqual(log.buys[0].left, 20);
+  assert.strictEqual(log.buys[499].left, 519);
+});
+test("playerRuns and playerBuys are newest first and per player", () => {
+  const rl = G.newRunLog(), bl = G.newBuyLog();
+  G.addRun(rl, mkRun({ key: "1:p1", score: 1 })); G.addRun(rl, mkRun({ key: "1:p2", player: "p2", score: 2 })); G.addRun(rl, mkRun({ key: "2:p1", score: 3 }));
+  assert.deepStrictEqual(G.playerRuns(rl, "p1").map(r => r.score), [3, 1]);
+  assert.deepStrictEqual(G.playerRuns(rl, "zz"), []);
+  G.addBuy(bl, mkBuy({ left: 5 })); G.addBuy(bl, mkBuy({ player: "p2", left: 6 })); G.addBuy(bl, mkBuy({ left: 7 }));
+  assert.deepStrictEqual(G.playerBuys(bl, "p1").map(b => b.left), [7, 5]);
+  assert.strictEqual(rl.runs.length, 3, "the log itself is not reordered");
+});
+
+function scoreFixture() {
+  const r = G.newRoster(NOW);
+  G.addPlayer(r, "Ann", NOW); G.addPlayer(r, "Cy", NOW);
+  const rl = G.newRunLog();
+  G.addRun(rl, mkRun({ key: "1:p1", score: 500, sector: 2, stars: 1, secs: 100, delivered: { ore: 10, ice: 5, crystal: 1 } }));
+  G.addRun(rl, mkRun({ key: "2:p1", score: 300, sector: 4, stars: 2, secs: 50, delivered: { ore: 1, ice: 1, crystal: 1 } }));
+  G.addRun(rl, mkRun({ key: "1:p2", player: "p2", score: 500, sector: 1, stars: 0, secs: 10, delivered: { ore: 20, ice: 0, crystal: 0 } }));
+  r.players[2].profile.best = 800; r.players[2].profile.stars = 4;
+  return { r, rl };
+}
+test("playerTotals gives one row per player, with best from the profile or the log", () => {
+  const { r, rl } = scoreFixture();
+  const rows = G.playerTotals(r, rl);
+  assert.deepStrictEqual(rows.map(x => x.id), ["p1", "p2", "p3"]);
+  assert.deepStrictEqual(rows[0], { id: "p1", name: "Player 1", best: 500, runs: 2, bestSector: 4,
+    delivered: { ore: 11, ice: 6, crystal: 2, all: 19 }, stars: 3, bank: 0, secs: 150 });
+  assert.strictEqual(rows[1].best, 500);
+  assert.strictEqual(rows[2].best, 800, "profile best with no logged run");
+  assert.strictEqual(rows[2].runs, 0);
+  assert.strictEqual(rows[2].bank, 4);
+  r.players[0].profile.best = 9999;
+  assert.strictEqual(G.playerTotals(r, rl)[0].best, 9999);
+});
+test("rankPlayers sorts by column and direction with tie-breaks, on a copy", () => {
+  const { r, rl } = scoreFixture();
+  const rows = G.playerTotals(r, rl), copy = rows.slice();
+  assert.deepStrictEqual(G.rankPlayers(rows, "best", "desc").map(x => x.id), ["p3", "p2", "p1"], "tie 500 goes to the name Ann first");
+  assert.deepStrictEqual(rows, copy);
+  assert.notStrictEqual(G.rankPlayers(rows, "best", "desc"), rows);
+  assert.deepStrictEqual(G.rankPlayers(rows, "name", "asc").map(x => x.name), ["Ann", "Cy", "Player 1"]);
+  assert.deepStrictEqual(G.rankPlayers(rows, "name", "desc").map(x => x.name), ["Player 1", "Cy", "Ann"]);
+  assert.deepStrictEqual(G.rankPlayers(rows, "runs", "desc").map(x => x.id), ["p1", "p2", "p3"]);
+  assert.deepStrictEqual(G.rankPlayers(rows, "runs", "asc").map(x => x.id), ["p3", "p2", "p1"]);
+  assert.deepStrictEqual(G.rankPlayers(rows, "bestSector", "desc").map(x => x.id), ["p1", "p2", "p3"]);
+  assert.deepStrictEqual(G.rankPlayers(rows, "delivered", "desc").map(x => x.id), ["p2", "p1", "p3"]);
+  assert.deepStrictEqual(G.rankPlayers(rows, "stars", "asc").map(x => x.id), ["p3", "p2", "p1"]);
+  assert.deepStrictEqual(G.rankPlayers(rows, "nonsense", "desc").map(x => x.id), ["p3", "p2", "p1"], "unknown column ranks by best");
+});
+test("rank ties: equal on the column go to best desc, then name", () => {
+  const rows = [
+    { id: "a", name: "Zed", best: 10, runs: 1, bestSector: 1, delivered: { all: 5 }, stars: 0 },
+    { id: "b", name: "amy", best: 10, runs: 1, bestSector: 1, delivered: { all: 5 }, stars: 0 },
+    { id: "c", name: "Bob", best: 99, runs: 1, bestSector: 1, delivered: { all: 5 }, stars: 0 }];
+  assert.deepStrictEqual(G.rankPlayers(rows, "runs", "asc").map(x => x.id), ["c", "b", "a"]);
+  assert.deepStrictEqual(G.rankPlayers(rows, "runs", "desc").map(x => x.id), ["c", "b", "a"]);
+  assert.deepStrictEqual(G.rankPlayers(rows, "best", "asc").map(x => x.id), ["b", "a", "c"]);
+});
+test("topRuns: by score, earlier first on a tie, default 10", () => {
+  const log = G.newRunLog();
+  for (let i = 0; i < 15; i++) G.addRun(log, mkRun({ key: i + ":p1", score: i * 10, at: "2026-01-" + String(10 + i) }));
+  G.addRun(log, mkRun({ key: "t1:p1", score: 140, at: "2026-02-01" }));
+  G.addRun(log, mkRun({ key: "t0:p1", score: 140, at: "2026-01-05" }));
+  const top = G.topRuns(log);
+  assert.strictEqual(top.length, 10);
+  assert.deepStrictEqual(top.slice(0, 3).map(r => r.key), ["t0:p1", "14:p1", "t1:p1"]);
+  assert.strictEqual(G.topRuns(log, 3).length, 3);
+  assert.strictEqual(G.topRuns(log, 0).length, 0);
+  assert.strictEqual(log.runs.length, 17, "log not reordered");
+});
+test("clearPlayerData removes runs, purchases and best, keeps the rest", () => {
+  const { r, rl } = scoreFixture();
+  const bl = G.newBuyLog();
+  G.addBuy(bl, mkBuy()); G.addBuy(bl, mkBuy({ player: "p2" })); G.addBuy(bl, mkBuy({ left: 0 }));
+  const p = r.players[0].profile;
+  p.stars = 5; p.best = 700; G.buyLook(p, "base", "amber"); G.chooseLook(p, "base", "amber"); p.claimed.push("1:1:0");
+  const res = G.clearPlayerData(r, rl, bl, "p1");
+  assert.deepStrictEqual(res, { ok: true, runs: 2, buys: 2 });
+  assert.deepStrictEqual(rl.runs.map(x => x.player), ["p2"]);
+  assert.deepStrictEqual(bl.buys.map(x => x.player), ["p2"]);
+  assert.strictEqual(p.best, 0);
+  assert.strictEqual(p.stars, 3);
+  assert.deepStrictEqual(p.owned.base, ["teal", "amber"]);
+  assert.strictEqual(p.pick.base, "amber");
+  assert.deepStrictEqual(p.claimed, ["1:1:0"]);
+  assert.strictEqual(r.players.length, 3);
+  assert.strictEqual(r.players[0].name, "Player 1");
+  assert.strictEqual(G.playerTotals(r, rl)[0].best, 0);
+  assert.deepStrictEqual(G.clearPlayerData(r, rl, bl, "p1"), { ok: true, runs: 0, buys: 0 });
+  const no = G.clearPlayerData(r, rl, bl, "zz");
+  assert.strictEqual(no.ok, false); assert.ok(no.reason);
+  assert.strictEqual(rl.runs.length, 1);
+});
+test("exportLogs has the documented shape", () => {
+  const { r, rl } = scoreFixture();
+  const bl = G.newBuyLog(); G.addBuy(bl, mkBuy());
+  const text = G.exportLogs(r, rl, bl, "2026-11-08T00:00:00.000Z");
+  assert.strictEqual(typeof text, "string");
+  const o = JSON.parse(text);
+  assert.deepStrictEqual(Object.keys(o), ["app", "kind", "ver", "exported", "players", "runs", "purchases"]);
+  assert.strictEqual(o.app, "fleet"); assert.strictEqual(o.kind, "fleet-logs"); assert.strictEqual(o.ver, 1);
+  assert.strictEqual(o.exported, "2026-11-08T00:00:00.000Z");
+  assert.deepStrictEqual(o.players[2], { id: "p3", name: "Cy", created: NOW, best: 800, bank: 4 });
+  assert.deepStrictEqual(o.players[0], { id: "p1", name: "Player 1", created: NOW, best: 500, bank: 0 });
+  assert.strictEqual(o.players.length, 3);
+  assert.deepStrictEqual(o.runs, rl.runs);
+  assert.deepStrictEqual(o.purchases, bl.buys);
+});
+test("the new log code uses no DOM, Date, localStorage or Math.random", () => {
+  const src = require("fs").readFileSync(__dirname + "/game.js", "utf8");
+  const i = src.indexOf("players, run log, purchase log");
+  const part = src.slice(i, src.indexOf("return {", i));
+  assert.ok(i > 0 && !/document|window|localStorage|Date|Math\.random/.test(part));
 });
 
 // ---------------------------------------------------------------- feedback form

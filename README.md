@@ -25,7 +25,7 @@ Plain HTML, Canvas and JavaScript. No installs, no build step. The only network 
    localStorage under `fleet-game-damaged-saves-v2`). Esc cancels a selection or placement.
 7. Frame-rate test: open `index.html?stress` for 30 ships mining at once. The corner shows fps.
    `?stress&sector=4` starts in sector 4 so storms (and, from sector 3, meteor showers) are on screen.
-   Stress mode never writes to the save or the star bank.
+   Stress mode never writes to the save, the players, or the logs.
 
 ## Sectors, score and the end of a run
 
@@ -47,12 +47,39 @@ Plain HTML, Canvas and JavaScript. No installs, no build step. The only network 
 ## Stars and the Hangar
 
 - 3 to 6 stars sit in each sector, away from home. Send a ship to one to pick it up; it goes into the star
-  bank, which is kept between games (localStorage key `fleet-game-bank-v1`, separate from the saves). A star
-  pays once, even if you reload an older save.
+  bank, which is kept between games per player (localStorage key `fleet-game-players-v1`, separate from the saves). Each star
+  pays once per save: the save records which stars were paid (`state.starsPaid`), and the star pays whoever is
+  playing when it is taken. Another player loading that save is not paid again, and you are not paid again for reloading an older save.
 - The Hangar (top bar, and the run-end screen) spends stars on looks only, never power: 5 ship colours,
   5 base colours, 4 map backgrounds and 3 engine-trail styles (the first of each is free). Your choices are
   kept and used in every game. Prices are small (2 to 8 stars), so a few runs unlock most things.
-- The bank also holds your best score.
+- Each player's bank also holds their best score.
+
+## Players, scoreboard, stats and history
+
+- **Players:** the top-bar player button (shows the current name) opens the Players dialog: Play (switch),
+  Rename, Stats, Clear data (asks first), and Add player. Each player has their own stars, looks and best
+  score. Names are 1 to 24 characters, unique ignoring case. Switching mid-run asks first, logs that run
+  as "abandoned" and starts a new run for the new player. The first launch after this update moves your
+  old best score and stars into "Player 1" and says so. Clearing a player's data removes their runs,
+  purchases and best score; their name, stars and owned looks stay.
+- **Scores:** the Scores button (top bar and run-end card) shows every player: best, runs, best sector,
+  delivered and stars. Click a heading to sort and again to flip; your row is highlighted. Below it are the
+  top 10 runs. Click a player for their stats.
+- **Stats:** per player, a totals row, every logged run (newest first: date, score, sector, ore, ice and
+  crystal delivered, ships, bases, stars, time, result) and their hangar purchases.
+- **History:** the Hangar lists the current player's newest 20 purchases.
+- **What is logged:** a run is logged when it ends (stranded or retired) or is abandoned (New game, or
+  switching player). Runs under 5 seconds with no score are skipped. Loading a save never logs by itself;
+  ending a reloaded run again replaces its record. Logs keep the last 500 runs and 500 purchases.
+- **Export:** the Export logs button on the Scores dialog downloads `fleet-game-logs-YYYY-MM-DD.json`
+  (players, runs, purchases). It is made in the page; nothing is sent anywhere.
+- **Storage (localStorage):** `fleet-game-players-v1` (players and their banks), `fleet-game-runs-v1`,
+  `fleet-game-purchases-v1`. The old `fleet-game-bank-v1` is only read once for the move to Player 1 and is
+  never written again. A damaged players, runs or purchases entry is copied to the damaged-saves list, a
+  notice is shown, and play carries on with a fresh one. If storage is full you get a notice and the game
+  keeps running. `?stress` writes none of this.
+- Dialogs pause the game like the Hangar; Esc closes the top one.
 
 ## Feedback form
 
@@ -89,7 +116,7 @@ made from its seed.
   bank and hangar unlocks, costs, mining, cargo, save format). No DOM; works in the browser as
   `FleetGame` and in Node via `module.exports`. Every number you might tune is in the `TUNING` table at
   the top, and the hangar items are in `LOOKS`.
-- `main.js`: drawing, input, panels, the Hangar and Feedback screens, and the loop (fixed 30 Hz update, drawn on
+- `main.js`: drawing, input, panels, the Hangar, Players, Scores, Stats and Feedback screens, and the loop (fixed 30 Hz update, drawn on
   requestAnimationFrame).
 - `index.html`, `style.css`: page and layout.
 - `tests.js`: tests for `game.js` (including the feedback payload, replies and saved list).
