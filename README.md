@@ -4,7 +4,7 @@ A small browser game in the look of the agent dashboard's Mission view. Start wi
 miners, send them to asteroids, moons and planets, and spend what they bring back on more ships and
 new bases. Build the bases a sector asks for, warp further out, and keep going for a high score.
 
-Plain HTML, Canvas and JavaScript. No installs, no build step, no network calls.
+Plain HTML, Canvas and JavaScript. No installs, no build step. The only network call is the optional feedback form, which talks to the local dashboard (127.0.0.1) and nowhere else.
 
 ## How to play
 
@@ -54,6 +54,28 @@ Plain HTML, Canvas and JavaScript. No installs, no build step, no network calls.
   kept and used in every game. Prices are small (2 to 8 stars), so a few runs unlock most things.
 - The bank also holds your best score.
 
+## Feedback form
+
+The Feedback button (top bar, paused screen, run-end card and sector-cleared card) opens a form: a type
+(Bug, Idea, Balance, Other), an optional 1-5 rating, a message (up to 2000 characters, with a live counter)
+and a box, ticked by default, that attaches game info (game version, sector, score, ships, seconds played
+and your browser's name string). The game pauses while the form is open and goes back to how it was when
+you close it. Tab stays inside the form, Esc closes it, Enter adds a new line and Ctrl+Enter (Cmd+Enter on
+a Mac) sends. No game key works while it is open.
+
+- **Sending:** Send to team posts the feedback to the local dashboard at `http://127.0.0.1:8765/api/feedback`
+  (nothing else is contacted). "Sent to the team; the lead will draft a plan for your approval" means it
+  arrived. If the dashboard refuses it (too long, wrong origin, too large) its message is shown and the form
+  stays open so you can fix it.
+- **Dashboard not running:** if there is no reply within 5 seconds, the feedback is saved in this browser
+  (localStorage key `fleet-game-feedback-v1`, kept apart from game saves) as "not sent". Start the dashboard,
+  open the form and press **Send** on that entry, or **Send unsent** for all of them. A resend reuses the
+  entry's `id`, so sending twice never makes a duplicate.
+- **Saved feedback:** each entry shows sent or not sent, with Send, Copy (plain text to the clipboard) and
+  Delete (asks first).
+- **Exporting:** **Download all** saves every entry as `fleet-game-feedback-YYYY-MM-DD.json`, so feedback
+  can be passed on by hand even without the dashboard.
+
 ## Old saves
 
 Saves from the first version (`first-playable`) load as sector 1, with a notice. Stars for that map are
@@ -61,14 +83,14 @@ made from its seed.
 
 ## Files
 
-- `game.js`: all rules (maps from a seed, sectors and difficulty, hazards, upgrades, score, stars, the
+- `game.js`: all rules (the feedback payload, maps from a seed, sectors and difficulty, hazards, upgrades, score, stars, the
   bank and hangar unlocks, costs, mining, cargo, save format). No DOM; works in the browser as
   `FleetGame` and in Node via `module.exports`. Every number you might tune is in the `TUNING` table at
   the top, and the hangar items are in `LOOKS`.
-- `main.js`: drawing, input, panels, the Hangar screen, and the loop (fixed 30 Hz update, drawn on
+- `main.js`: drawing, input, panels, the Hangar and Feedback screens, and the loop (fixed 30 Hz update, drawn on
   requestAnimationFrame).
 - `index.html`, `style.css`: page and layout.
-- `tests.js`: tests for `game.js`.
+- `tests.js`: tests for `game.js` (including the feedback payload, replies and saved list).
 
 ## How to test
 
