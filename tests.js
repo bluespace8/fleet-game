@@ -1175,6 +1175,10 @@ test("feedbackReply: 429 and 5xx can be retried later", () => {
   assert.deepStrictEqual(G.feedbackReply(500, "{}"), { sent: false, retry: true, message: "Dashboard replied 500" });
   assert.strictEqual(G.feedbackReply(503, "").retry, true);
 });
+test("feedbackReply: other non-200 statuses (404, 405) can be retried later", () => {
+  assert.deepStrictEqual(G.feedbackReply(404, "{}"), { sent: false, retry: true, message: "Dashboard replied 404" });
+  assert.deepStrictEqual(G.feedbackReply(405, '{"ok":false,"message":"No"}'), { sent: false, retry: true, message: "No" });
+});
 test("feedbackReply never throws on bad bodies and does not call a 200 without ok:true sent", () => {
   for (const body of ["", "not json", "null", "[1]", "42", undefined, null, '{"ok":false}', '{"message":5}']) {
     const r = G.feedbackReply(400, body);

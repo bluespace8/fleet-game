@@ -66,8 +66,10 @@ a Mac) sends. No game key works while it is open.
 - **Sending:** Send to team posts the feedback to the local dashboard at `http://127.0.0.1:8765/api/feedback`
   (nothing else is contacted). "Sent to the team; the lead will draft a plan for your approval" means it
   arrived. If the dashboard refuses it (too long, wrong origin, too large) its message is shown and the form
-  stays open so you can fix it.
-- **Dashboard not running:** if there is no reply within 5 seconds, the feedback is saved in this browser
+  stays open so you can fix it. A full inbox (429) or any other reply that may work later (404, 405, 5xx) is
+  saved as "not sent" instead. The form is locked while a send is in flight, and the message is cleared only
+  once it was sent.
+- **Dashboard not running:** if the connection is refused (immediately) or there is no reply within 5 seconds, the feedback is saved in this browser
   (localStorage key `fleet-game-feedback-v1`, kept apart from game saves) as "not sent". Start the dashboard,
   open the form and press **Send** on that entry, or **Send unsent** for all of them. A resend reuses the
   entry's `id`, so sending twice never makes a duplicate.

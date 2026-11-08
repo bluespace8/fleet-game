@@ -771,6 +771,7 @@
 
   // ---------------------------------------------------------------- feedback form
 
+  const OFFLINE_SHORT = "Dashboard not running";
   const FALLBACK_TEXT = "Dashboard not running; saved here. Start the dashboard and press Send in Saved feedback.";
   const fb = { list: [], sending: false, opener: null, wasPaused: false };
 
@@ -817,6 +818,7 @@
     $("f-send-unsent").disabled = fb.sending || !unsent;
     $("f-download").disabled = !fb.list.length;
     $("f-send").disabled = fb.sending;
+    for (const id of ["f-type", "f-rating", "f-message", "f-info"]) $(id).disabled = fb.sending;
     $("f-send").textContent = fb.sending ? "Sending..." : "Send to team";
     for (const e of fb.list) {
       const p = e.payload, li = document.createElement("li");
@@ -915,7 +917,7 @@
     } else if (reply && !reply.retry) {   // 400, 403, 413: sending the same thing again would fail the same way
       keep = false; msg = reply.message; kind = "err";
     } else {                              // no dashboard, 429, 5xx: keep it to send later
-      entry.lastError = reply ? reply.message : FALLBACK_TEXT;
+      entry.lastError = reply ? reply.message : OFFLINE_SHORT;
       msg = reply ? reply.message + " Saved here; press Send in Saved feedback to try again." : FALLBACK_TEXT;
       kind = "err";
     }
@@ -923,7 +925,7 @@
     if (keep) {
       fb.list.unshift(entry);
       stored = saveFeedbackList();
-      $("f-message").value = ""; fbCount();
+      if (entry.sent) { $("f-message").value = ""; fbCount(); }
     }
     if (!stored) msg += " Could not keep a copy in this browser.";
     fbStatus(msg, kind);
@@ -936,7 +938,7 @@
     const res = await postFeedback(entry.payload);
     const reply = res.error ? null : G.feedbackReply(res.status, res.text);
     if (reply && reply.sent) { entry.sent = true; entry.sentAt = new Date().toISOString(); entry.lastError = null; return { ok: true, message: reply.message }; }
-    entry.lastError = reply ? reply.message : "Dashboard not running";
+    entry.lastError = reply ? reply.message : OFFLINE_SHORT;
     return { ok: false, offline: !reply, message: reply ? reply.message : FALLBACK_TEXT };
   }
 

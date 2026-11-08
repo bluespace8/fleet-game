@@ -983,7 +983,7 @@
     }
     const said = typeof body.message === "string" && body.message.trim() ? body.message.trim().slice(0, 300) : "";
     const message = said || "Dashboard replied " + (status === 200 ? "200 without ok" : status);
-    const retry = status === 429 || status === 200 || !(Number.isFinite(status) && status >= 400 && status < 500);
+    const retry = !(status === 400 || status === 403 || status === 413);   // only these are final; anything else may work later
     return { sent: false, retry, message };
   }
 
