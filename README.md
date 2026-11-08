@@ -33,7 +33,8 @@ Plain HTML, Canvas and JavaScript. No installs, no build step, no network calls.
   up to 10). A "Warp to next sector" button then appears (top bar, and on the sector-cleared card).
   Warping keeps your fleet and your stock, and drops you at a new seeded map, further out.
 - **Each sector is harder:** the map is bigger and bodies sit further from home, each body holds less,
-  crystal bodies are fewer (but richer; every map still holds at least 1.3 times what its goal costs), and ships, bases and upgrades cost more. Sector 1 plays as the original game.
+  crystal bodies are fewer (but richer; every map still holds at least 1.3 times what its goal costs), and ships, bases and upgrades cost more.
+  Difficulty plateaus after sector 10: from there the goal (10 bases), costs and map are the same every sector, so a run can go on as long as you can. Sector 1 plays as the original game.
 - **Ion storms (from sector 2):** drifting clouds that slow ships passing through.
 - **Meteor showers (from sector 3):** a dashed warning ring for 3 seconds, then streaks. A loaded ship
   inside can lose half its cargo (with a short grace period after a hit).

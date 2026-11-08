@@ -38,8 +38,10 @@
       // own goal. Crystal bodies stay few (rare) but richer: richness tracks goal x cost per crystal body,
       // relative to sector 1 (see crystalRich).
       crystalFirst: 3, crystalDropEvery: 2, crystalMin: 1,   // rare planets: first - floor(n / dropEvery)
-      costPerSector: 0.08,                         // build and upgrade costs: x (1 + per*(n-1))
-      spreadPerSector: 0.15,                         // minimum distance of bodies from home grows with the map
+      costPerSector: 0.08, costMax: 1.72,          // build and upgrade costs: x (1 + per*(n-1)), capped (sector 10's value)
+      spreadPerSector: 0.15, spreadMax: 2.35,      // minimum distance of bodies from home grows with the map, capped
+      // Supply stops growing at sector 5 and the goal at sector 6, so costs and spread plateau at sector 10:
+      // every later sector is as hard as sector 10, and always clearable.
     },
     // base upgrades, by tier reached. unload = units per second a ship unloads, dock = extra drop-off range
     upgrades: [
@@ -118,7 +120,7 @@
   function areaMult(n) { const k = mapScale(n); return k * k; }
   function bodyCount(spec, n) { return spec.res === "crystal" ? crystalCount(n) : Math.max(1, Math.round(spec.n * areaMult(n))); }
   function crystalRich(n) { return (goalBases(n) * costMult(n) / crystalCount(n)) / (goalBases(1) * costMult(1) / crystalCount(1)); }
-  function costMult(n) { return 1 + T.difficulty.costPerSector * (n - 1); }
+  function costMult(n) { const d = T.difficulty; return Math.min(d.costMax, 1 + d.costPerSector * (n - 1)); }
   function stormCount(n) { const S = T.storms; return n < S.firstSector ? 0 : Math.min(S.max, S.base + (n - S.firstSector)); }
   function showersOn(n) { return n >= T.showers.firstSector; }
   function showerGap(n) { const S = T.showers; return Math.max(S.gapMin, S.gapFirst - S.gapPerSector * (n - S.firstSector)); }
@@ -167,7 +169,7 @@
 
   // Further sectors: bodies keep further from home (spread), hold less (amount), crystal is rarer.
   function generateBodies(state, r, n) {
-    const spread = 1 + T.difficulty.spreadPerSector * (n - 1), mult = amountMult(n);
+    const spread = Math.min(T.difficulty.spreadMax, 1 + T.difficulty.spreadPerSector * (n - 1)), mult = amountMult(n);
     for (const spec of BODY_SPECS) {
       const count = bodyCount(spec, n);
       for (let i = 0; i < count; i++) {

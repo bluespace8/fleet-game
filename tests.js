@@ -489,9 +489,9 @@ test("difficulty rises: more bases, less material, rarer crystal, dearer builds,
   const crystals = s => s.bodies.filter(b => b.res === "crystal").length;
   assert.ok(crystals(G.newGame(5, 5)) < crystals(G.newGame(5, 1)));
 });
-test("every sector's own map holds enough to pay for its goal, with a margin, and the margin tightens", () => {
+test("every sector's own map holds enough to pay for its goal, with a margin, forever, and the ore margin never loosens", () => {
   const MARGIN = 1.3, prev = {};
-  for (let n = 1; n <= 10; n++) {
+  for (let n = 1; n <= 30; n++) {
     const low = { ore: Infinity, ice: Infinity, crystal: Infinity };
     for (let seed = 1; seed <= 40; seed++) {
       const s = G.newGame(seed, n), cost = G.baseCost(s), goal = G.goalBases(n);
@@ -503,9 +503,26 @@ test("every sector's own map holds enough to pay for its goal, with a margin, an
         low[r] = Math.min(low[r], supply[r] / need);
       }
     }
-    if (n > 1) assert.ok(low.ore <= prev.ore + 1e-9, "ore margin does not loosen at sector " + n);
-    Object.assign(prev, low);
+    // Until sector 10 the margin tightens. After that nothing changes except which random map each sector gets,
+    // so the worst seed may wobble a little (by under 10%); it must not drift looser.
+    if (n === 10) prev.ore10 = low.ore;
+    if (n > 1) assert.ok(low.ore <= (n <= 10 ? prev.ore + 1e-9 : prev.ore10 * 1.1), "ore margin does not loosen at sector " + n);
+    prev.ore = low.ore;
   }
+});
+test("difficulty plateaus: costs stop rising, and the crystal planet stays far out in late sectors", () => {
+  assert.strictEqual(G.costMult(10), G.costMult(30));
+  assert.ok(G.costMult(10) > G.costMult(9));
+  const crystalDist = n => {
+    let min = Infinity;
+    for (let seed = 1; seed <= 15; seed++) {
+      const s = G.newGame(seed, n), h = s.bases[0];
+      for (const b of s.bodies) if (b.res === "crystal") min = Math.min(min, Math.hypot(b.x - h.x, b.y - h.y));
+    }
+    return min;
+  };
+  const d10 = crystalDist(10);
+  for (const n of [14, 18, 22, 30]) assert.ok(crystalDist(n) >= d10 * 0.9, "sector " + n + ": " + crystalDist(n) + " vs " + d10);
 });
 test("bodies sit further from home in later sectors", () => {
   const avg = n => {
