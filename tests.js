@@ -962,8 +962,8 @@ test("a look can only be chosen once owned, and the choice is kept", () => {
 });
 test("a few runs of stars unlock most of the hangar", () => {
   let all = 0;
-  for (const k of G.LOOK_KINDS) for (const l of G.LOOKS[k]) all += l.cost;
-  assert.ok(all <= 80, "everything costs " + all + " stars");
+  for (const k of G.LOOK_KINDS) if (k !== "theme") for (const l of G.LOOKS[k]) all += l.cost;   // themes are the long-term goal
+  assert.ok(all <= 90, "everything but the themes costs " + all + " stars");
 });
 test("the profile round-trips, and damage is repaired or reported", () => {
   const p = G.newProfile();
@@ -992,8 +992,297 @@ test("the best score only goes up", () => {
 });
 test("stars buy looks only: no look carries any gameplay number", () => {
   for (const k of G.LOOK_KINDS) for (const l of G.LOOKS[k]) {
-    for (const key of Object.keys(l)) assert.ok(["id", "name", "cost", "miner", "hauler", "main", "home", "top", "bottom", "blobs", "note"].indexOf(key) >= 0, key);
+    for (const key of Object.keys(l)) assert.ok(["id", "name", "cost", "miner", "hauler", "main", "home", "top", "bottom", "blobs", "note", "scene", "labels"].indexOf(key) >= 0, key);
   }
+});
+
+console.log("themes, backgrounds and wording");
+const THEMES = ["space", "dwarven", "hamster"];
+function sameKeys(want, got, path) {   // every key of want is in got, deep, with a non-empty string at each leaf
+  for (const k of Object.keys(want)) {
+    assert.ok(Object.prototype.hasOwnProperty.call(got, k), "missing " + path + k);
+    if (typeof want[k] === "object") sameKeys(want[k], got[k], path + k + ".");
+    else assert.ok(typeof got[k] === "string" && got[k].length > 0, "empty " + path + k);
+  }
+}
+test("themes are the first look kind, priced space 0, dwarven 60, hamster 120", () => {
+  assert.deepStrictEqual(G.LOOK_KINDS, ["theme", "ship", "base", "bg", "trail"]);
+  assert.strictEqual(G.LOOK_TITLES.theme, "Theme");
+  for (const k of G.LOOK_KINDS) assert.ok(G.LOOK_TITLES[k], k);
+  assert.deepStrictEqual(G.LOOKS.theme.map(t => [t.id, t.cost, t.scene]), [["space", 0, null], ["dwarven", 60, "cavern"], ["hamster", 120, "habitat"]]);
+  for (const t of G.LOOKS.theme) assert.ok(t.note && t.labels && typeof t.labels === "object");
+});
+test("Hamster is the priciest item of all, Dwarven second", () => {
+  const all = [];
+  for (const k of G.LOOK_KINDS) for (const l of G.LOOKS[k]) all.push(l);
+  all.sort((a, b) => b.cost - a.cost);
+  assert.strictEqual(all[0].id, "hamster");
+  assert.strictEqual(all[1].id, "dwarven");
+  assert.ok(all[2].cost < all[1].cost);
+});
+test("buying Dwarven or Hamster takes the stars; too few is refused; owned is refused", () => {
+  for (const [id, cost] of [["dwarven", 60], ["hamster", 120]]) {
+    const p = G.newProfile();
+    p.stars = cost - 1;
+    const poor = G.buyLook(p, "theme", id);
+    assert.ok(!poor.ok && /stars/.test(poor.reason));
+    assert.strictEqual(p.stars, cost - 1); assert.ok(p.owned.theme.indexOf(id) < 0);
+    p.stars = cost + 5;
+    assert.ok(G.buyLook(p, "theme", id).ok);
+    assert.strictEqual(p.stars, 5);
+    assert.ok(p.owned.theme.indexOf(id) >= 0);
+    const again = G.buyLook(p, "theme", id);
+    assert.ok(!again.ok && /already own/.test(again.reason));
+    assert.strictEqual(p.stars, 5);
+  }
+});
+test("a theme is chosen only once owned, and space can always be chosen again", () => {
+  const p = G.newProfile();
+  assert.ok(!G.chooseLook(p, "theme", "hamster").ok);
+  assert.strictEqual(p.pick.theme, "space");
+  p.stars = 500; G.buyLook(p, "theme", "hamster"); G.buyLook(p, "theme", "dwarven");
+  assert.ok(G.chooseLook(p, "theme", "hamster").ok);
+  assert.strictEqual(G.currentLooks(p).theme.id, "hamster");
+  assert.ok(G.chooseLook(p, "theme", "dwarven").ok);
+  assert.strictEqual(G.currentLooks(p).theme.id, "dwarven");
+  assert.ok(G.chooseLook(p, "theme", "space").ok, "back to space");
+  assert.strictEqual(G.currentLooks(p).theme.id, "space");
+  const fresh = G.newProfile();
+  assert.ok(G.chooseLook(fresh, "theme", "space").ok, "space is owned from the start");
+});
+test("the theme survives serialize -> parse, and an unknown theme falls back to space", () => {
+  const p = G.newProfile();
+  p.stars = 200; G.buyLook(p, "theme", "hamster"); G.chooseLook(p, "theme", "hamster");
+  const r = G.parseProfile(G.serializeProfile(p));
+  assert.ok(r.ok);
+  assert.deepStrictEqual(r.profile, p);
+  assert.strictEqual(r.profile.pick.theme, "hamster");
+  const bad = G.parseProfile(JSON.stringify({ stars: 9, owned: { theme: ["space", "ghost", 4] }, pick: { theme: "ghost" } })).profile;
+  assert.strictEqual(bad.pick.theme, "space");
+  assert.deepStrictEqual(bad.owned.theme, ["space"]);
+  assert.strictEqual(bad.stars, 9);
+  const unowned = G.parseProfile(JSON.stringify({ owned: { theme: ["space"] }, pick: { theme: "hamster" } })).profile;
+  assert.strictEqual(unowned.pick.theme, "space", "cannot pick a theme that is not owned");
+  const odd = G.parseProfile(JSON.stringify({ owned: { theme: "hamster" }, pick: { theme: ["hamster"] } }));
+  assert.ok(odd.ok); assert.strictEqual(odd.profile.pick.theme, "space");
+});
+test("an old profile with no theme loads as space and keeps stars, owned and picks", () => {
+  const text = '{"ver":1,"stars":13,"best":4200,"owned":{"ship":["classic","crimson"],"base":["teal"],"bg":["deep","aurora"],"trail":["streak","spark"]},'
+    + '"pick":{"ship":"crimson","base":"teal","bg":"aurora","trail":"spark"},"claimed":["5:1:0"]}';
+  const r = G.parseProfile(text);
+  assert.ok(r.ok);
+  const p = r.profile;
+  assert.strictEqual(p.ver, 1);
+  assert.strictEqual(p.stars, 13); assert.strictEqual(p.best, 4200);
+  assert.deepStrictEqual(p.owned.ship, ["classic", "crimson"]);
+  assert.deepStrictEqual(p.owned.bg, ["deep", "aurora"]);
+  assert.deepStrictEqual(p.owned.trail, ["streak", "spark"]);
+  assert.strictEqual(p.pick.ship, "crimson"); assert.strictEqual(p.pick.bg, "aurora"); assert.strictEqual(p.pick.trail, "spark");
+  assert.deepStrictEqual(p.owned.theme, ["space"]); assert.strictEqual(p.pick.theme, "space");
+  assert.deepStrictEqual(p.claimed, ["5:1:0"]);
+  const looks = G.currentLooks(p);
+  assert.strictEqual(looks.theme.id, "space"); assert.strictEqual(G.sceneFor(looks), "nebula");
+  assert.strictEqual(G.newProfile().ver, 1, "profile version unchanged");
+  assert.strictEqual(G.currentLooks({ pick: {} }).theme.id, "space", "a profile with no picks at all still works");
+});
+test("every theme has every label, with non-empty strings", () => {
+  for (const id of THEMES) {
+    sameKeys(G.SPACE_LABELS, G.labelsFor(id), id + ":");
+    sameKeys(G.labelsFor(id), G.SPACE_LABELS, id + " extra:");   // and nothing extra the space set lacks
+  }
+  assert.deepStrictEqual(G.labelsFor("space"), G.SPACE_LABELS);
+  assert.deepStrictEqual(G.labelsFor("nonsense"), G.SPACE_LABELS);
+  assert.deepStrictEqual(G.labelsFor(undefined), G.SPACE_LABELS);
+  assert.strictEqual(G.labelsFor("hamster").res.crystal, "carrots");
+  assert.strictEqual(G.labelsFor("hamster").ship.hauler, "Big hamster");
+  assert.strictEqual(G.labelsFor("dwarven").warp, "Dig to next depth");
+  assert.strictEqual(G.labelsFor("dwarven").body.rare, "Gem geode");
+});
+test("the space labels are the game's current wording", () => {
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(G.SPACE_LABELS)), {
+    res: { ore: "ore", ice: "ice", crystal: "crystal" }, resTitle: { ore: "Ore", ice: "Ice", crystal: "Crystal" },
+    ship: { miner: "Miner", hauler: "Hauler" }, ships: "Ships",
+    base: "base", baseTitle: "Base", bases: "Bases", home: "Home base", newBase: "New base",
+    body: { asteroid: "Asteroid", moon: "Moon", iceplanet: "Ice planet", rare: "Rare planet" },
+    storm: "Ion storm", shower: "Meteor shower", sector: "Sector", warp: "Warp to next sector" });
+  assert.ok(Object.isFrozen(G.SPACE_LABELS) && Object.isFrozen(G.SPACE_LABELS.res), "shared defaults cannot be changed");
+});
+test("labelsFor returns a fresh object each call", () => {
+  for (const id of THEMES) {
+    const a = G.labelsFor(id), b = G.labelsFor(id);
+    assert.notStrictEqual(a, b); assert.notStrictEqual(a.res, b.res); assert.notStrictEqual(a.body, b.body);
+    a.res.ore = "mutated"; a.ship.miner = "mutated"; a.base = "mutated";
+    assert.strictEqual(G.labelsFor(id).res.ore, b.res.ore);
+    assert.strictEqual(G.SPACE_LABELS.res.ore, "ore");
+    assert.strictEqual(G.SPACE_LABELS.base, "base");
+  }
+  assert.notStrictEqual(G.labelsFor("space"), G.SPACE_LABELS);
+  const p = G.newProfile();
+  assert.notStrictEqual(G.currentLooks(p).labels, G.currentLooks(p).labels);
+});
+test("currentLooks adds the theme and its labels", () => {
+  const p = G.newProfile(); p.stars = 200; G.buyLook(p, "theme", "dwarven"); G.chooseLook(p, "theme", "dwarven");
+  const l = G.currentLooks(p);
+  assert.strictEqual(l.theme.id, "dwarven");
+  assert.deepStrictEqual(l.labels, G.labelsFor("dwarven"));
+  for (const k of ["ship", "base", "bg", "trail"]) assert.ok(l[k] && l[k].id, k);
+});
+test("every background has a scene; the four new ones exist at 4, 5, 7 and 8 stars", () => {
+  for (const b of G.LOOKS.bg) {
+    assert.ok(typeof b.scene === "string" && b.scene, b.id + " scene");
+    assert.ok(typeof b.top === "string" && typeof b.bottom === "string" && Array.isArray(b.blobs), b.id + " keeps the old drawing fields");
+  }
+  for (const id of ["deep", "aurora", "ember", "void"]) assert.strictEqual(G.lookById("bg", id).scene, "nebula");
+  const want = { black: [4, "sparse"], belt: [5, "belt"], spiral: [7, "spiral"], solarsys: [8, "solar"] };
+  for (const id of Object.keys(want)) {
+    const b = G.lookById("bg", id);
+    assert.ok(b, id);
+    assert.strictEqual(b.cost, want[id][0]); assert.strictEqual(b.scene, want[id][1]);
+  }
+  assert.strictEqual(G.lookById("bg", "solarsys").name, "Solar System");
+  assert.strictEqual(G.lookById("bg", "black").blobs.length, 0);
+  assert.deepStrictEqual(G.LOOKS.bg.slice(0, 4).map(b => b.id), ["deep", "aurora", "ember", "void"], "old backgrounds keep their place");
+});
+test("sceneFor: the theme's scene wins, else the background's, else nebula", () => {
+  const space = G.LOOKS.theme[0], dwarven = G.LOOKS.theme[1], hamster = G.LOOKS.theme[2];
+  const solar = G.lookById("bg", "solarsys");
+  assert.strictEqual(G.sceneFor({ theme: dwarven, bg: solar }), "cavern");
+  assert.strictEqual(G.sceneFor({ theme: hamster, bg: solar }), "habitat");
+  assert.strictEqual(G.sceneFor({ theme: space, bg: solar }), "solar");
+  assert.strictEqual(G.sceneFor({ theme: space, bg: { id: "x" } }), "nebula");
+  assert.strictEqual(G.sceneFor({ theme: space, bg: null }), "nebula");
+  assert.strictEqual(G.sceneFor({ bg: solar }), "solar");
+  assert.strictEqual(G.sceneFor({}), "nebula");
+});
+test("jobText with no labels is the unchanged wording", () => {
+  const s = G.newGame(9), sh = s.ships[0], body = nearBody(s);
+  assert.strictEqual(G.jobText(s, sh), "Idle. Select it, then pick a target.");
+  G.orderShip(s, 0, body.id);
+  assert.strictEqual(G.jobText(s, sh), "Flying to " + body.name);
+  for (let i = 0; i < 6000 && sh.st !== G.MINING; i++) G.step(s, DT);
+  assert.strictEqual(G.jobText(s, sh), "Mining " + body.name + " " + Math.floor(sh.cargo + 1e-6) + "/20");
+  for (let i = 0; i < 6000 && sh.st !== G.TO_BASE; i++) G.step(s, DT);
+  assert.strictEqual(G.jobText(s, sh), "Hauling " + Math.floor(sh.cargo + 1e-6) + " " + sh.res + " home");
+  sh.cargo = 0; sh.res = "";
+  assert.strictEqual(G.jobText(s, sh), "Back to base, then " + body.name);
+  sh.target = -1;
+  assert.strictEqual(G.jobText(s, sh), "Returning to base");
+  sh.st = G.UNLOADING;
+  assert.strictEqual(G.jobText(s, sh), "Unloading");
+  G.orderShipToStar(s, 0, 0);
+  assert.strictEqual(G.jobText(s, sh), "Flying to a star");
+});
+test("jobText with the space labels is byte-identical to no labels, in every state", () => {
+  const { s, sh } = (function () {
+    const s = G.newGame(9), sh = s.ships[0], body = nearBody(s), all = [];
+    const check = () => { all.push(G.jobText(s, sh)); assert.strictEqual(G.jobText(s, sh, G.labelsFor("space")), G.jobText(s, sh)); assert.strictEqual(G.jobText(s, sh, G.SPACE_LABELS), G.jobText(s, sh)); };
+    check(); G.orderShip(s, 0, body.id); check();
+    for (let i = 0; i < 6000 && sh.st !== G.MINING; i++) G.step(s, DT);
+    check();
+    for (let i = 0; i < 6000 && sh.st !== G.TO_BASE; i++) G.step(s, DT);
+    check(); sh.cargo = 0; sh.res = ""; check(); sh.target = -1; check(); sh.st = G.UNLOADING; check();
+    G.orderShipToStar(s, 0, 0); check();
+    assert.strictEqual(new Set(all).size, all.length, "each state reads differently");
+    return { s, sh };
+  })();
+  assert.ok(s && sh);
+});
+test("jobText with theme labels names the theme's resources and bases", () => {
+  const s = G.newGame(9), sh = s.ships[0], body = nearBody(s);
+  const ham = G.labelsFor("hamster"), dw = G.labelsFor("dwarven");
+  G.orderShip(s, 0, body.id);
+  for (let i = 0; i < 6000 && sh.st !== G.TO_BASE; i++) G.step(s, DT);
+  assert.strictEqual(sh.res, "ore");
+  const n = Math.floor(sh.cargo + 1e-6);
+  assert.strictEqual(G.jobText(s, sh, ham), "Hauling " + n + " seeds home");
+  assert.strictEqual(G.jobText(s, sh, dw), "Hauling " + n + " iron home");
+  sh.res = "crystal"; assert.strictEqual(G.jobText(s, sh, ham), "Hauling " + n + " carrots home");
+  sh.res = "ice"; assert.strictEqual(G.jobText(s, sh, dw), "Hauling " + n + " silver home");
+  sh.cargo = 0; sh.res = "";
+  assert.strictEqual(G.jobText(s, sh, ham), "Back to wheel, then " + body.name);
+  assert.strictEqual(G.jobText(s, sh, dw), "Back to forge, then " + body.name);
+  sh.target = -1;
+  assert.strictEqual(G.jobText(s, sh, ham), "Returning to wheel");
+  assert.strictEqual(G.jobText(s, sh, dw), "Returning to forge");
+  assert.strictEqual(G.jobText(s, sh, ham).indexOf("base"), -1);
+});
+test("shipLabel renames stored 'Type n' names and leaves anything else alone", () => {
+  const s = G.newGame(4); s.stock.ore = s.stock.ice = 500; G.buildShip(s, "hauler"); G.buildShip(s, "miner");
+  const ham = G.labelsFor("hamster"), dw = G.labelsFor("dwarven");
+  const [m1, m2, h1, m3] = s.ships;
+  assert.deepStrictEqual(s.ships.map(x => x.name), ["Miner 1", "Miner 2", "Hauler 1", "Miner 3"]);
+  assert.strictEqual(G.shipLabel(m1, ham), "Hamster 1");
+  assert.strictEqual(G.shipLabel(m3, ham), "Hamster 3");
+  assert.strictEqual(G.shipLabel(h1, ham), "Big hamster 1");
+  assert.strictEqual(G.shipLabel(h1, dw), "Mine cart 1");
+  assert.strictEqual(G.shipLabel(m2, dw), "Dwarf 2");
+  for (const sh of s.ships) {
+    assert.strictEqual(G.shipLabel(sh), sh.name, "no labels: unchanged");
+    assert.strictEqual(G.shipLabel(sh, G.labelsFor("space")), sh.name, "space labels: unchanged");
+  }
+  assert.strictEqual(G.shipLabel({ type: "miner", name: "Flagship" }, ham), "Flagship");
+  assert.strictEqual(G.shipLabel({ type: "miner", name: "Bob 7" }, ham), "Bob 7");
+  assert.strictEqual(G.shipLabel({ type: "miner", name: "Miner" }, ham), "Miner");
+  assert.strictEqual(G.shipLabel({ type: "miner", name: "Miner 3 b" }, ham), "Miner 3 b");
+  assert.strictEqual(G.shipLabel({ type: "miner", name: "Hauler 2" }, ham), "Big hamster 2", "the name decides when it names another type");
+  assert.strictEqual(G.shipLabel({ name: "Hauler 12" }, dw), "Mine cart 12", "no type: matched by name");
+  assert.strictEqual(G.shipLabel("Miner 5", ham), "Hamster 5", "a plain name works too");
+  assert.strictEqual(G.shipLabel({ type: "miner" }, ham), "");
+  assert.strictEqual(m1.name, "Miner 1", "stored names never change");
+});
+test("error messages that name a ship or base take labels; with none they are unchanged", () => {
+  const ham = G.labelsFor("hamster");
+  const s = G.newGame(5);
+  s.stock.ore = s.stock.ice = s.stock.crystal = 0;
+  assert.strictEqual(G.buildShip(s, "miner").reason, "Not enough materials for a miner.");
+  assert.strictEqual(G.buildShip(s, "miner", ham).reason, "Not enough materials for a hamster.");
+  assert.strictEqual(G.buildShip(s, "hauler", ham).reason, "Not enough materials for a big hamster.");
+  const far = { x: s.bases[0].x + 400, y: s.bases[0].y };
+  assert.strictEqual(G.placeBase(s, far.x, far.y).reason, "Not enough materials for a base.");
+  assert.strictEqual(G.placeBase(s, far.x, far.y, ham).reason, "Not enough materials for a wheel.");
+  assert.strictEqual(G.placeBase(s, s.bases[0].x + 20, s.bases[0].y).reason, "Too close to another base.");
+  assert.strictEqual(G.placeBase(s, s.bases[0].x + 20, s.bases[0].y, G.labelsFor("dwarven")).reason, "Too close to another forge.");
+  assert.strictEqual(G.baseSpotProblem(s, s.bases[0].x + 20, s.bases[0].y, ham), "Too close to another wheel.");
+  assert.strictEqual(G.baseSpotProblem(s, 1, 1), "Too close to the edge of space.");
+  const b = nearBody(s);
+  assert.strictEqual(G.baseSpotProblem(s, b.x, b.y), "Too close to a planet or asteroid.");
+  assert.ok(/seed pile/.test(G.baseSpotProblem(s, b.x, b.y, ham)));
+  assert.strictEqual(G.upgradeBase(s, 9).reason, "No such base.");
+  assert.strictEqual(G.upgradeBase(s, 9, ham).reason, "No such wheel.");
+  s.stock.ore = s.stock.ice = s.stock.crystal = 9999; G.upgradeBase(s, 0); G.upgradeBase(s, 0);
+  assert.strictEqual(G.upgradeBase(s, 0).reason, "This base is fully upgraded.");
+  assert.strictEqual(G.upgradeBase(s, 0, ham).reason, "This wheel is fully upgraded.");
+  assert.strictEqual(G.warpToNextSector(s).reason, "Build 5 bases first.");
+  assert.strictEqual(G.warpToNextSector(s, ham).reason, "Build 5 wheels first.");
+  assert.strictEqual(G.warpToNextSector(s, G.labelsFor("dwarven")).reason, "Build 5 forges first.");
+  assert.strictEqual(G.returnToBase(s, 99, 0).reason, "No such ship or base.");
+  assert.strictEqual(G.returnToBase(s, 99, 0, ham).reason, "No such ship or wheel.");
+  assert.ok(G.returnToBase(s, 0, 0, ham).ok && G.placeBase(s, far.x, far.y, ham).ok, "labels never change what works");
+});
+test("the theme never changes the game: a fixed-seed run is identical whatever theme is picked", () => {
+  const texts = [];
+  for (const id of THEMES) {
+    const p = G.newProfile(); p.stars = 500; G.buyLook(p, "theme", id); G.chooseLook(p, "theme", id);
+    const labels = G.currentLooks(p).labels;
+    const s = G.newGame(31, 3);
+    G.orderShip(s, 0, nearBody(s).id); G.orderShip(s, 1, nearBody(s).id); G.orderShipToStar(s, 1, 0);
+    s.stock.ore = s.stock.ice = s.stock.crystal = 900;
+    for (let i = 0; i < 4000; i++) {
+      G.step(s, DT);
+      if (i % 500 === 0) { G.jobText(s, s.ships[0], labels); G.shipLabel(s.ships[1], labels); G.buildShip(s, "miner", labels); G.placeBase(s, 200 + i / 10, 200, labels); }
+    }
+    texts.push(G.serialize(s) + "|" + G.scoreTotal(s));
+  }
+  assert.strictEqual(texts[1], texts[0]); assert.strictEqual(texts[2], texts[0]);
+  const a = G.newGame(31, 3);
+  assert.strictEqual(G.serialize(a), G.serialize(G.newGame(31, 3)), "deterministic");
+  assert.ok(!("theme" in a) && !("labels" in a), "no theme in the game state or save");
+});
+test("game saves from before themes still load and are unchanged by them", () => {
+  const s = G.newGame(8); run(s, 20);
+  const text = G.serialize(s);
+  assert.ok(!/theme|labels|hamster|dwarven/i.test(text));
+  assert.strictEqual(G.serialize(G.deserialize(text).state), text);
 });
 
 console.log("old saves");

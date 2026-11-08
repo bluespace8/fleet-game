@@ -109,6 +109,29 @@
     return s[0].toUpperCase() + s.slice(1);
   }
 
+  // ---------------------------------------------------------------- wording
+  // The default wording, and per-theme overrides in LOOKS.theme. Text that names a resource, ship, base or
+  // hazard takes an optional trailing "labels" argument (from labelsFor); left out, the text is the space wording.
+  function deepFreeze(o) { for (const k of Object.keys(o)) if (o[k] && typeof o[k] === "object") deepFreeze(o[k]); return Object.freeze(o); }
+  const SPACE_LABELS = deepFreeze({
+    res: { ore: "ore", ice: "ice", crystal: "crystal" },
+    resTitle: { ore: "Ore", ice: "Ice", crystal: "Crystal" },
+    ship: { miner: "Miner", hauler: "Hauler" }, ships: "Ships",
+    base: "base", baseTitle: "Base", bases: "Bases", home: "Home base", newBase: "New base",
+    body: { asteroid: "Asteroid", moon: "Moon", iceplanet: "Ice planet", rare: "Rare planet" },
+    storm: "Ion storm", shower: "Meteor shower", sector: "Sector", warp: "Warp to next sector",
+  });
+  function mergeLabels(base, over) {
+    const out = {};
+    for (const k of Object.keys(base)) {
+      const b = base[k], o = over ? over[k] : undefined;
+      if (b && typeof b === "object") out[k] = mergeLabels(b, o && typeof o === "object" ? o : null);
+      else out[k] = typeof o === "string" && o ? o : b;
+    }
+    return out;
+  }
+  function lc(t) { return String(t).toLowerCase(); }
+
   // ---------------------------------------------------------------- sector rules
 
   function clampSector(n) { n = Math.floor(typeof n === "number" && isFinite(n) ? n : 1); return Math.max(1, Math.min(999, n)); }
@@ -299,36 +322,37 @@
     return ship;
   }
 
-  function buildShip(state, type) {
+  function buildShip(state, type, labels) {
     const def = SHIP_TYPES[type];
     if (!def) return { ok: false, reason: "Unknown ship type." };
     if (state.over) return { ok: false, reason: "This run is over." };
     const cost = shipCost(state, type);
-    if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials for a " + def.label.toLowerCase() + "." };
+    if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials for a " + lc(labels && labels.ship[type] || def.label) + "." };
     pay(state, cost);
     return { ok: true, ship: addShip(state, type) };
   }
 
   // Returns "" when a base can go at (x, y), otherwise the reason it cannot. Allocation free.
-  function baseSpotProblem(state, x, y) {
+  function baseSpotProblem(state, x, y, labels) {
     const m = BASE_R + 6;
     if (!(x >= m && y >= m && x <= state.w - m && y <= state.h - m)) return "Too close to the edge of space.";
     for (let i = 0; i < state.bases.length; i++) {
-      if (Math.hypot(x - state.bases[i].x, y - state.bases[i].y) < BASE_GAP) return "Too close to another base.";
+      if (Math.hypot(x - state.bases[i].x, y - state.bases[i].y) < BASE_GAP) return "Too close to another " + (labels ? labels.base : "base") + ".";
     }
     for (let i = 0; i < state.bodies.length; i++) {
       const b = state.bodies[i];
-      if (Math.hypot(x - b.x, y - b.y) < b.r + BASE_R + 24) return "Too close to a planet or asteroid.";
+      if (Math.hypot(x - b.x, y - b.y) < b.r + BASE_R + 24) return labels && labels.body.asteroid !== "Asteroid"
+        ? "Too close to a " + lc(labels.body.asteroid) + " or " + lc(labels.body.iceplanet) + "." : "Too close to a planet or asteroid.";
     }
     return "";
   }
 
-  function placeBase(state, x, y) {
+  function placeBase(state, x, y, labels) {
     if (state.over) return { ok: false, reason: "This run is over." };
-    const problem = baseSpotProblem(state, x, y);
+    const problem = baseSpotProblem(state, x, y, labels);
     if (problem) return { ok: false, reason: problem };
     const cost = baseCost(state);
-    if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials for a base." };
+    if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials for a " + (labels ? labels.base : "base") + "." };
     pay(state, cost);
     const base = { id: state.bases.length, x, y, home: false, tier: 0 };
     state.bases.push(base);
@@ -338,11 +362,11 @@
   }
 
   // Each base can be upgraded once per tier. Faster unloading and a longer drop-off range; no other power.
-  function upgradeBase(state, baseId) {
-    const base = state.bases[baseId];
-    if (!base) return { ok: false, reason: "No such base." };
+  function upgradeBase(state, baseId, labels) {
+    const base = state.bases[baseId], bw = labels ? labels.base : "base";
+    if (!base) return { ok: false, reason: "No such " + bw + "." };
     if (state.over) return { ok: false, reason: "This run is over." };
-    if ((base.tier | 0) >= MAX_TIER) return { ok: false, reason: "This base is fully upgraded." };
+    if ((base.tier | 0) >= MAX_TIER) return { ok: false, reason: "This " + bw + " is fully upgraded." };
     const cost = upgradeCost(state, baseId);
     if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials for the upgrade." };
     pay(state, cost);
@@ -365,9 +389,9 @@
   }
 
   // Cleared the goal: move the fleet and the stock to a new, harder map one step further out.
-  function warpToNextSector(state) {
+  function warpToNextSector(state, labels) {
     if (state.over) return { ok: false, reason: "This run is over." };
-    if (!state.won) return { ok: false, reason: "Build " + goalBases(state.sector) + " bases first." };
+    if (!state.won) return { ok: false, reason: "Build " + goalBases(state.sector) + " " + lc(labels ? labels.bases : "bases") + " first." };
     for (const s of state.ships) {            // cargo still aboard is handed in before the jump
       if (s.cargo > 0 && s.res) { deliver(state, s.res, s.cargo); }
       s.cargo = 0; s.res = ""; s.st = IDLE; s.target = -1; s.dest = -1; s.star = -1; s.wait = 0; s.hitCd = 0; s.mv = 0;
@@ -417,9 +441,9 @@
   }
 
   // Like recallShip, but to one chosen base instead of the nearest. An idle ship goes too.
-  function returnToBase(state, shipId, baseId) {
+  function returnToBase(state, shipId, baseId, labels) {
     const ship = state.ships[shipId], base = state.bases[baseId];
-    if (!ship || !base) return { ok: false, reason: "No such ship or base." };
+    if (!ship || !base) return { ok: false, reason: "No such ship or " + (labels ? labels.base : "base") + "." };
     ship.target = -1;
     ship.dest = baseId;
     ship.star = -1;
@@ -616,7 +640,8 @@
 
   function r0(n) { return Math.floor(n + 1e-6); }
 
-  function jobText(state, ship) {
+  function jobText(state, ship, labels) {
+    const L = labels || SPACE_LABELS;
     const body = ship.target >= 0 ? state.bodies[ship.target] : null;
     const def = SHIP_TYPES[ship.type];
     switch (ship.st) {
@@ -625,10 +650,23 @@
       case TO_STAR: return "Flying to a star";
       case UNLOADING: return "Unloading";
       case TO_BASE:
-        return ship.cargo > 0 ? "Hauling " + r0(ship.cargo) + " " + ship.res + " home"
-          : (body ? "Back to base, then " + body.name : "Returning to base");
+        return ship.cargo > 0 ? "Hauling " + r0(ship.cargo) + " " + (L.res[ship.res] || ship.res) + " home"
+          : (body ? "Back to " + L.base + ", then " + body.name : "Returning to " + L.base);
       default: return "Idle. Select it, then pick a target.";
     }
+  }
+
+  // A stored ship name is "<type label> <n>" (e.g. "Miner 3"). Shown in a theme's wording; any other name stays as it is.
+  function shipLabel(ship, labels) {
+    const isObj = ship && typeof ship === "object";
+    const name = isObj ? String(ship.name == null ? "" : ship.name) : String(ship == null ? "" : ship);
+    if (!labels || !labels.ship) return name;
+    const m = /^(.+) (\d+)$/.exec(name);
+    if (!m) return name;
+    let type = isObj && Object.prototype.hasOwnProperty.call(SHIP_TYPES, ship.type) ? ship.type : null;
+    if (type && SHIP_TYPES[type].label !== m[1]) type = null;
+    if (!type) for (const t of Object.keys(SHIP_TYPES)) if (SHIP_TYPES[t].label === m[1]) { type = t; break; }
+    return type && labels.ship[type] ? labels.ship[type] + " " + m[2] : name;
   }
 
   // ---------------------------------------------------------------- stress test helper
@@ -778,6 +816,21 @@
   // best score. Stars buy looks only, never power.
 
   const LOOKS = {
+    theme: [   // scene: the one sky a theme draws (null = the chosen background); labels: wording overrides
+      { id: "space", name: "Space", cost: 0, scene: null, note: "Ships, bases and backgrounds as chosen below.", labels: {} },
+      { id: "dwarven", name: "Dwarven", cost: 60, scene: "cavern", note: "Dwarves and mine carts dig ores and gems for forge halls, deep underground.",
+        labels: { res: { ore: "iron", ice: "silver", crystal: "gems" }, resTitle: { ore: "Iron", ice: "Silver", crystal: "Gems" },
+          ship: { miner: "Dwarf", hauler: "Mine cart" }, ships: "Dwarves",
+          base: "forge", baseTitle: "Forge", bases: "Forges", home: "Great hall", newBase: "New forge",
+          body: { asteroid: "Iron vein", moon: "Silver seam", iceplanet: "Silver lode", rare: "Gem geode" },
+          storm: "Flooded tunnel", shower: "Cave-in", sector: "Depth", warp: "Dig to next depth" } },
+      { id: "hamster", name: "Hamster", cost: 120, scene: "habitat", note: "Hamsters fetch seeds, nuts and carrots for their running wheels.",
+        labels: { res: { ore: "seeds", ice: "nuts", crystal: "carrots" }, resTitle: { ore: "Seeds", ice: "Nuts", crystal: "Carrots" },
+          ship: { miner: "Hamster", hauler: "Big hamster" }, ships: "Hamsters",
+          base: "wheel", baseTitle: "Wheel", bases: "Wheels", home: "Home wheel", newBase: "New wheel",
+          body: { asteroid: "Seed pile", moon: "Nut stash", iceplanet: "Nut bowl", rare: "Carrot patch" },
+          storm: "Sticky bedding", shower: "Cat swipes", sector: "Cage", warp: "Move to next cage" } },
+    ],
     ship: [
       { id: "classic", name: "Classic", cost: 0, miner: "#5b9cf0", hauler: "#f0b020" },
       { id: "crimson", name: "Crimson", cost: 2, miner: "#ef5a5a", hauler: "#ffb085" },
@@ -793,17 +846,24 @@
       { id: "lime",  name: "Lime",  cost: 5, main: "#9be35a", home: "#dcf7a8" },
     ],
     bg: [   // blobs are [x, y, radius] as fractions of the screen, then a colour
-      { id: "deep", name: "Deep space", cost: 0, top: "#03040b", bottom: "#090a1c", blobs: [
+      { id: "deep", scene: "nebula", name: "Deep space", cost: 0, top: "#03040b", bottom: "#090a1c", blobs: [
         [0.22, 0.28, 0.55, "rgba(98,80,214,0.20)"], [0.82, 0.72, 0.5, "rgba(42,120,214,0.16)"],
         [0.62, 0.12, 0.32, "rgba(232,123,164,0.07)"], [0.1, 0.9, 0.3, "rgba(27,175,122,0.06)"]] },
-      { id: "aurora", name: "Aurora", cost: 4, top: "#021012", bottom: "#07182a", blobs: [
+      { id: "aurora", scene: "nebula", name: "Aurora", cost: 4, top: "#021012", bottom: "#07182a", blobs: [
         [0.25, 0.2, 0.55, "rgba(40,214,160,0.18)"], [0.8, 0.35, 0.45, "rgba(60,150,230,0.16)"],
         [0.5, 0.9, 0.4, "rgba(120,90,230,0.12)"]] },
-      { id: "ember", name: "Ember", cost: 6, top: "#110504", bottom: "#1d0a10", blobs: [
+      { id: "ember", scene: "nebula", name: "Ember", cost: 6, top: "#110504", bottom: "#1d0a10", blobs: [
         [0.2, 0.75, 0.55, "rgba(230,90,40,0.18)"], [0.85, 0.25, 0.5, "rgba(200,40,80,0.15)"],
         [0.55, 0.5, 0.3, "rgba(255,170,60,0.06)"]] },
-      { id: "void", name: "Void", cost: 8, top: "#000000", bottom: "#050507", blobs: [
+      { id: "void", scene: "nebula", name: "Void", cost: 8, top: "#000000", bottom: "#050507", blobs: [
         [0.5, 0.5, 0.7, "rgba(120,120,150,0.07)"], [0.15, 0.15, 0.3, "rgba(170,170,200,0.05)"]] },
+      { id: "black", name: "Deep Black", cost: 4, scene: "sparse", top: "#000000", bottom: "#000000", blobs: [] },
+      { id: "belt", name: "Asteroid Belt", cost: 5, scene: "belt", top: "#05060a", bottom: "#0d0b10", blobs: [
+        [0.5, 0.55, 0.6, "rgba(150,120,90,0.07)"]] },
+      { id: "spiral", name: "Galaxy Spiral", cost: 7, scene: "spiral", top: "#02030a", bottom: "#070716", blobs: [
+        [0.5, 0.5, 0.5, "rgba(130,110,230,0.10)"]] },
+      { id: "solarsys", name: "Solar System", cost: 8, scene: "solar", top: "#02030a", bottom: "#05071a", blobs: [
+        [0.5, 0.5, 0.35, "rgba(255,200,90,0.05)"]] },
     ],
     trail: [
       { id: "streak", name: "Streak", cost: 0, note: "A fading line." },
@@ -811,8 +871,8 @@
       { id: "ribbon", name: "Ribbon", cost: 8, note: "A wide soft ribbon." },
     ],
   };
-  const LOOK_KINDS = ["ship", "base", "bg", "trail"];
-  const LOOK_TITLES = { ship: "Ship colours", base: "Base colours", bg: "Backgrounds", trail: "Engine trails" };
+  const LOOK_KINDS = ["theme", "ship", "base", "bg", "trail"];
+  const LOOK_TITLES = { theme: "Theme", ship: "Ship colours", base: "Base colours", bg: "Backgrounds", trail: "Engine trails" };
 
   function lookById(kind, id) {
     const list = LOOKS[kind];
@@ -866,10 +926,22 @@
     return { ok: true };
   }
 
+  // The wording for a theme: SPACE_LABELS with the theme's overrides. A fresh object every call; unknown id -> space.
+  function labelsFor(themeId) {
+    const t = lookById("theme", themeId);
+    return mergeLabels(SPACE_LABELS, t ? t.labels : null);
+  }
+
   // The resolved looks for drawing.
   function currentLooks(p) {
-    return { ship: lookById("ship", p.pick.ship), base: lookById("base", p.pick.base),
-      bg: lookById("bg", p.pick.bg), trail: lookById("trail", p.pick.trail) };
+    const theme = lookById("theme", p.pick.theme) || LOOKS.theme[0];
+    return { theme, ship: lookById("ship", p.pick.ship), base: lookById("base", p.pick.base),
+      bg: lookById("bg", p.pick.bg), trail: lookById("trail", p.pick.trail), labels: labelsFor(theme.id) };
+  }
+
+  // The one scene the sky draws: the theme's own, else the chosen background's.
+  function sceneFor(looks) {
+    return (looks.theme && looks.theme.scene) || (looks.bg && looks.bg.scene) || "nebula";
   }
 
   function starKey(state, star) { return state.seed + ":" + state.sector + ":" + star.id; }
@@ -1348,7 +1420,7 @@
     playerRuns, playerBuys, playerTotals, rankPlayers, topRuns, clearPlayerData, exportLogs,
     VERSION, TUNING, BASE_R, BASE_GAP, GOAL_BASES, RES, START_STOCK, SHIP_TYPES, BASE_COST, MAX_TIER,
     IDLE, TO_BODY, MINING, TO_BASE, UNLOADING, TO_STAR,
-    LOOKS, LOOK_KINDS, LOOK_TITLES,
+    LOOKS, LOOK_KINDS, LOOK_TITLES, SPACE_LABELS, labelsFor, sceneFor, shipLabel,
     rng, newGame, canAfford, buildShip, addShip, baseSpotProblem, placeBase, checkWin,
     clampSector, mapScale, worldSize, mapSeed, goalBases, amountMult, crystalCount, bodyCount, crystalRich, BODY_SPECS, costMult, stormCount, showersOn,
     showerGap, showerHit, parTime, baseCost, shipCost, upgradeCost, upgradeBase, warpToNextSector,
