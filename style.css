@@ -158,3 +158,24 @@ button:focus-visible, .grid th.sortable:focus-visible, .grid tr.click:focus-visi
 #keys[hidden] { display: none; }
 #keys b { display: block; margin-bottom: 2px; color: #9aa4e0; letter-spacing: 0.12em; text-transform: uppercase; font-size: 10px; }
 #keys kbd { font: inherit; font-weight: 700; color: #8fd8ff; }
+
+/* hazards and defence */
+#bases { max-height: 230px; }
+.base-extra { display: flex; flex-wrap: wrap; gap: 4px; margin: -1px 0 7px; }
+.base-extra button { padding: 2px 7px; font-size: 12px; text-align: left; }
+.base-extra small { color: #9aa4e0; }
+.base-extra small.done { align-self: center; color: #7fd8a8; }
+.base-extra button.fix { border-color: #4a9a70; }
+#alerts { position: absolute; left: 10px; top: 56px; display: flex; flex-direction: column; gap: 4px; max-width: 340px; pointer-events: none; }
+#alerts:empty { display: none; }
+#alerts .chip { background: rgba(10, 11, 29, 0.82); border: 1px solid rgba(160, 180, 255, 0.3); border-radius: 8px; padding: 3px 10px; font-size: 12px; }
+#alerts .chip b { font-variant-numeric: tabular-nums; }
+#alerts .chip.warn { border-color: #f0b020; color: #ffe2a0; }
+#alerts .chip.warn.raid, #alerts .chip.raid { border-color: #ee6b6b; color: #ffb0b0; }
+#alerts .chip.warn.fog { border-color: #aab5da; color: #dfe6ff; }
+#alerts .chip.flare { border-color: #ffd05a; color: #fff0b8; background: rgba(70, 46, 8, 0.85); }
+#board li.dead { opacity: 0.45; cursor: default; }
+#board li.dead .name { text-decoration: line-through; }
+#board .hp { color: #f0a0a0; }
+#board li button.fix { padding: 2px 6px; font-size: 11px; border-color: #4a9a70; flex: none; }
+#board li button.fix[hidden] { display: none; }
