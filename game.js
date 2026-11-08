@@ -252,6 +252,7 @@
       score: { mat: 0, bases: 0, sectors: 0, time: 0 },
       cleared: 0, starsGot: 0, hits: 0,
       delivered: { ore: 0, ice: 0, crystal: 0 },        // units handed in, by type
+      starsPaid: [],                                    // star keys already paid to someone; each star pays once per save
     };
   }
 
@@ -729,6 +730,12 @@
       state.score.bases = Math.max(0, raw.bases.length - 1) * T.score.base;
       if (state.won) { state.cleared = 1; state.score.sectors = T.score.sector; }   // a cleared sector 1 earns its points
     }
+    if (Array.isArray(raw.starsPaid)) {
+      state.starsPaid = raw.starsPaid.filter(k => typeof k === "string" && k.length <= 64).slice(-T.bank.claimedKeep);
+    } else {
+      // a save from before this field: its taken stars were already paid to whoever was playing
+      for (const st of state.stars) if (st.taken) state.starsPaid.push(starKey(state, st));
+    }
     for (let i = 0; i < raw.ships.length; i++) {
       const s = raw.ships[i];
       if (!s || typeof s.type !== "string" || !Object.prototype.hasOwnProperty.call(SHIP_TYPES, s.type)) return { ok: false, error: "Save has a bad ship." };
@@ -868,19 +875,24 @@
   function starKey(state, star) { return state.seed + ":" + state.sector + ":" + star.id; }
 
   // Move newly picked-up stars into the bank. Each star pays once, even if an older save is loaded
-  // and the star is picked up again. Returns how many stars were added.
+  // and the star is picked up again. It also pays once per save: state.starsPaid remembers stars paid
+  // to any player, so someone who switches in on the same save is not paid again. Returns how many were added.
   function claimStars(p, state) {
     let n = 0;
+    if (!Array.isArray(state.starsPaid)) state.starsPaid = [];
     for (let i = 0; i < state.stars.length; i++) {
       const s = state.stars[i];
       if (!s.taken) continue;
       const key = starKey(state, s);
+      if (state.starsPaid.indexOf(key) >= 0) continue;
+      state.starsPaid.push(key);
       if (p.claimed.indexOf(key) >= 0) continue;
       p.claimed.push(key);
       p.stars++;
       n++;
     }
     if (p.claimed.length > T.bank.claimedKeep) p.claimed.splice(0, p.claimed.length - T.bank.claimedKeep);
+    if (state.starsPaid.length > T.bank.claimedKeep) state.starsPaid.splice(0, state.starsPaid.length - T.bank.claimedKeep);
     return n;
   }
 
@@ -937,7 +949,7 @@
     if (j.err) return bad("The players list is not valid JSON.");
     const raw = j.raw;
     if (!isObj(raw) || !Array.isArray(raw.players)) return bad("The players list has the wrong shape.");
-    const players = [], ids = {}, names = {};
+    const players = [], ids = Object.create(null), names = Object.create(null);   // no prototype: "constructor" is a fine name
     let maxNum = 0;
     for (const p of raw.players.slice(0, LG.players * 4)) {
       if (players.length >= LG.players) break;

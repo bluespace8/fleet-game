@@ -894,6 +894,49 @@ test("stars from different sectors of one run are different stars", () => {
   assert.strictEqual(G.claimStars(p, s), 1);
   assert.strictEqual(p.stars, 2);
 });
+test("a star pays once per save, to whoever took it, not again to another player", () => {
+  const a = G.newProfile(), b = G.newProfile(), s = G.newGame(2);
+  s.stars[0].taken = true; s.stars[1].taken = true;
+  assert.strictEqual(G.claimStars(a, s), 2);
+  assert.strictEqual(G.claimStars(b, s), 0, "same state object, other player");
+  const t = G.deserialize(G.serialize(s)).state;     // saved and loaded by the other player
+  G.syncClaimed(t, b);
+  assert.strictEqual(G.claimStars(b, t), 0, "after serialize/deserialize");
+  assert.strictEqual(b.stars, 0);
+  t.stars[2].taken = true;
+  assert.strictEqual(G.claimStars(b, t), 1, "a new star pays the current player");
+  assert.strictEqual(G.claimStars(a, t), 0, "and not the first player afterwards");
+  assert.strictEqual(b.stars, 1);
+  assert.strictEqual(a.stars, 2);
+});
+test("a save without the paid-stars field still loads and does not pay its taken stars again", () => {
+  const s = G.newGame(2); s.stars[0].taken = true;
+  const raw = JSON.parse(G.serialize(s)); delete raw.starsPaid;
+  const r = G.deserialize(JSON.stringify(raw));
+  assert.ok(r.ok);
+  assert.strictEqual(r.state.stars[0].taken, true);
+  const p = G.newProfile();
+  assert.strictEqual(G.claimStars(p, r.state), 0, "already paid under the old rules");
+  r.state.stars[1].taken = true;
+  assert.strictEqual(G.claimStars(p, r.state), 1);
+  const bad = JSON.parse(G.serialize(s)); bad.starsPaid = "x";
+  assert.ok(G.deserialize(JSON.stringify(bad)).ok, "a damaged field falls back, not fails");
+});
+test("player names and ids that are reserved words survive a reload", () => {
+  const r = G.newRoster("2026-11-07T10:00:00.000Z");
+  assert.ok(G.addPlayer(r, "constructor", "2026-11-07T10:00:00.000Z").ok);
+  assert.ok(G.addPlayer(r, "__proto__", "2026-11-07T10:00:00.000Z").ok);
+  assert.ok(G.addPlayer(r, "hasOwnProperty", "2026-11-07T10:00:00.000Z").ok);
+  const back = G.parseRoster(G.serializeRoster(r), null, "2026-11-07T10:00:00.000Z");
+  assert.ok(back.ok);
+  assert.deepStrictEqual(back.roster.players.map(p => p.name), ["Player 1", "constructor", "__proto__", "hasOwnProperty"]);
+  for (const bad of ["__proto__", "constructor", "hasOwnProperty", "toString"]) {
+    const raw = JSON.parse(G.serializeRoster(r)); raw.current = bad;
+    const q = G.parseRoster(JSON.stringify(raw), null, "2026-11-07T10:00:00.000Z");
+    assert.ok(q.ok);
+    assert.strictEqual(q.roster.current, q.roster.players[0].id, "current " + bad + " falls back to the first player");
+  }
+});
 test("buying needs stars, charges once, and unlocks the item", () => {
   const p = G.newProfile();
   const item = G.LOOKS.ship[1];
@@ -1084,7 +1127,7 @@ test("tuning has the log limits", () => {
 test("delivered counts units by type, including the warp hand-in, and survives a save", () => {
   const s = G.newGame(3);
   assert.deepStrictEqual(s.delivered, { ore: 0, ice: 0, crystal: 0 });
-  assert.strictEqual(Object.keys(s).pop(), "delivered", "added last in blankState");
+  assert.deepStrictEqual(Object.keys(s).slice(-2), ["delivered", "starsPaid"], "delivered then starsPaid, added last in blankState");
   s.ships[0].res = "ice"; s.ships[0].cargo = 7;
   s.ships[1].res = "crystal"; s.ships[1].cargo = 3;
   buildGoal(s);
