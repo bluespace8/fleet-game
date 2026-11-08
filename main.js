@@ -40,7 +40,7 @@
     endShown: false, endOpen: false, hangar: false, feedback: false, starsSeen: 0,
     dlg: [], sort: { col: "best", dir: "desc" }, noLog: false };
   const view = { sc: 1, ox: 0, oy: 0, W: 1, H: 1, dpr: 1 };
-  let skyStars = [], nebula = null;
+  let skyStars = [], nebula = null, scene = null;   // scene: the entry of SCENES in use
   const trails = new Map();
   const shapes = new Map();
   let time = 0, acc = 0, lastT = 0, lastBoard = 0, lastSave = 0, boardKey = "", buildHtml = "", basesHtml = "", toastTimer = 0, topH = 0;
@@ -260,30 +260,273 @@
     buildSky();
   }
 
+  // ---------------------------------------------------------------- sky scenes
+  // SCENES[name] = { build(n, W, H), draw(dt) }. build paints the static part into the offscreen
+  // context n (CSS-pixel units) and sets up any moving things; draw(dt) runs every frame and must stay
+  // cheap (no gradients made in loops). To add a scene, add an entry here; unknown names fall back to nebula.
+
+  const SCENES = {};
+
+  function sceneName() {
+    return G.sceneFor ? G.sceneFor(looks) : (looks.bg.scene || "nebula");
+  }
+
   function buildSky() {
     const { W, H, dpr } = view;
-    const count = Math.min(420, Math.round((W * H) / 3000));
-    skyStars = Array.from({ length: count }, () => {
-      const layer = Math.random() < 0.6 ? 0 : Math.random() < 0.75 ? 1 : 2;
-      return { x: Math.random() * W, y: Math.random() * H, layer, r: [0.6, 1, 1.5][layer] * (0.7 + Math.random() * 0.6),
-        a: [0.45, 0.7, 0.95][layer], ph: Math.random() * 6.28, sp: 0.6 + Math.random() * 2.2,
-        tint: Math.random() < 0.15 ? "#ffd9b0" : Math.random() < 0.3 ? "#b9d4ff" : "#ffffff" };
-    });
+    scene = SCENES[sceneName()] || SCENES.nebula;
     nebula = document.createElement("canvas");
     nebula.width = canvas.width; nebula.height = canvas.height;
     const n = nebula.getContext("2d");
     n.scale(dpr, dpr);
-    const bg = looks.bg;
-    const base = n.createLinearGradient(0, 0, W, H);
-    base.addColorStop(0, bg.top); base.addColorStop(1, bg.bottom);
-    n.fillStyle = base; n.fillRect(0, 0, W, H);
-    const big = Math.max(W, H);
-    for (const [fx, fy, fr, color] of bg.blobs) {
-      const g = n.createRadialGradient(W * fx, H * fy, 0, W * fx, H * fy, big * fr);
-      g.addColorStop(0, color); g.addColorStop(1, "rgba(0,0,0,0)");
-      n.fillStyle = g; n.fillRect(0, 0, W, H);
-    }
+    scene.build(n, W, H);
   }
+
+  function sceneStars(n, rnd, count, maxR, alpha) {   // static specks painted into the backdrop
+    for (let i = 0; i < count; i++) {
+      const r = 0.5 + rnd() * maxR, t = rnd();
+      n.globalAlpha = alpha * (0.35 + 0.65 * rnd());
+      n.fillStyle = t < 0.15 ? "#ffd9b0" : t < 0.3 ? "#b9d4ff" : "#ffffff";
+      n.fillRect(rnd() * view.W, rnd() * view.H, r, r);
+    }
+    n.globalAlpha = 1;
+  }
+
+  function spriteCanvas(w, h) {
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.ceil(w)); c.height = Math.max(1, Math.ceil(h));
+    return c;
+  }
+
+  // -- nebula: the original drifting stars over colour blobs (unchanged)
+  SCENES.nebula = {
+    build(n, W, H) {
+      const count = Math.min(420, Math.round((W * H) / 3000));
+      skyStars = Array.from({ length: count }, () => {
+        const layer = Math.random() < 0.6 ? 0 : Math.random() < 0.75 ? 1 : 2;
+        return { x: Math.random() * W, y: Math.random() * H, layer, r: [0.6, 1, 1.5][layer] * (0.7 + Math.random() * 0.6),
+          a: [0.45, 0.7, 0.95][layer], ph: Math.random() * 6.28, sp: 0.6 + Math.random() * 2.2,
+          tint: Math.random() < 0.15 ? "#ffd9b0" : Math.random() < 0.3 ? "#b9d4ff" : "#ffffff" };
+      });
+      const bg = looks.bg;
+      const base = n.createLinearGradient(0, 0, W, H);
+      base.addColorStop(0, bg.top); base.addColorStop(1, bg.bottom);
+      n.fillStyle = base; n.fillRect(0, 0, W, H);
+      const big = Math.max(W, H);
+      for (const [fx, fy, fr, color] of bg.blobs) {
+        const g = n.createRadialGradient(W * fx, H * fy, 0, W * fx, H * fy, big * fr);
+        g.addColorStop(0, color); g.addColorStop(1, "rgba(0,0,0,0)");
+        n.fillStyle = g; n.fillRect(0, 0, W, H);
+      }
+    },
+    draw(dt) {
+      const drift = [3, 7, 14];
+      for (const s of skyStars) {
+        if (!reduceMotion) {
+          s.x -= drift[s.layer] * dt;
+          if (s.x < -2) { s.x = view.W + 2; s.y = Math.random() * view.H; }
+          s.ph += s.sp * dt;
+        }
+        ctx.globalAlpha = s.a * (0.65 + 0.35 * Math.sin(s.ph));
+        ctx.fillStyle = s.tint;
+        ctx.fillRect(s.x, s.y, s.r, s.r);
+      }
+      ctx.globalAlpha = 1;
+    },
+  };
+
+  // -- sparse (Deep Black): pure black, about 1/8 of the usual stars, almost all still
+  let sparseTw = [];
+  SCENES.sparse = {
+    build(n, W, H) {
+      const rnd = G.rng(4242);
+      n.fillStyle = "#000"; n.fillRect(0, 0, W, H);
+      const count = Math.max(8, Math.round(Math.min(420, (W * H) / 3000) / 8));
+      sparseTw = [];
+      for (let i = 0; i < count; i++) {
+        const x = rnd() * W, y = rnd() * H, r = 1 + rnd() * 1.4, t = rnd();
+        const color = t < 0.15 ? "#ffd9b0" : t < 0.3 ? "#b9d4ff" : "#ffffff";
+        if (i % 6 === 0) sparseTw.push({ x, y, r, color, ph: rnd() * 6.28, sp: 0.15 + rnd() * 0.25 });   // a few twinkle
+        else { n.fillStyle = color; n.globalAlpha = 0.8 + rnd() * 0.2; n.fillRect(x, y, r, r); }
+      }
+      n.globalAlpha = 1;
+    },
+    draw(dt) {
+      for (const s of sparseTw) {
+        if (!reduceMotion) s.ph += s.sp * dt;
+        const dip = reduceMotion ? 0 : Math.pow(Math.max(0, Math.sin(s.ph)), 10);   // dims only briefly
+        ctx.globalAlpha = 0.95 - 0.8 * dip;
+        ctx.fillStyle = s.color;
+        ctx.fillRect(s.x, s.y, s.r, s.r);
+      }
+      ctx.globalAlpha = 1;
+    },
+  };
+
+  // -- solar: a sun off to the left, planets on faint elliptical orbits, one ringed
+  let solarPlanets = [], solarSun = { x: 0, y: 0, ct: 1, st: 0 };
+  function planetSprite(r, light, dark, ring) {
+    const pad = ring ? r * 1.9 : 2, size = (r + pad) * 2, c = spriteCanvas(size * view.dpr, size * view.dpr), g = c.getContext("2d"), m = size / 2;
+    g.scale(view.dpr, view.dpr);   // built at device resolution, drawn at CSS size
+    const ringPath = (a0, a1) => {
+      g.beginPath(); g.ellipse(m, m, r * 1.85, r * 0.55, -0.35, a0, a1); g.stroke();
+    };
+    if (ring) {
+      g.strokeStyle = "rgba(220,200,160,0.55)"; g.lineWidth = Math.max(1.5, r * 0.22); ringPath(Math.PI, Math.PI * 2);
+    }
+    const sh = g.createRadialGradient(m - r * 0.45, m - r * 0.3, r * 0.1, m, m, r * 1.05);
+    sh.addColorStop(0, light); sh.addColorStop(1, dark);
+    g.fillStyle = sh; g.beginPath(); g.arc(m, m, r, 0, Math.PI * 2); g.fill();
+    if (ring) {
+      g.strokeStyle = "rgba(235,215,175,0.8)"; g.lineWidth = Math.max(1.5, r * 0.22); ringPath(0, Math.PI);
+    }
+    return c;
+  }
+  SCENES.solar = {
+    build(n, W, H) {
+      const rnd = G.rng(777), u = Math.min(W, H);
+      const bgG = n.createLinearGradient(0, 0, W, H);
+      bgG.addColorStop(0, "#03040c"); bgG.addColorStop(1, "#060814");
+      n.fillStyle = bgG; n.fillRect(0, 0, W, H);
+      sceneStars(n, rnd, Math.round((W * H) / 3500), 1.1, 0.8);
+      const sx = W * 0.1, sy = H * 0.55, sr = u * 0.1, tilt = -0.1;
+      solarSun = { x: sx, y: sy, ct: Math.cos(tilt), st: Math.sin(tilt) };
+      const defs = [   // [orbit rx (fraction of W), planet radius (fraction of the short side), light, dark, ring, rad/s, start angle]
+        [0.17, 0.012, "#d8c7b0", "#6d6258", false, 0.020, -0.6],
+        [0.28, 0.019, "#f2d9a0", "#a8793a", false, 0.014, 0.4],
+        [0.41, 0.021, "#9cc8ff", "#2a5da8", false, 0.010, -0.2],
+        [0.58, 0.016, "#f0a080", "#8c3a22", false, 0.007, 0.7],
+        [0.78, 0.034, "#ecd6a0", "#9a7c48", true, 0.004, -0.4],
+      ];
+      n.strokeStyle = "rgba(160,180,255,0.10)"; n.lineWidth = 1;
+      solarPlanets = defs.map(d => {
+        const rx = W * d[0], ry = rx * 0.3;
+        n.beginPath(); n.ellipse(sx, sy, rx, ry, tilt, 0, Math.PI * 2); n.stroke();
+        const r = Math.max(2.5, u * d[1]);
+        return { rx, ry, ang: d[6], w: d[5], sprite: planetSprite(r, d[2], d[3], d[4]), half: r + (d[4] ? r * 1.9 : 2) };
+      });
+      // sun: wide glow, then a bright disc
+      const glow = n.createRadialGradient(sx, sy, sr * 0.5, sx, sy, sr * 4.5);
+      glow.addColorStop(0, "rgba(255,200,90,0.55)"); glow.addColorStop(0.35, "rgba(255,150,50,0.18)"); glow.addColorStop(1, "rgba(255,120,30,0)");
+      n.fillStyle = glow; n.fillRect(0, 0, W, H);
+      const disc = n.createRadialGradient(sx, sy, 0, sx, sy, sr);
+      disc.addColorStop(0, "#fffbe6"); disc.addColorStop(0.7, "#ffd56a"); disc.addColorStop(1, "#ff9d2e");
+      n.fillStyle = disc; n.beginPath(); n.arc(sx, sy, sr, 0, Math.PI * 2); n.fill();
+    },
+    draw(dt) {
+      const { x, y, ct, st } = solarSun;
+      for (const p of solarPlanets) {
+        if (!reduceMotion) p.ang += p.w * dt;
+        const ex = p.rx * Math.cos(p.ang), ey = p.ry * Math.sin(p.ang);
+        ctx.drawImage(p.sprite, x + ex * ct - ey * st - p.half, y + ex * st + ey * ct - p.half, p.half * 2, p.half * 2);
+      }
+    },
+  };
+
+  // -- spiral: a bright core and curved star arms, pre-rendered once and turned very slowly
+  let spiralImg = null, spiralC = { x: 0, y: 0, r: 0, rot: 0 };
+  SCENES.spiral = {
+    build(n, W, H) {
+      const rnd = G.rng(31337);
+      const bgG = n.createLinearGradient(0, 0, W, H);
+      bgG.addColorStop(0, "#02030a"); bgG.addColorStop(1, "#070511");
+      n.fillStyle = bgG; n.fillRect(0, 0, W, H);
+      sceneStars(n, rnd, Math.round((W * H) / 2600), 1.2, 0.85);
+      const r = Math.min(W, H) * 0.62, S = Math.min(2048, Math.ceil(2 * r * view.dpr)), k = S / 900;   // device-resolution sprite; k keeps the 900-unit design
+      const c = spriteCanvas(S, S), g = c.getContext("2d"), m = S / 2, R = S * 0.48;
+      const arms = 3, tints = ["#cfe0ff", "#a9c4ff", "#ffd9e8", "#ffffff"];
+      for (let a = 0; a < arms; a++) {
+        const off = (a / arms) * Math.PI * 2;
+        for (let i = 0; i < 700; i++) {
+          const t = Math.pow(rnd(), 0.8), rad = 0.06 * R + t * 0.94 * R;
+          const th = off + t * 4.2 + (rnd() - 0.5) * (0.5 - 0.3 * t);   // spiral with scatter
+          const x = m + Math.cos(th) * rad + (rnd() - 0.5) * R * 0.09 * (0.4 + t);
+          const y = m + Math.sin(th) * rad + (rnd() - 0.5) * R * 0.09 * (0.4 + t);
+          g.globalAlpha = (0.2 + 0.8 * rnd()) * (1 - t * 0.55);
+          g.fillStyle = tints[(rnd() * tints.length) | 0];
+          const s = (0.8 + rnd() * (1.6 - t)) * k;
+          g.fillRect(x, y, s, s);
+        }
+        for (let i = 0; i < 14; i++) {   // soft arm haze
+          const t = (i + 0.5) / 14, rad = 0.06 * R + t * 0.94 * R, th = off + t * 4.2;
+          const x = m + Math.cos(th) * rad, y = m + Math.sin(th) * rad, hr = R * (0.1 + 0.05 * t);
+          const hz = g.createRadialGradient(x, y, 0, x, y, hr);
+          hz.addColorStop(0, "rgba(120,150,255,0.10)"); hz.addColorStop(1, "rgba(120,150,255,0)");
+          g.globalAlpha = 1; g.fillStyle = hz; g.fillRect(x - hr, y - hr, hr * 2, hr * 2);
+        }
+      }
+      g.globalAlpha = 1;
+      const core = g.createRadialGradient(m, m, 0, m, m, R * 0.28);
+      core.addColorStop(0, "rgba(255,248,225,1)"); core.addColorStop(0.25, "rgba(255,222,160,0.75)");
+      core.addColorStop(0.6, "rgba(255,170,110,0.22)"); core.addColorStop(1, "rgba(255,150,100,0)");
+      g.fillStyle = core; g.fillRect(0, 0, S, S);
+      spiralImg = c;
+      spiralC = { x: W * 0.62, y: H * 0.5, r, rot: 0 };
+    },
+    draw(dt) {
+      if (!spiralImg) return;
+      if (!reduceMotion) spiralC.rot += 0.012 * dt;   // one turn in about 9 minutes
+      ctx.save();
+      ctx.translate(spiralC.x, spiralC.y); ctx.rotate(spiralC.rot);
+      ctx.drawImage(spiralImg, -spiralC.r, -spiralC.r, spiralC.r * 2, spiralC.r * 2);
+      ctx.restore();
+    },
+  };
+
+  // -- belt: a diagonal band of lumpy rocks at three depths, drifting along the band
+  let beltRocks = [], beltGeo = { cx: 0, cy: 0, dx: 1, dy: 0, nx: 0, ny: 1, len: 1 };
+  function rockSprite(size, hue, rnd) {
+    const c = spriteCanvas(size * view.dpr, size * view.dpr), g = c.getContext("2d"), m = size / 2, k = 9 + ((rnd() * 4) | 0);
+    g.scale(view.dpr, view.dpr);   // built at device resolution, drawn at CSS size
+    g.beginPath();
+    for (let i = 0; i < k; i++) {
+      const a = (i / k) * Math.PI * 2, r = m * (0.62 + rnd() * 0.36);
+      g[i ? "lineTo" : "moveTo"](m + Math.cos(a) * r, m + Math.sin(a) * r);
+    }
+    g.closePath();
+    const lg = g.createLinearGradient(0, 0, size, size);
+    lg.addColorStop(0, "hsl(" + hue + ",14%," + (44 + rnd() * 10) + "%)");
+    lg.addColorStop(1, "hsl(" + hue + ",16%," + (18 + rnd() * 8) + "%)");
+    g.fillStyle = lg; g.fill();
+    g.strokeStyle = "rgba(0,0,0,0.45)"; g.lineWidth = 1; g.stroke();
+    g.fillStyle = "rgba(0,0,0,0.25)";   // a couple of craters
+    for (let i = 0; i < 2; i++) { g.beginPath(); g.arc(m + (rnd() - 0.5) * m, m + (rnd() - 0.5) * m, m * (0.1 + rnd() * 0.12), 0, Math.PI * 2); g.fill(); }
+    return c;
+  }
+  SCENES.belt = {
+    build(n, W, H) {
+      const rnd = G.rng(9001), u = Math.min(W, H);
+      const bgG = n.createLinearGradient(0, 0, W, H);
+      bgG.addColorStop(0, "#05060c"); bgG.addColorStop(1, "#0a0907");
+      n.fillStyle = bgG; n.fillRect(0, 0, W, H);
+      sceneStars(n, rnd, Math.round((W * H) / 3200), 1.1, 0.8);
+      const ang = 0.5, dx = Math.cos(ang), dy = -Math.sin(ang), len = Math.hypot(W, H) + 120;
+      beltGeo = { cx: W / 2, cy: H / 2, dx, dy, nx: -dy, ny: dx, len };
+      n.save(); n.translate(W / 2, H / 2); n.rotate(-ang);   // faint dust glow along the band
+      const hg = n.createLinearGradient(0, -u * 0.3, 0, u * 0.3);
+      hg.addColorStop(0, "rgba(150,120,90,0)"); hg.addColorStop(0.5, "rgba(150,120,90,0.09)"); hg.addColorStop(1, "rgba(150,120,90,0)");
+      n.fillStyle = hg; n.fillRect(-len, -u * 0.3, len * 2, u * 0.6); n.restore();
+      const sprites = [28, 35, 40, 30, 0, 20, 33, 25].map(h => rockSprite(32, h, rnd));
+      const sizes = [5, 9, 15], speeds = [6, 12, 22];   // far, mid, near (px, px/s)
+      beltRocks = [];
+      for (let i = 0; i < 190; i++) {
+        const depth = rnd() < 0.5 ? 0 : rnd() < 0.6 ? 1 : 2;
+        const spread = u * (0.12 + 0.12 * (rnd() + rnd()));
+        beltRocks.push({ s: (rnd() - 0.5) * len, o: (rnd() + rnd() - 1) * spread, depth, size: sizes[depth] * (0.7 + rnd() * 0.7),
+          spr: sprites[(rnd() * sprites.length) | 0], v: speeds[depth] });
+      }
+      beltRocks.sort((a, b) => a.depth - b.depth);   // far first
+    },
+    draw(dt) {
+      const g = beltGeo, half = g.len / 2;
+      for (const r of beltRocks) {
+        if (!reduceMotion) { r.s += r.v * dt; if (r.s > half) r.s -= g.len; }
+        const x = g.cx + g.dx * r.s + g.nx * r.o, y = g.cy + g.dy * r.s + g.ny * r.o;
+        ctx.globalAlpha = 0.55 + 0.2 * r.depth;
+        ctx.drawImage(r.spr, x - r.size / 2, y - r.size / 2, r.size, r.size);
+      }
+      ctx.globalAlpha = 1;
+    },
+  };
 
   // ---------------------------------------------------------------- drawing
 
@@ -295,18 +538,7 @@
   function drawSky(dt) {
     ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
     ctx.drawImage(nebula, 0, 0, view.W, view.H);
-    const drift = [3, 7, 14];
-    for (const s of skyStars) {
-      if (!reduceMotion) {
-        s.x -= drift[s.layer] * dt;
-        if (s.x < -2) { s.x = view.W + 2; s.y = Math.random() * view.H; }
-        s.ph += s.sp * dt;
-      }
-      ctx.globalAlpha = s.a * (0.65 + 0.35 * Math.sin(s.ph));
-      ctx.fillStyle = s.tint;
-      ctx.fillRect(s.x, s.y, s.r, s.r);
-    }
-    ctx.globalAlpha = 1;
+    if (scene) scene.draw(dt);
   }
 
   function drawOrbits() {   // dashed rings around home, one per distinct body distance
@@ -845,7 +1077,7 @@
     G.chooseLook(profile, kind, id);
     saveProfile();
     looks = G.currentLooks(profile);
-    if (kind === "bg") buildSky();
+    if (kind === "bg" || kind === "theme") buildSky();
     boardKey = ""; basesHtml = "";
     renderHangar();
     if (game) refresh();

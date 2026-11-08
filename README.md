@@ -53,6 +53,7 @@ Plain HTML, Canvas and JavaScript. No installs, no build step. The only network 
 - The Hangar (top bar, and the run-end screen) spends stars on looks only, never power: 5 ship colours,
   5 base colours, 4 map backgrounds and 3 engine-trail styles (the first of each is free). Your choices are
   kept and used in every game. Prices are small (2 to 8 stars), so a few runs unlock most things.
+  Backgrounds: the four nebulas plus Deep Black (almost no stars), Asteroid Belt, Galaxy Spiral and Solar System (planets orbit the sun slowly); with reduced motion they stay still.
 - Each player's bank also holds their best score.
 
 ## Players, scoreboard, stats and history
