@@ -48,6 +48,27 @@
 
   const shipColor = ship => looks.ship[ship.type];
 
+  // ---------------------------------------------------------------- theme wording
+  // With the Space theme (or an old game.js without labelsFor) every word below is the original wording.
+  const FALLBACK_LABELS = {
+    res: { ore: "ore", ice: "ice", crystal: "crystal" }, resTitle: { ore: "Ore", ice: "Ice", crystal: "Crystal" },
+    ship: { miner: "Miner", hauler: "Hauler" }, ships: "Ships",
+    base: "base", baseTitle: "Base", bases: "Bases", home: "Home base", newBase: "New base",
+    body: { asteroid: "Asteroid", moon: "Moon", iceplanet: "Ice planet", rare: "Rare planet" },
+    storm: "Ion storm", shower: "Meteor shower", sector: "Sector", warp: "Warp to next sector",
+  };
+  const themeId = () => (G.labelsFor && looks.theme && looks.theme.id) || "space";
+  const themed = () => themeId() !== "space";
+  const LB = () => (G.labelsFor && looks.labels) || G.SPACE_LABELS || FALLBACK_LABELS;
+  const labelArg = () => (G.labelsFor ? looks.labels : undefined);   // trailing argument of the game.js calls
+  const lc = t => String(t).toLowerCase();
+  const an = t => (/^[aeiou]/i.test(t) ? "an " : "a ") + t;
+  const shipName = s => (G.shipLabel && G.labelsFor ? G.shipLabel(s, LB()) : s.name);
+  const baseName = i => {   // "Home" / "Base 2" in Space; the theme's words otherwise
+    const L = LB();
+    return themed() ? (i === 0 ? L.home : L.baseTitle + " " + (i + 1)) : (i === 0 ? "Home" : "Base " + (i + 1));
+  };
+
   // ---------------------------------------------------------------- profile (stars, looks, best score)
 
   // One place for every localStorage write: stress mode writes nothing, and a full or blocked store
@@ -176,16 +197,22 @@
   }
 
   function warp() {
-    const r = G.warpToNextSector(game);
+    const r = G.warpToNextSector(game, labelArg());
     if (!r.ok) return toast(r.reason);
     ui.winShown = false; ui.winOpen = false; $("win").hidden = true;
     resetView();
     saveNow();
     refresh();
-    toast("Sector " + game.sector + ": further out, harder" + hazardNote(game.sector), true);
+    toast(LB().sector + " " + game.sector + ": further out, harder" + hazardNote(game.sector), true);
   }
 
   function hazardNote(n) {
+    const L = LB();
+    if (themed()) {
+      if (n === G.TUNING.storms.firstSector) return ". " + L.storm + " slows " + lc(L.ships) + ".";
+      if (n === G.TUNING.showers.firstSector) return ". " + L.shower + " can knock cargo off.";
+      return ".";
+    }
     if (n === G.TUNING.storms.firstSector) return ". Ion storms slow ships.";
     if (n === G.TUNING.showers.firstSector) return ". Meteor showers can knock cargo off.";
     return ".";
@@ -266,6 +293,7 @@
   // cheap (no gradients made in loops). To add a scene, add an entry here; unknown names fall back to nebula.
 
   const SCENES = {};
+  const spriteCache = new Map();
 
   function sceneName() {
     return G.sceneFor ? G.sceneFor(looks) : (looks.bg.scene || "nebula");
@@ -274,6 +302,7 @@
   function buildSky() {
     const { W, H, dpr } = view;
     scene = SCENES[sceneName()] || SCENES.nebula;
+    spriteCache.clear();   // sprites depend on the device scale and the view scale, which a rebuild may have changed
     nebula = document.createElement("canvas");
     nebula.width = canvas.width; nebula.height = canvas.height;
     const n = nebula.getContext("2d");
@@ -528,6 +557,436 @@
     },
   };
 
+  // ---------------------------------------------------------------- theme scenes (Hamster habitat, Dwarven cavern)
+  // Same contract as the scenes above: static parts go into the backdrop, draw(dt) only does a little work
+  // (a few glow sprites, dust motes). Reduced motion: no flicker, no motes, no twinkle.
+
+  let sceneT = 0;
+  const sceneRnd = seed => G.rng(seed);
+
+  // -- habitat: wood-shavings bedding, cage bars with a water bottle, a tube, a food bowl, soft warm light
+  let motes = [];
+  SCENES.habitat = {
+    build(n, W, H) {
+      const rnd = sceneRnd(2468), u = Math.min(W, H);
+      const bg = n.createLinearGradient(0, 0, W, H);
+      bg.addColorStop(0, "#d9b27a"); bg.addColorStop(1, "#a97d4a");
+      n.fillStyle = bg; n.fillRect(0, 0, W, H);
+      const tones = ["#e8c994", "#c99a60", "#b78650", "#f0d6a6", "#9c6f3e"];
+      n.lineCap = "round";
+      const count = Math.min(1800, Math.round((W * H) / 700));
+      for (let i = 0; i < count; i++) {   // curled shavings
+        const x = rnd() * W, y = rnd() * H, len = 8 + rnd() * 16, a = rnd() * Math.PI * 2;
+        n.strokeStyle = tones[(rnd() * tones.length) | 0]; n.globalAlpha = 0.25 + 0.45 * rnd(); n.lineWidth = 1 + rnd() * 1.6;
+        n.beginPath(); n.moveTo(x, y);
+        n.quadraticCurveTo(x + Math.cos(a) * len * 0.5 + (rnd() - 0.5) * len * 0.6, y + Math.sin(a) * len * 0.5 + (rnd() - 0.5) * len * 0.6,
+          x + Math.cos(a) * len, y + Math.sin(a) * len);
+        n.stroke();
+      }
+      n.globalAlpha = 1; n.lineCap = "butt";
+      const barW = 58;   // cage bars down the left edge
+      n.fillStyle = "rgba(60,35,12,0.22)"; n.fillRect(0, 0, barW, H);
+      for (let x = 8; x < barW; x += 16) {
+        n.fillStyle = "rgba(40,25,10,0.3)"; n.fillRect(x + 1.5, 0, 5, H);
+        n.fillStyle = "#98a0ae"; n.fillRect(x, 0, 4, H);
+        n.fillStyle = "#e6ebf2"; n.fillRect(x, 0, 1.3, H);
+      }
+      n.fillStyle = "#7d8592"; n.fillRect(0, H * 0.06, barW, 5); n.fillRect(0, H * 0.94 - 5, barW, 5);
+      const tubeY = H - 56, tubeH = 34;   // a see-through tube along the bottom
+      n.fillStyle = "rgba(200,230,255,0.2)"; n.fillRect(barW, tubeY, W - barW, tubeH);
+      n.strokeStyle = "rgba(255,255,255,0.4)"; n.lineWidth = 1.5; n.strokeRect(barW, tubeY, W - barW, tubeH);
+      n.fillStyle = "rgba(255,255,255,0.28)"; n.fillRect(barW, tubeY + 4, W - barW, 3);
+      for (let x = barW + 70; x < W; x += 120) { n.fillStyle = "rgba(235,245,255,0.35)"; n.fillRect(x, tubeY - 2, 7, tubeH + 4); }
+      const bx = barW + 8, by = H * 0.22;   // water bottle hung on the bars
+      n.fillStyle = "rgba(150,210,255,0.35)"; n.fillRect(bx, by, 26, 72);
+      n.fillStyle = "rgba(70,150,230,0.55)"; n.fillRect(bx + 2, by + 22, 22, 48);
+      n.strokeStyle = "rgba(255,255,255,0.6)"; n.lineWidth = 1.2; n.strokeRect(bx, by, 26, 72);
+      n.fillStyle = "#b8bec9"; n.fillRect(bx + 5, by - 6, 16, 6);
+      n.fillRect(bx + 11, by + 72, 4, 14);
+      n.fillStyle = "#e6ebf2"; n.beginPath(); n.arc(bx + 13, by + 88, 3, 0, Math.PI * 2); n.fill();
+      const fx = W - 96, fy = H - 98;   // food bowl with seeds
+      n.fillStyle = "rgba(60,35,12,0.3)"; n.beginPath(); n.ellipse(fx + 4, fy + 10, 50, 22, 0, 0, Math.PI * 2); n.fill();
+      n.fillStyle = "#c2563e"; n.beginPath(); n.ellipse(fx, fy, 46, 22, 0, 0, Math.PI * 2); n.fill();
+      n.fillStyle = "#8f3a28"; n.beginPath(); n.ellipse(fx, fy - 2, 38, 16, 0, 0, Math.PI * 2); n.fill();
+      for (let i = 0; i < 46; i++) {
+        const a = rnd() * Math.PI * 2, r = Math.sqrt(rnd());
+        n.fillStyle = ["#f0dca0", "#d9b36a", "#8b6a3a"][(rnd() * 3) | 0];
+        n.beginPath(); n.ellipse(fx + Math.cos(a) * r * 32, fy - 3 + Math.sin(a) * r * 12, 3.2, 1.7, rnd() * 3, 0, Math.PI * 2); n.fill();
+      }
+      const lg = n.createRadialGradient(W * 0.3, H * 0.15, 0, W * 0.3, H * 0.15, Math.max(W, H) * 0.8);   // soft warm light
+      lg.addColorStop(0, "rgba(255,236,170,0.38)"); lg.addColorStop(1, "rgba(255,236,170,0)");
+      n.fillStyle = lg; n.fillRect(0, 0, W, H);
+      const vg = n.createRadialGradient(W / 2, H / 2, u * 0.4, W / 2, H / 2, Math.max(W, H) * 0.75);
+      vg.addColorStop(0, "rgba(60,30,10,0)"); vg.addColorStop(1, "rgba(60,30,10,0.4)");
+      n.fillStyle = vg; n.fillRect(0, 0, W, H);
+      motes = reduceMotion ? [] : Array.from({ length: 14 }, () => ({ x: rnd() * W, y: rnd() * H, r: 0.8 + rnd() * 1.4, vy: -(2 + rnd() * 4), vx: 1 + rnd() * 3, ph: rnd() * 6.28 }));
+    },
+    draw(dt) {
+      if (!motes.length) return;
+      ctx.fillStyle = "#fff4d0";
+      for (const m of motes) {
+        m.y += m.vy * dt; m.x += m.vx * dt; m.ph += dt;
+        if (m.y < -3) { m.y = view.H + 3; m.x = Math.random() * view.W; }
+        if (m.x > view.W + 3) m.x = -3;
+        ctx.globalAlpha = 0.2 + 0.2 * Math.sin(m.ph * 1.3);
+        ctx.fillRect(m.x, m.y, m.r, m.r);
+      }
+      ctx.globalAlpha = 1;
+    },
+  };
+
+  // -- cavern: dark rock, stalactites, flickering torches, glinting gems, a little dust
+  let torches = [], torchGlow = null, torchR = 0, glints = [], dust = [];
+  SCENES.cavern = {
+    build(n, W, H) {
+      const rnd = sceneRnd(1357), u = Math.min(W, H);
+      const bg = n.createLinearGradient(0, 0, 0, H);
+      bg.addColorStop(0, "#0c090d"); bg.addColorStop(0.5, "#1b1410"); bg.addColorStop(1, "#0d0a0c");
+      n.fillStyle = bg; n.fillRect(0, 0, W, H);
+      const mottle = ["rgba(70,56,50,", "rgba(40,30,34,", "rgba(88,66,52,"];
+      for (let i = 0; i < 420; i++) {   // rock texture blotches
+        n.fillStyle = mottle[(rnd() * 3) | 0] + (0.05 + rnd() * 0.12) + ")";
+        n.beginPath(); n.ellipse(rnd() * W, rnd() * H, 6 + rnd() * 34, 4 + rnd() * 18, rnd() * 3, 0, Math.PI * 2); n.fill();
+      }
+      const wall = (side) => {   // jagged dark walls at the left and right edges
+        const base = Math.max(34, W * 0.06);
+        n.beginPath(); n.moveTo(side < 0 ? 0 : W, 0);
+        for (let y = 0; y <= H + 30; y += 30) n.lineTo(side < 0 ? base * (0.5 + rnd() * 0.9) : W - base * (0.5 + rnd() * 0.9), y);
+        n.lineTo(side < 0 ? 0 : W, H); n.closePath();
+        n.fillStyle = "#070509"; n.fill();
+        n.strokeStyle = "rgba(120,96,84,0.35)"; n.lineWidth = 1.5; n.stroke();
+        return base;
+      };
+      const wl = wall(-1), wr = wall(1);
+      const spike = (x, y0, w, h, dir) => {   // stalactite (dir 1, hangs down) or stalagmite (dir -1)
+        n.beginPath(); n.moveTo(x - w / 2, y0); n.lineTo(x + (rnd() - 0.5) * w * 0.3, y0 + dir * h); n.lineTo(x + w / 2, y0); n.closePath();
+        n.fillStyle = "#16111a"; n.fill();
+        n.beginPath(); n.moveTo(x - w / 2, y0); n.lineTo(x - w * 0.1, y0 + dir * h * 0.9); n.lineTo(x - w * 0.15, y0); n.closePath();
+        n.fillStyle = "rgba(150,124,110,0.22)"; n.fill();
+      };
+      n.fillStyle = "#0a070c"; n.fillRect(0, 0, W, 10);
+      for (let x = wl; x < W - wr; x += 18 + rnd() * 30) spike(x, 6, 14 + rnd() * 26, 14 + rnd() * rnd() * 70, 1);
+      n.fillRect(0, H - 8, W, 8);
+      for (let x = wl + 40; x < W - wr - 40; x += 120 + rnd() * 200) spike(x, H - 6, 16 + rnd() * 22, 12 + rnd() * 30, -1);
+      const gr = u * 0.34;   // torches on the walls
+      const spots = [[wl * 0.55, H * 0.28], [wl * 0.55, H * 0.74], [W - wr * 0.55, H * 0.46], [W - wr * 0.55, H * 0.88]];
+      torchR = gr;
+      torchGlow = spriteCanvas(gr * 2 * view.dpr, gr * 2 * view.dpr);
+      const tg = torchGlow.getContext("2d");
+      tg.scale(view.dpr, view.dpr);
+      const rg = tg.createRadialGradient(gr, gr, 0, gr, gr, gr);
+      rg.addColorStop(0, "rgba(255,170,70,0.9)"); rg.addColorStop(0.35, "rgba(255,120,40,0.35)"); rg.addColorStop(1, "rgba(255,90,20,0)");
+      tg.fillStyle = rg; tg.fillRect(0, 0, gr * 2, gr * 2);
+      torches = spots.map(([x, y], i) => ({ x, y: y - 16, ph: rnd() * 6.28 + i }));
+      for (const [x, y] of spots) {
+        n.globalCompositeOperation = "lighter"; n.globalAlpha = 0.45;
+        n.drawImage(torchGlow, x - gr, y - 16 - gr, gr * 2, gr * 2);
+        n.globalCompositeOperation = "source-over"; n.globalAlpha = 1;
+        n.fillStyle = "#3a2a1c"; n.fillRect(x - 2, y - 14, 4, 22);   // handle
+        n.fillStyle = "#6b6f78"; n.fillRect(x - 6, y - 16, 12, 4); n.fillRect(x - 4, y + 8, 8, 3);
+      }
+      const gemCols = ["#6fe0f0", "#e27be0", "#7ff09a", "#ffc860"];
+      glints = [];
+      for (let i = 0; i < 34; i++) {   // gem specks
+        const x = wl + rnd() * (W - wl - wr), y = rnd() * H, c = gemCols[(rnd() * 4) | 0], s = 1.4 + rnd() * 2.2;
+        n.fillStyle = c; n.globalAlpha = 0.35 + 0.4 * rnd();
+        n.beginPath(); n.moveTo(x, y - s); n.lineTo(x + s * 0.8, y); n.lineTo(x, y + s); n.lineTo(x - s * 0.8, y); n.closePath(); n.fill();
+        if (i % 4 === 0) glints.push({ x, y, c, ph: rnd() * 6.28, sp: 1 + rnd() * 2 });
+      }
+      n.globalAlpha = 1;
+      const vg = n.createRadialGradient(W / 2, H / 2, u * 0.45, W / 2, H / 2, Math.max(W, H) * 0.8);
+      vg.addColorStop(0, "rgba(0,0,0,0)"); vg.addColorStop(1, "rgba(0,0,0,0.5)");
+      n.fillStyle = vg; n.fillRect(0, 0, W, H);
+      dust = reduceMotion ? [] : Array.from({ length: 12 }, () => ({ x: rnd() * W, y: rnd() * H, r: 0.8 + rnd() * 1.2, vy: 1 + rnd() * 3, ph: rnd() * 6.28 }));
+    },
+    draw(dt) {
+      sceneT += dt;
+      ctx.globalCompositeOperation = "lighter";
+      for (const t of torches) {
+        const f = reduceMotion ? 0.7 : 0.62 + 0.2 * Math.sin(sceneT * 9 + t.ph) + 0.12 * Math.sin(sceneT * 23 + t.ph * 2);
+        ctx.globalAlpha = 0.28 * f;
+        ctx.drawImage(torchGlow, t.x - torchR, t.y - torchR, torchR * 2, torchR * 2);
+      }
+      ctx.globalCompositeOperation = "source-over";
+      for (const t of torches) {
+        const f = reduceMotion ? 0.8 : 0.8 + 0.2 * Math.sin(sceneT * 9 + t.ph) + 0.1 * Math.sin(sceneT * 23 + t.ph * 2);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = "#ff8a28";
+        ctx.beginPath(); ctx.moveTo(t.x - 5, t.y); ctx.quadraticCurveTo(t.x - 6, t.y - 9 * f, t.x, t.y - 17 * f); ctx.quadraticCurveTo(t.x + 6, t.y - 9 * f, t.x + 5, t.y); ctx.fill();
+        ctx.fillStyle = "#ffe28a";
+        ctx.beginPath(); ctx.moveTo(t.x - 2.5, t.y); ctx.quadraticCurveTo(t.x - 3, t.y - 5 * f, t.x, t.y - 9 * f); ctx.quadraticCurveTo(t.x + 3, t.y - 5 * f, t.x + 2.5, t.y); ctx.fill();
+      }
+      if (!reduceMotion) {
+        for (const g of glints) {
+          g.ph += g.sp * dt;
+          const a = Math.pow(Math.max(0, Math.sin(g.ph)), 6);
+          if (a < 0.05) continue;
+          ctx.globalAlpha = a * 0.9; ctx.fillStyle = g.c;
+          ctx.fillRect(g.x - 4, g.y - 0.5, 8, 1); ctx.fillRect(g.x - 0.5, g.y - 4, 1, 8);
+        }
+        ctx.fillStyle = "#c8b8a8";
+        for (const m of dust) {
+          m.y += m.vy * dt; m.ph += dt;
+          if (m.y > view.H + 3) { m.y = -3; m.x = Math.random() * view.W; }
+          ctx.globalAlpha = 0.12 + 0.1 * Math.sin(m.ph);
+          ctx.fillRect(m.x, m.y, m.r, m.r);
+        }
+      }
+      ctx.globalAlpha = 1;
+    },
+  };
+
+  // ---------------------------------------------------------------- theme sprites
+  // Ships, bases and bodies are painted once into small canvases at device resolution (CSS size x dpr,
+  // times the view scale for things that live in the world) and then drawn with one drawImage each.
+  // paint(g) draws around (0, 0). The cache is cleared whenever the sky is rebuilt (resize, theme or bg pick).
+
+  function cached(key, w, h, q, paint) {
+    const k = key + "|" + view.dpr + "|" + q;
+    let c = spriteCache.get(k);
+    if (!c) {
+      const s = view.dpr * q;
+      c = spriteCanvas(w * s, h * s);
+      const g = c.getContext("2d");
+      g.scale(s, s); g.translate(w / 2, h / 2);
+      paint(g);
+      spriteCache.set(k, c);
+    }
+    return c;
+  }
+  const circ = (g, x, y, r, fill) => { g.fillStyle = fill; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); };
+  const ell = (g, x, y, rx, ry, rot, fill) => { g.fillStyle = fill; g.beginPath(); g.ellipse(x, y, rx, ry, rot, 0, Math.PI * 2); g.fill(); };
+  const blobPath = (g, r, rnd, k) => {   // a lumpy closed outline
+    g.beginPath();
+    for (let i = 0; i < k; i++) {
+      const a = (i / k) * Math.PI * 2, rr = r * (0.82 + rnd() * 0.2);
+      g[i ? "lineTo" : "moveTo"](Math.cos(a) * rr, Math.sin(a) * rr);
+    }
+    g.closePath();
+  };
+
+  // Ship sprites face +x, 40 x 40 CSS px; the caller scales the hauler up.
+  function paintHamster(g, big, color) {
+    ell(g, -5, -8, 2.6, 1.6, 0.3, "#f0a8a0"); ell(g, -5, 8, 2.6, 1.6, -0.3, "#f0a8a0");   // feet
+    ell(g, 4, -8, 2.6, 1.6, -0.3, "#f0a8a0"); ell(g, 4, 8, 2.6, 1.6, 0.3, "#f0a8a0");
+    circ(g, -11, 0, 2, "#f0a8a0");   // tail
+    ell(g, -1, 0, 10, 7.5, 0, "#e8b878");
+    ell(g, -3, 0, 6, 4.4, 0, "#c98f4e");   // darker back patch
+    if (big) {
+      circ(g, 9, -4.6, 3.4, "#f2c98a"); circ(g, 9, 4.6, 3.4, "#f2c98a");   // cheek pouches
+      g.fillStyle = color; g.fillRect(-9, -4.5, 8, 9);   // little backpack
+      g.strokeStyle = "rgba(0,0,0,0.45)"; g.lineWidth = 1; g.strokeRect(-9, -4.5, 8, 9);
+      g.fillStyle = "rgba(255,255,255,0.35)"; g.fillRect(-8, -3.5, 6, 2);
+    }
+    g.strokeStyle = color; g.lineWidth = 2.4;   // collar
+    g.beginPath(); g.arc(5, 0, 6.4, -1.25, 1.25); g.stroke();
+    circ(g, 8, 0, 5.2, "#eec58e");   // head
+    circ(g, 5.2, -4.6, 2.6, "#e8b878"); circ(g, 5.2, 4.6, 2.6, "#e8b878");   // ears
+    circ(g, 5.2, -4.6, 1.4, "#f0a8a0"); circ(g, 5.2, 4.6, 1.4, "#f0a8a0");
+    circ(g, 10, -2.2, 0.95, "#2a1a10"); circ(g, 10, 2.2, 0.95, "#2a1a10");   // eyes
+    circ(g, 13, 0, 1.2, "#e0707a");   // nose
+  }
+  function paintDwarf(g, color) {
+    g.strokeStyle = "#6b4a2a"; g.lineWidth = 1.8;   // pick: handle, then head
+    g.beginPath(); g.moveTo(-4, 9.5); g.lineTo(12, 9.5); g.stroke();
+    g.strokeStyle = "#b8bec9"; g.lineWidth = 2.4;
+    g.beginPath(); g.moveTo(11, 5); g.quadraticCurveTo(14, 9.5, 11, 14); g.stroke();
+    ell(g, -2, 0, 6, 9, 0, "#7a4a2a");   // shoulders
+    g.fillStyle = "#3a2a1c"; g.fillRect(-3, -9, 2.4, 18);   // belt
+    circ(g, 3, 8, 2.2, "#e8b890");   // hand on the pick
+    circ(g, 5, 0, 4.6, "#e8b890");   // face
+    ell(g, 8.5, 0, 4.4, 5.2, 0, "#b8541c");   // beard
+    circ(g, 3, 0, 5.6, color);   // helmet
+    g.strokeStyle = "rgba(0,0,0,0.5)"; g.lineWidth = 1; g.beginPath(); g.arc(3, 0, 5.6, 0, Math.PI * 2); g.stroke();
+    circ(g, 8, 0, 3.4, "rgba(255,235,150,0.35)");   // lamp glow
+    circ(g, 7.6, 0, 1.7, "#fff2a0");
+  }
+  function paintCart(g, color) {
+    g.strokeStyle = "#8a8f9c"; g.lineWidth = 1.4;   // rails
+    g.beginPath(); g.moveTo(-15, -7); g.lineTo(15, -7); g.moveTo(-15, 7); g.lineTo(15, 7); g.stroke();
+    for (const [x, y] of [[-7, -7.5], [7, -7.5], [-7, 7.5], [7, 7.5]]) { circ(g, x, y, 2.6, "#2a2630"); circ(g, x, y, 1, "#aab0bc"); }
+    g.fillStyle = color; g.fillRect(-11, -6.5, 22, 13);
+    g.fillStyle = "#3a2c20"; g.fillRect(-9, -4.5, 18, 9);
+    circ(g, -4, -1, 2.6, "#8a6a52"); circ(g, 1, 1.5, 2.8, "#e08a50"); circ(g, 5, -1.5, 2.2, "#a8aeb8"); circ(g, -1, 2.8, 1.8, "#c8693a");
+    g.strokeStyle = "rgba(0,0,0,0.5)"; g.lineWidth = 1; g.strokeRect(-11, -6.5, 22, 13);
+    g.fillStyle = "rgba(255,255,255,0.35)"; g.fillRect(-10, -6, 20, 1.6);
+  }
+  function shipSprite(ship) {
+    const color = shipColor(ship), id = themeId(), type = ship.type;
+    return cached("ship|" + id + "|" + type + "|" + color, 40, 40, 1, g => {
+      if (id === "hamster") paintHamster(g, type === "hauler", color);
+      else if (type === "hauler") paintCart(g, color);
+      else paintDwarf(g, color);
+    });
+  }
+
+  // Base sprites. Hamster: a static stand (and a little house at home) plus a wheel that turns. Dwarven: one
+  // stone forge / great hall with its hearth glow. Tiers differ by shape, not just brightness.
+  const BASE_BOX = 130;
+  function shade(hex, f) {   // "#rrggbb" darkened (f<1) or lightened (f>1)
+    const n = parseInt(hex.slice(1), 16);
+    const c = v => Math.max(0, Math.min(255, Math.round(v * f)));
+    return "rgb(" + c((n >> 16) & 255) + "," + c((n >> 8) & 255) + "," + c(n & 255) + ")";
+  }
+  function wheelRadius(home) { return G.BASE_R * (home ? 1.2 : 0.95); }
+  function wheelSprite(color, tier, home) {
+    const r = wheelRadius(home);
+    return cached("wheel|" + color + "|" + tier + "|" + home, r * 2 + 12, r * 2 + 12, 1, g => {
+      const spokes = 6 + tier * 2;
+      g.strokeStyle = tier >= 2 ? "#ffd84a" : "#c8ccd6"; g.lineWidth = 3;
+      g.beginPath(); g.arc(0, 0, r, 0, Math.PI * 2); g.stroke();
+      if (tier >= 1) { g.lineWidth = 1.6; g.beginPath(); g.arc(0, 0, r * 0.62, 0, Math.PI * 2); g.stroke(); }
+      g.strokeStyle = "#aeb4c0"; g.lineWidth = 1.4;
+      g.beginPath();
+      for (let k = 0; k < spokes; k++) { const a = (k / spokes) * Math.PI * 2; g.moveTo(0, 0); g.lineTo(Math.cos(a) * r, Math.sin(a) * r); }
+      g.stroke();
+      circ(g, 0, 0, 4.2, color);
+      g.strokeStyle = "rgba(0,0,0,0.5)"; g.lineWidth = 1; g.beginPath(); g.arc(0, 0, 4.2, 0, Math.PI * 2); g.stroke();
+    });
+  }
+  function standSprite(color, tier, home) {
+    const r = wheelRadius(home);
+    return cached("stand|" + color + "|" + tier + "|" + home, BASE_BOX, BASE_BOX, 1, g => {
+      const halo = g.createRadialGradient(0, 0, r * 0.4, 0, 0, BASE_BOX / 2);
+      halo.addColorStop(0, hexA(color, 0.3 + tier * 0.08)); halo.addColorStop(1, hexA(color, 0));
+      g.fillStyle = halo; g.fillRect(-BASE_BOX / 2, -BASE_BOX / 2, BASE_BOX, BASE_BOX);
+      ell(g, 0, r + 4, r * 1.05, 6, 0, "rgba(40,20,5,0.3)");
+      g.strokeStyle = shade(color, 0.7); g.lineWidth = 4; g.lineCap = "round";
+      g.beginPath(); g.moveTo(0, 0); g.lineTo(-r * 0.8, r + 4); g.moveTo(0, 0); g.lineTo(r * 0.8, r + 4); g.moveTo(-r * 0.9, r + 4); g.lineTo(r * 0.9, r + 4); g.stroke();
+      g.lineCap = "butt";
+      if (home) {   // a little house beside the wheel
+        const hx = r * 1.15, hy = r * 0.35;
+        g.fillStyle = "#f3e2c0"; g.fillRect(hx - 11, hy - 4, 22, 17);
+        g.fillStyle = color; g.beginPath(); g.moveTo(hx - 14, hy - 3); g.lineTo(hx, hy - 15); g.lineTo(hx + 14, hy - 3); g.closePath(); g.fill();
+        g.fillStyle = "#6b4a2e"; g.fillRect(hx - 3, hy + 4, 6, 9);
+        g.strokeStyle = "rgba(0,0,0,0.4)"; g.lineWidth = 1; g.strokeRect(hx - 11, hy - 4, 22, 17);
+      }
+      if (tier >= 2) {   // sparkling ring of seeds
+        g.fillStyle = "#fff0b0";
+        for (let k = 0; k < 8; k++) { const a = (k / 8) * Math.PI * 2; g.beginPath(); g.arc(Math.cos(a) * (r + 12), Math.sin(a) * (r + 12), 2, 0, Math.PI * 2); g.fill(); }
+      }
+    });
+  }
+  function forgeSprite(color, tier, home) {
+    return cached("forge|" + color + "|" + tier + "|" + home, BASE_BOX, BASE_BOX, 1, g => {
+      const halo = g.createRadialGradient(0, 4, 8, 0, 4, BASE_BOX / 2);
+      halo.addColorStop(0, "rgba(255,140,50," + (0.3 + tier * 0.08) + ")"); halo.addColorStop(1, "rgba(255,140,50,0)");
+      g.fillStyle = halo; g.fillRect(-BASE_BOX / 2, -BASE_BOX / 2, BASE_BOX, BASE_BOX);
+      const w = home ? 66 : 50, top = -12, bot = 18;
+      ell(g, 0, bot + 2, w / 2 + 6, 5, 0, "rgba(0,0,0,0.35)");
+      g.fillStyle = "#5b5a62"; g.fillRect(-w / 2, top, w, bot - top);   // stone wall with block lines
+      g.strokeStyle = "rgba(20,18,26,0.55)"; g.lineWidth = 1; g.beginPath();
+      for (let y = top + 7, row = 0; y < bot; y += 7, row++) {
+        g.moveTo(-w / 2, y); g.lineTo(w / 2, y);
+        for (let x = -w / 2 + (row % 2 ? 6 : 12); x < w / 2; x += 12) { g.moveTo(x, y - 7); g.lineTo(x, y); }
+      }
+      g.stroke();
+      g.fillStyle = shade(color, 0.55);   // slate roof in the accent colour
+      g.beginPath(); g.moveTo(-w / 2 - 4, top); g.lineTo(w / 2 + 4, top); g.lineTo(w / 2 - 6, top - 12); g.lineTo(-w / 2 + 6, top - 12); g.closePath(); g.fill();
+      g.strokeStyle = color; g.lineWidth = 1.6; g.stroke();
+      if (home) {   // great hall: pillars, pediment, banner
+        g.fillStyle = "#8c8a94"; g.fillRect(-w / 2, top, 6, bot - top); g.fillRect(w / 2 - 6, top, 6, bot - top);
+        g.fillStyle = color; g.beginPath(); g.moveTo(-14, top - 12); g.lineTo(14, top - 12); g.lineTo(0, top - 25); g.closePath(); g.fill();
+        g.fillRect(-w / 2 + 10, top + 1, 6, 16); g.fillRect(w / 2 - 16, top + 1, 6, 16);
+      }
+      const aw = home ? 11 : 9;   // arch with the hearth glowing in it
+      g.beginPath(); g.moveTo(-aw, bot); g.lineTo(-aw, 0); g.arc(0, 0, aw, Math.PI, 0); g.lineTo(aw, bot); g.closePath();
+      const hg = g.createRadialGradient(0, 10, 1, 0, 8, aw * 1.6);
+      hg.addColorStop(0, "#fff0a0"); hg.addColorStop(0.4, "#ff9a2a"); hg.addColorStop(1, "#3a1608");
+      g.fillStyle = hg; g.fill();
+      g.strokeStyle = "#cbc8d2"; g.lineWidth = 2; g.stroke();
+      g.fillStyle = "#4a4a54"; g.fillRect(w / 2 - 8 - (home ? 6 : 0), top - 22, 8, 12);   // chimney
+      g.fillStyle = "#2a2630";   // anvil by the door
+      const ax = w / 2 + 8;
+      g.fillRect(ax - 7, bot - 9, 14, 4); g.fillRect(ax - 3, bot - 5, 6, 5); g.fillRect(ax - 9, bot - 7, 4, 2);
+      if (tier >= 1) {   // second chimney and wall torches
+        g.fillStyle = "#4a4a54"; g.fillRect(-w / 2 + 2, top - 20, 8, 10);
+        for (const sx of [-1, 1]) {
+          g.fillStyle = "#3a2a1c"; g.fillRect(sx * (aw + 8) - 1.5, 2, 3, 9);
+          circ(g, sx * (aw + 8), 0, 3.2, "#ff9a2a"); circ(g, sx * (aw + 8), 0, 1.5, "#ffe28a");
+        }
+      }
+      if (tier >= 2) {   // gold trim and gems above the door
+        g.strokeStyle = "#ffd84a"; g.lineWidth = 2;
+        g.beginPath(); g.moveTo(-w / 2 - 4, top); g.lineTo(w / 2 + 4, top); g.stroke();
+        for (let k = -2; k <= 2; k++) circ(g, k * 7, top - 5, 2.4, k % 2 ? "#6fe0f0" : "#e27be0");
+      }
+    });
+  }
+
+  // Body sprites: the same radius as the body, glow-free, so the "amount left" ring still reads around them.
+  function bodySprite(b) {
+    const id = themeId(), kind = BODY_HUE[b.kind] ? b.kind : "asteroid", r = Math.round(b.r), box = r * 2.8;
+    return cached("body|" + id + "|" + kind + "|" + r, box, box, view.sc, g => {
+      const rnd = G.rng(r * 131 + kind.length * 17 + (id === "hamster" ? 1 : 2));
+      if (id === "hamster") {
+        if (kind === "asteroid") {   // seed pile
+          ell(g, 1, 2, r * 1.05, r * 0.95, 0, "rgba(40,20,5,0.3)");
+          blobPath(g, r, rnd, 11); g.fillStyle = "#7a5836"; g.fill();
+          const cols = ["#f0dca0", "#d9b36a", "#8b6a3a", "#f5ecd0"];
+          for (let i = 0; i < Math.round(r * 2.4); i++) {
+            const a = rnd() * Math.PI * 2, d = r * 0.88 * Math.sqrt(rnd());
+            ell(g, Math.cos(a) * d, Math.sin(a) * d, r * 0.2, r * 0.1, rnd() * 3, cols[(rnd() * 4) | 0]);
+          }
+        } else if (kind === "moon") {   // nut stash
+          ell(g, 1, 2, r * 1.05, r * 0.95, 0, "rgba(40,20,5,0.3)");
+          for (let i = 0; i < 7; i++) {
+            const a = i * 0.9 + 0.3, d = i ? r * 0.55 : 0;
+            circ(g, Math.cos(a) * d, Math.sin(a) * d, r * 0.42, "#9a6a3a");
+            ell(g, Math.cos(a) * d - r * 0.1, Math.sin(a) * d - r * 0.12, r * 0.2, r * 0.12, -0.6, "#c8975a");
+          }
+        } else if (kind === "iceplanet") {   // nut bowl
+          circ(g, 1, 2, r * 1.05, "rgba(40,20,5,0.3)");
+          circ(g, 0, 0, r, "#4f8fb0"); circ(g, 0, 0, r * 0.84, "#2c5870");
+          for (let i = 0; i < 16; i++) {
+            const a = rnd() * Math.PI * 2, d = r * 0.62 * Math.sqrt(rnd());
+            circ(g, Math.cos(a) * d, Math.sin(a) * d, r * 0.2, "#a8743c");
+            ell(g, Math.cos(a) * d - r * 0.05, Math.sin(a) * d - r * 0.06, r * 0.09, r * 0.06, -0.6, "#d6a468");
+          }
+        } else {   // carrot patch
+          blobPath(g, r, rnd, 12); g.fillStyle = "#6b4a2e"; g.fill();
+          for (let i = 0; i < 6; i++) {
+            const a = (i / 6) * Math.PI * 2 + 0.3, x = Math.cos(a) * r * 0.5, y = Math.sin(a) * r * 0.5;
+            for (let k = 0; k < 4; k++) ell(g, x + Math.cos(a + k * 1.6) * r * 0.16, y + Math.sin(a + k * 1.6) * r * 0.16, r * 0.2, r * 0.07, a + k * 1.6, "#4caf50");
+            circ(g, x, y, r * 0.13, "#ff8a2a");
+          }
+          circ(g, 0, 0, r * 0.14, "#ff8a2a");
+        }
+        return;
+      }
+      // dwarven
+      circ(g, 1, 2, r * 1.05, "rgba(0,0,0,0.35)");
+      if (kind === "rare") {   // gem geode
+        blobPath(g, r, rnd, 10); g.fillStyle = "#5a5560"; g.fill();
+        circ(g, 0, 0, r * 0.68, "#2a1a4a");
+        const cols = ["#e27be0", "#b45be0", "#f4b0f0"];
+        for (let i = 0; i < 8; i++) {
+          const a = (i / 8) * Math.PI * 2 + 0.2;
+          g.fillStyle = cols[i % 3]; g.beginPath();
+          g.moveTo(Math.cos(a - 0.2) * r * 0.2, Math.sin(a - 0.2) * r * 0.2); g.lineTo(Math.cos(a) * r * 0.66, Math.sin(a) * r * 0.66); g.lineTo(Math.cos(a + 0.2) * r * 0.2, Math.sin(a + 0.2) * r * 0.2);
+          g.closePath(); g.fill();
+        }
+        circ(g, 0, 0, r * 0.16, "#fff0ff");
+        return;
+      }
+      blobPath(g, r, rnd, 11);
+      g.fillStyle = kind === "asteroid" ? "#4a4650" : "#3d4048"; g.fill();
+      g.strokeStyle = "rgba(0,0,0,0.5)"; g.lineWidth = 1; g.stroke();
+      ell(g, -r * 0.3, -r * 0.35, r * 0.4, r * 0.25, -0.6, "rgba(255,255,255,0.08)");
+      const seam = kind === "asteroid" ? "#d8793a" : "#d6dde8", lines = kind === "iceplanet" ? 3 : kind === "moon" ? 1 : 2;
+      g.strokeStyle = seam; g.lineWidth = Math.max(1.5, r * (kind === "moon" ? 0.2 : 0.12)); g.lineCap = "round"; g.lineJoin = "round";
+      for (let i = 0; i < lines; i++) {
+        const o = (i - (lines - 1) / 2) * r * 0.5;
+        g.beginPath(); g.moveTo(-r * 0.7, -r * 0.35 + o); g.lineTo(-r * 0.2, -r * 0.05 + o * 0.8); g.lineTo(r * 0.15, -r * 0.2 + o); g.lineTo(r * 0.7, r * 0.3 + o * 0.7); g.stroke();
+      }
+      g.lineCap = "butt"; g.lineJoin = "miter";
+      if (kind !== "asteroid") {   // glints
+        g.fillStyle = "#ffffff";
+        for (let i = 0; i < 3; i++) { const x = (rnd() - 0.5) * r, y = (rnd() - 0.5) * r; g.fillRect(x - 2, y - 0.5, 4, 1); g.fillRect(x - 0.5, y - 2, 1, 4); }
+      }
+    });
+  }
+
   // ---------------------------------------------------------------- drawing
 
   function hexA(hex, a) {
@@ -575,6 +1034,10 @@
     const frac = b.max > 0 ? b.amount / b.max : 0;
     const empty = b.amount <= 1e-6;
     ctx.globalAlpha = empty ? 0.35 : 1;
+    if (themed()) {   // one cached sprite instead of the gradients below
+      const bs = bodySprite(b), half = Math.round(b.r) * 1.4;
+      ctx.drawImage(bs, b.x - half, b.y - half, half * 2, half * 2);
+    } else {
     const glow = ctx.createRadialGradient(b.x, b.y, b.r * 0.8, b.x, b.y, b.r * 2.1);
     glow.addColorStop(0, base + "55"); glow.addColorStop(1, base + "00");
     ctx.fillStyle = glow;
@@ -594,6 +1057,7 @@
       ctx.strokeStyle = "rgba(255,255,255,0.12)"; ctx.lineWidth = b.r * 0.18;
       ctx.beginPath(); ctx.ellipse(b.x, b.y + b.r * 0.15, b.r * 1.2, b.r * 0.32, -0.35, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
+    }
     }
     // remaining-amount ring, like the progress ring on mission planets
     const ringR = b.r + 6;
@@ -617,12 +1081,50 @@
     ctx.fillText(b.name, b.x, b.y + ringR + 15);
     ctx.font = "10px system-ui, sans-serif";
     ctx.fillStyle = empty ? "rgba(200,210,240,0.5)" : hexA(RES_COLOR[b.res], 0.9);
-    ctx.fillText(empty ? "EMPTY" : `${Math.floor(b.amount)} ${b.res.toUpperCase()}`, b.x, b.y + ringR + 28);
+    ctx.fillText(empty ? "EMPTY" : `${Math.floor(b.amount)} ${(LB().res[b.res] || b.res).toUpperCase()}`, b.x, b.y + ringR + 28);
   }
 
   // Upgraded bases are visibly different: a solid outer ring at Lv 2, plus a counter-turning second ring
   // with bright nodes and a brighter core at Lv 3.
+  function drawBaseThemed(b, i) {
+    const color = i === 0 ? looks.base.home : looks.base.main, tier = b.tier | 0, home = i === 0, half = BASE_BOX / 2;
+    if (themeId() === "hamster") {
+      ctx.drawImage(standSprite(color, tier, home), b.x - half, b.y - half, BASE_BOX, BASE_BOX);
+      const ws = wheelSprite(color, tier, home), wh = ws.width / view.dpr / 1;   // CSS size
+      ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(baseSpin[i] || 0);
+      ctx.drawImage(ws, -wh / 2, -wh / 2, wh, wh);
+      ctx.restore();
+    } else {
+      ctx.drawImage(forgeSprite(color, tier, home), b.x - half, b.y - half, BASE_BOX, BASE_BOX);
+      const f = reduceMotion ? 0.7 : 0.6 + 0.2 * Math.sin(time * 8 + i * 2) + 0.12 * Math.sin(time * 19 + i);
+      ctx.fillStyle = "rgba(255,170,60," + (0.12 + 0.2 * f) + ")";   // hearth flicker
+      ctx.beginPath(); ctx.arc(b.x, b.y + 8, 11 + tier * 2, 0, Math.PI * 2); ctx.fill();
+    }
+    const L = LB();
+    ctx.textAlign = "center";
+    ctx.font = "700 11px system-ui, sans-serif";
+    ctx.fillStyle = "rgba(245,238,225,0.95)";
+    ctx.fillText((i === 0 ? L.home : L.baseTitle + " " + (i + 1)).toUpperCase() + (tier ? " " + TIER_NAME[tier] : ""), b.x, b.y + G.BASE_R * (tier >= 2 ? 2.3 : 1.5) + 16);
+  }
+
+  const baseSpin = [];   // wheel angle per base; turns only while a ship is unloading there
+  function updateSpin(dt) {
+    if (reduceMotion || !dt || themeId() !== "hamster") return;
+    const on = new Set();
+    for (const s of game.ships) {
+      if (s.st !== G.UNLOADING) continue;
+      let best = -1, bd = Infinity;
+      for (let i = 0; i < game.bases.length; i++) {
+        const d = Math.hypot(game.bases[i].x - s.x, game.bases[i].y - s.y);
+        if (d < bd) { bd = d; best = i; }
+      }
+      if (best >= 0) on.add(best);
+    }
+    for (const i of on) baseSpin[i] = ((baseSpin[i] || 0) + dt * 1.4) % (Math.PI * 2);
+  }
+
   function drawBase(b, i) {
+    if (themed()) return drawBaseThemed(b, i);
     const color = i === 0 ? looks.base.home : looks.base.main;
     const tier = b.tier | 0;
     const sr = G.BASE_R, rot = reduceMotion ? 0 : time * 0.3 + i;
@@ -706,6 +1208,25 @@
 
   // Ion storms: a drifting blue-violet cloud with a few turning arcs.
   function drawStorm(s, i) {
+    const tid = themeId(), L = LB();
+    if (tid !== "space") {   // sticky bedding patch / flooded tunnel: flat fills, same area, same arcs
+      const ham = tid === "hamster";
+      ctx.fillStyle = ham ? "rgba(214,170,96,0.3)" : "rgba(60,140,200,0.28)";
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = ham ? "rgba(255,225,160,0.5)" : "rgba(150,215,255,0.5)"; ctx.lineWidth = 2; ctx.setLineDash([6, 5]);
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.lineWidth = 1.5;
+      const a0 = reduceMotion ? i : time * 0.6 + i * 2;
+      for (let k = 0; k < 3; k++) {
+        const a = a0 + k * 2.09;
+        ctx.beginPath(); ctx.arc(s.x, s.y, s.r * (0.45 + 0.18 * k), a, a + 1.1); ctx.stroke();
+      }
+      ctx.textAlign = "center"; ctx.font = "600 10px system-ui, sans-serif";
+      ctx.fillStyle = ham ? "rgba(255,238,200,0.9)" : "rgba(200,235,255,0.9)";
+      ctx.fillText(L.storm.toUpperCase(), s.x, s.y + 4);
+      return;
+    }
     const g = ctx.createRadialGradient(s.x, s.y, s.r * 0.1, s.x, s.y, s.r);
     g.addColorStop(0, "rgba(120,140,255,0.26)"); g.addColorStop(0.7, "rgba(90,110,235,0.14)"); g.addColorStop(1, "rgba(90,110,235,0)");
     ctx.fillStyle = g;
@@ -732,7 +1253,29 @@
       ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
       ctx.textAlign = "center"; ctx.font = "700 11px system-ui, sans-serif"; ctx.fillStyle = "rgba(255,190,120,0.95)";
-      ctx.fillText("METEORS IN " + Math.ceil(W.warn - s.age), s.x, s.y + 4);
+      ctx.fillText(themed() ? LB().shower.toUpperCase() + " IN " + Math.ceil(W.warn - s.age) : "METEORS IN " + Math.ceil(W.warn - s.age), s.x, s.y + 4);
+      return;
+    }
+    if (themed()) {   // paw swipes / falling rocks inside the same circle
+      const ham = themeId() === "hamster";
+      ctx.fillStyle = ham ? "rgba(255,170,120,0.08)" : "rgba(160,140,120,0.1)";
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = ham ? "rgba(255,190,140,0.45)" : "rgba(200,180,150,0.45)"; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.stroke();
+      for (let k = 0; k < (ham ? 5 : 14); k++) {
+        const ph = (time * (ham ? 0.7 : 0.8) + k * (ham ? 0.21 : 0.173)) % 1;
+        const ox = Math.sin(k * 12.9898) * s.r * 0.7, oy = Math.cos(k * 78.233) * s.r * 0.7;
+        if (ham) {   // a big paw pad with four toes, swiping across and fading
+          const x = s.x + ox + (ph - 0.5) * 50, y = s.y + oy + (ph - 0.5) * 20, a = Math.sin(ph * Math.PI);
+          ctx.fillStyle = "rgba(240,190,160," + 0.85 * a + ")";
+          ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.fill();
+          for (let t = 0; t < 4; t++) { ctx.beginPath(); ctx.arc(x - 8 + t * 5.3, y - (t === 1 || t === 2 ? 12 : 9), 3, 0, Math.PI * 2); ctx.fill(); }
+        } else {   // a chunk of rock dropping
+          const x = s.x + ox, y = s.y + oy + (ph - 0.5) * 70, a = Math.sin(ph * Math.PI);
+          ctx.fillStyle = "rgba(" + (110 + (k % 3) * 25) + ",100,95," + 0.95 * a + ")";
+          ctx.fillRect(x - 3, y - 3, 6 + (k % 3) * 2, 6 + (k % 2) * 3);
+        }
+      }
       return;
     }
     ctx.fillStyle = "rgba(255,120,60,0.07)";
@@ -807,6 +1350,11 @@
     ctx.translate(ship.x, ship.y);
     ctx.rotate(ship.ang);
     ctx.scale(k, k);
+    if (themed()) {   // one cached sprite; idle ships are dimmed like the space hull
+      ctx.globalAlpha = busy ? 1 : 0.6;
+      ctx.drawImage(shipSprite(ship), -20, -20, 40, 40);
+      ctx.globalAlpha = 1;
+    } else {
     if (moving || ship.st === G.MINING) {
       const len = (moving ? 12 : 6) + (reduceMotion ? 0 : Math.random() * 5);
       const flame = ctx.createLinearGradient(-5, 0, -5 - len, 0);
@@ -825,6 +1373,7 @@
     ctx.strokeStyle = busy ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0.35)"; ctx.lineWidth = 1; ctx.stroke();
     ctx.fillStyle = "rgba(255,255,255,0.85)";
     ctx.beginPath(); ctx.arc(3, 0, 1.6, 0, Math.PI * 2); ctx.fill();
+    }
     ctx.restore();
     if (busy) {   // status ring: cargo load, in the colour of what's aboard
       const rr = 15 * k;
@@ -856,13 +1405,13 @@
       ctx.textAlign = "left";
       ctx.font = "600 10.5px system-ui, sans-serif";
       ctx.fillStyle = "rgba(240,244,255,0.95)";
-      ctx.fillText(ship.name.toUpperCase(), ship.x + 16, ship.y - 12);
+      ctx.fillText(shipName(ship).toUpperCase(), ship.x + 16, ship.y - 12);
     }
   }
 
   function drawGhost() {
     if (!ui.placing || !ui.mouse) return;
-    const ok = !G.baseSpotProblem(game, ui.mouse.x, ui.mouse.y);
+    const ok = !G.baseSpotProblem(game, ui.mouse.x, ui.mouse.y, labelArg());
     ctx.save();
     ctx.strokeStyle = ok ? "#5fd0b0" : "#ee6b6b"; ctx.fillStyle = ok ? "rgba(95,208,176,0.15)" : "rgba(238,107,107,0.15)";
     ctx.lineWidth = 2; ctx.setLineDash([4, 4]);
@@ -872,6 +1421,7 @@
 
   function frame(dt) {
     drawSky(dt);
+    updateSpin(dt);
     ctx.save();
     ctx.translate(view.ox, view.oy);
     ctx.scale(view.sc, view.sc);
@@ -891,17 +1441,20 @@
   // ---------------------------------------------------------------- panels
 
   function resLine() {
-    return G.RES.map(r => `<span><span class="dot" style="background:${RES_COLOR[r]}"></span>${r} <b>${Math.floor(game.stock[r])}</b></span>`).join("");
+    const L = LB();
+    return G.RES.map(r => `<span><span class="dot" style="background:${RES_COLOR[r]}"></span>${L.res[r]} <b>${Math.floor(game.stock[r])}</b></span>`).join("");
   }
 
   function costText(cost) {
-    return G.RES.filter(r => cost[r]).map(r => `${cost[r]} ${r}`).join(", ");
+    const L = LB();
+    return G.RES.filter(r => cost[r]).map(r => `${cost[r]} ${L.res[r]}`).join(", ");
   }
 
   function renderBuild() {
-    const items = [["miner", "Miner", G.SHIP_TYPES.miner.blurb, G.shipCost(game, "miner")],
-      ["hauler", "Hauler", G.SHIP_TYPES.hauler.blurb, G.shipCost(game, "hauler")],
-      ["base", "New base", "Click empty space to place it", G.baseCost(game)]];
+    const L = LB();
+    const items = [["miner", L.ship.miner, G.SHIP_TYPES.miner.blurb, G.shipCost(game, "miner")],
+      ["hauler", L.ship.hauler, G.SHIP_TYPES.hauler.blurb, G.shipCost(game, "hauler")],
+      ["base", L.newBase, "Click empty space to place it", G.baseCost(game)]];
     const html = items.map(([key, label, note, cost]) => {
       const ok = !game.over && G.canAfford(game, cost);
       return `<button type="button" class="build-btn${key === "base" && ui.placing ? " active" : ""}" data-build="${key}"${ok ? "" : " disabled"}>
@@ -913,7 +1466,7 @@
   function renderBases() {
     const html = game.bases.map((b, i) => {
       const cost = G.upgradeCost(game, i), tier = b.tier | 0;
-      const label = (i === 0 ? "Home" : "Base " + (i + 1)) + (tier ? " " + TIER_NAME[tier] : "");
+      const label = baseName(i) + (tier ? " " + TIER_NAME[tier] : "");
       const next = G.TUNING.upgrades[tier + 1];
       const btn = cost
         ? `<button type="button" data-up="${i}"${!game.over && G.canAfford(game, cost) ? "" : " disabled"} title="Unloads faster and takes ships from further away">Upgrade<small>${costText(cost)}</small></button>`
@@ -953,14 +1506,15 @@
     for (let i = 0; i < game.ships.length; i++) {
       const s = game.ships[i], row = boardRows[i];
       const pct = s.cargo > 0 ? Math.round((s.cargo / G.SHIP_TYPES[s.type].cap) * 100) : 0;
-      const sig = s.name + "|" + s.type + "|" + s.st + "|" + s.res + "|" + pct + "|" + G.jobText(game, s) + "|" + (s.id === ui.selected) + "|" + looks.ship.id;
+      const job = G.jobText(game, s, labelArg()), nm = shipName(s);
+      const sig = nm + "|" + s.type + "|" + s.st + "|" + s.res + "|" + pct + "|" + job + "|" + (s.id === ui.selected) + "|" + looks.ship.id;
       if (sig === row.last) continue;
       row.last = sig;
       row.li.className = s.id === ui.selected ? "sel" : "";
       row.dot.style.background = shipColor(s);
       row.dot.style.opacity = s.st === G.IDLE ? 0.45 : 1;
-      row.name.textContent = s.name;
-      row.job.textContent = G.jobText(game, s);
+      row.name.textContent = nm;
+      row.job.textContent = job;
       row.fill.style.width = pct + "%";
       row.fill.style.background = s.res ? RES_COLOR[s.res] : "#fff";
     }
@@ -968,10 +1522,28 @@
     $("board-count").textContent = `${busy}/${game.ships.length} working`;
   }
 
+  // Static page text that names things. Space keeps the HTML as written (saved on first use); a theme rewrites it.
+  let textKey = null;
+  const staticText = {};
+  function applyThemeText() {
+    const key = themeId();
+    if (key === textKey) return;
+    textKey = key;
+    const L = LB(), els = { warp: $("b-warp"), wwarp: $("w-warp"), bases: $("bases-title"), help: $("help") };
+    if (!("warp" in staticText)) for (const k in els) staticText[k] = els[k].innerHTML;
+    if (key === "space") { for (const k in els) els[k].innerHTML = staticText[k]; return; }
+    els.warp.textContent = L.warp; els.wwarp.textContent = L.warp;
+    els.bases.firstChild.nodeValue = L.bases + " ";
+    els.help.textContent = `Click a ship, then ${an(lc(L.body.asteroid))} or ${an(lc(L.body.iceplanet))} to mine it, a star to collect it, or ${an(L.base)} to send it there. ` +
+      `Build ${lc(L.bases)} to clear the ${lc(L.sector)}, then ${lc(L.warp)}. Pause: Space. Esc cancels. Add ?stress to the address for a 30-ship test (?stress&sector=3 for hazards).`;
+  }
+
   function refresh() {
+    applyThemeText();
+    const L = LB();
     $("res").innerHTML = resLine();
     const left = game.stars.filter(s => !s.taken).length;
-    $("goal").innerHTML = `Sector <b>${game.sector}</b> &middot; Bases built <b>${game.bases.length - 1} / ${G.goalBases(game.sector)}</b> &middot; Stars <b>${game.stars.length - left} / ${game.stars.length}</b>`;
+    $("goal").innerHTML = `${L.sector} <b>${game.sector}</b> &middot; ${L.bases} built <b>${game.bases.length - 1} / ${G.goalBases(game.sector)}</b> &middot; Stars <b>${game.stars.length - left} / ${game.stars.length}</b>`;
     $("score").innerHTML = `Score <b>${G.scoreTotal(game)}</b> &middot; Best <b>${Math.max(profile.best, G.scoreTotal(game))}</b> &middot; <span class="bankstar">&#9733; <b>${profile.stars}</b></span>`;
     updatePlayerButton();
     $("b-warp").hidden = !(game.won && !game.over);
@@ -983,7 +1555,10 @@
     $("paused").style.display = ui.paused ? "block" : "none";
     const hint = $("hint");
     hint.style.display = ui.placing || ui.selected != null ? "block" : "none";
-    hint.textContent = ui.placing ? "Click empty space to place the base (Esc to cancel)"
+    hint.textContent = themed()
+      ? (ui.placing ? `Click empty space to place the ${L.base} (Esc to cancel)`
+        : `Click ${an(lc(L.body.asteroid))} or ${an(lc(L.body.iceplanet))} to mine it, a star to collect it, or ${an(L.base)} to send it there (Esc to deselect)`)
+      : ui.placing ? "Click empty space to place the base (Esc to cancel)"
       : "Click a planet or asteroid to mine it, a star to collect it, or a base to send this ship there (Esc to deselect)";
     if (game.starsGot !== ui.starsSeen) claim();
     if (game.won && !ui.winShown && !game.over) showWin();
@@ -994,10 +1569,11 @@
   function showWin() {
     ui.winShown = true; ui.winOpen = true;
     const c = game.clearInfo || { sector: game.sector, sectorPts: 0, timePts: 0, secs: Math.floor(game.sectorTime) };
-    $("win-title").textContent = "Sector " + c.sector + " cleared";
-    $("win-text").textContent = `${G.goalBases(c.sector)} bases built in ${Math.floor(c.secs / 60)}m ${c.secs % 60}s. ` +
-      `+${c.sectorPts} for the sector, +${c.timePts} time bonus. Score so far ${G.scoreTotal(game)}. ` +
-      `Warp to sector ${c.sector + 1}: a bigger map, with less to mine and higher prices.`;
+    const L = LB(), sec = lc(L.sector);
+    $("win-title").textContent = L.sector + " " + c.sector + " cleared";
+    $("win-text").textContent = `${G.goalBases(c.sector)} ${lc(L.bases)} built in ${Math.floor(c.secs / 60)}m ${c.secs % 60}s. ` +
+      `+${c.sectorPts} for the ${sec}, +${c.timePts} time bonus. Score so far ${G.scoreTotal(game)}. ` +
+      (themed() ? `Go on to ${sec} ${c.sector + 1}` : `Warp to sector ${c.sector + 1}`) + `: a bigger map, with less to mine and higher prices.`;
     $("win").hidden = modal();
   }
 
@@ -1010,17 +1586,35 @@
     $("end-title").textContent = game.endReason === "stranded" ? "Stranded" : "Run over";
     $("end-text").textContent = (game.endReason === "stranded"
       ? "Nothing left to mine and not enough to build with. "
-      : "You retired the fleet. ") + `You reached sector ${game.sector} and cleared ${game.cleared}.`;
-    const s = game.score, row = (a, b, cls) => `<tr${cls ? ` class="${cls}"` : ""}><td>${a}</td><td>${b}</td></tr>`;
-    $("end-score").innerHTML = row("Materials delivered", Math.floor(s.mat)) + row("Bases built", Math.floor(s.bases)) +
-      row("Sectors cleared", Math.floor(s.sectors)) + row("Time bonus", Math.floor(s.time)) + row("Score", total, "sum");
+      : "You retired the fleet. ") + `You reached ${lc(LB().sector)} ${game.sector} and cleared ${game.cleared}.`;
+    const s = game.score, L = LB(), row = (a, b, cls) => `<tr${cls ? ` class="${cls}"` : ""}><td>${a}</td><td>${b}</td></tr>`;
+    $("end-score").innerHTML = row("Materials delivered", Math.floor(s.mat)) + row(L.bases + " built", Math.floor(s.bases)) +
+      row(L.sector + "s cleared", Math.floor(s.sectors)) + row("Time bonus", Math.floor(s.time)) + row("Score", total, "sum");
     $("end-best").textContent = (isBest ? "New best score! " : "") + `Best score ${profile.best}. Stars collected this run ${game.starsGot}; ${profile.stars} in the bank.`;
     $("end").hidden = modal();
   }
 
   // ---------------------------------------------------------------- hangar
 
+  // A tiny picture for each theme card: a rocket, a hamster or a dwarf, painted on a small canvas.
+  function paintThemePreview(c, id) {
+    const g = c.getContext("2d"), s = view.dpr;
+    g.setTransform(s, 0, 0, s, 0, 0);
+    g.clearRect(0, 0, 36, 36);
+    g.translate(18, 18);
+    g.scale(1.2, 1.2);
+    if (id === "hamster") paintHamster(g, false, looks.ship.miner);
+    else if (id === "dwarven") paintDwarf(g, looks.ship.miner);
+    else {
+      g.fillStyle = looks.ship.miner;
+      g.beginPath(); g.moveTo(11, 0); g.lineTo(-7, -7); g.lineTo(-3.5, 0); g.lineTo(-7, 7); g.closePath(); g.fill();
+      g.strokeStyle = "rgba(255,255,255,0.85)"; g.lineWidth = 1; g.stroke();
+      g.fillStyle = "rgba(255,255,255,0.85)"; g.beginPath(); g.arc(3, 0, 1.6, 0, Math.PI * 2); g.fill();
+    }
+  }
+
   function swatch(kind, l) {
+    if (kind === "theme") return `<canvas class="tp" data-theme="${l.id}" width="${Math.round(36 * view.dpr)}" height="${Math.round(36 * view.dpr)}"></canvas>`;
     if (kind === "ship") return `<i style="background:${l.miner}"></i><i style="background:${l.hauler}"></i>`;
     if (kind === "base") return `<i style="background:${l.main}"></i><i style="background:${l.home}"></i>`;
     if (kind === "bg") return `<i class="wide" style="background:linear-gradient(135deg,${l.top},${l.bottom}),${l.blobs[0][3]};background-blend-mode:screen;border:1px solid rgba(255,255,255,0.25)"></i>`;
@@ -1031,15 +1625,18 @@
     $("h-stars").textContent = profile.stars;
     renderHistory($("h-history"), 20);
     $("h-body").innerHTML = G.LOOK_KINDS.map(kind => {
+      if (kind === "bg" && themed()) return `<h2>${G.LOOK_TITLES.bg}</h2><p class="hnote">Themes bring their own scene</p>`;   // the bg pick is kept
       const items = G.LOOKS[kind].map(l => {
         const owned = profile.owned[kind].indexOf(l.id) >= 0, picked = profile.pick[kind] === l.id;
         const status = picked ? "In use" : owned ? "Owned" : `&#9733; ${l.cost}`;
         const afford = owned || profile.stars >= l.cost;
-        return `<button type="button" class="look${picked ? " picked" : ""}${owned ? "" : " locked"}" data-kind="${kind}" data-id="${l.id}"${afford ? "" : " title=\"Not enough stars yet\""}>
-          <span class="sw">${swatch(kind, l)}</span><b>${l.name}</b><small>${status}</small></button>`;
+        const note = kind === "theme" && l.note ? `<small class="note">${l.note}</small>` : "";
+        return `<button type="button" class="look${kind === "theme" ? " themecard" : ""}${picked ? " picked" : ""}${owned ? "" : " locked"}" data-kind="${kind}" data-id="${l.id}"${afford ? "" : " title=\"Not enough stars yet\""}>
+          <span class="sw${kind === "theme" ? " tall" : ""}">${swatch(kind, l)}</span><b>${l.name}</b>${note}<small>${status}</small></button>`;
       }).join("");
       return `<h2>${G.LOOK_TITLES[kind]}</h2><div class="look-grid">${items}</div>`;
     }).join("");
+    for (const c of $("h-body").querySelectorAll("canvas.tp")) paintThemePreview(c, c.dataset.theme);
   }
 
   function openHangar() {
@@ -1634,7 +2231,7 @@
     if (!game || modal()) return;
     const p = toWorld(ev);
     if (ui.placing) {
-      const r = G.placeBase(game, p.x, p.y);
+      const r = G.placeBase(game, p.x, p.y, labelArg());
       if (!r.ok) return toast(r.reason);
       ui.placing = false;
       saveNow();
@@ -1654,7 +2251,7 @@
     } else if (h && h.kind === "star") {
       const r = G.orderShipToStar(game, ui.selected, h.o.id);
       if (!r.ok) return toast(r.reason);
-    } else if (h && h.kind === "base") G.returnToBase(game, ui.selected, h.o.id);
+    } else if (h && h.kind === "base") G.returnToBase(game, ui.selected, h.o.id, labelArg());
     else return select(null);
     refresh();
   }
@@ -1673,7 +2270,7 @@
     if (!btn || !game) return;
     const key = btn.dataset.build;
     if (key === "base") { ui.placing = !ui.placing; ui.selected = null; boardKey = ""; buildHtml = ""; refresh(); return; }
-    const r = G.buildShip(game, key);
+    const r = G.buildShip(game, key, labelArg());
     if (!r.ok) toast(r.reason);
     else { select(r.ship.id); saveNow(); }
     refresh();
@@ -1681,7 +2278,7 @@
   $("bases").addEventListener("click", ev => {
     const btn = ev.target.closest("[data-up]");
     if (!btn || !game) return;
-    const r = G.upgradeBase(game, Number(btn.dataset.up));
+    const r = G.upgradeBase(game, Number(btn.dataset.up), labelArg());
     if (!r.ok) return toast(r.reason);
     saveNow();
     buildHtml = ""; basesHtml = "";
@@ -1737,7 +2334,7 @@
     const dt = Math.min(0.25, raw);
     fps.frames++; fps.acc += raw; fps.worst = Math.max(fps.worst, raw * 1000);
     if (fps.acc >= 0.5) {
-      $("fps").textContent = `${Math.round(fps.frames / fps.acc)} fps, worst ${Math.round(fps.worst)} ms, ${game.ships.length} ships`;
+      $("fps").textContent = `${Math.round(fps.frames / fps.acc)} fps, worst ${Math.round(fps.worst)} ms, ${game.ships.length} ${lc(LB().ships)}`;
       fps.frames = 0; fps.acc = 0; fps.worst = 0;
     }
     const running = !ui.paused && !modal() && !game.over;
