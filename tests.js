@@ -3829,6 +3829,55 @@ test("main.js has the contract's placeholders: pins in index.html, hook function
   for (const why of G.END_REASONS) assert.ok(new RegExp("\\b" + why + ": \\{").test(END), "END_TEXT has " + why);
 });
 
+// ---- contract hook tests ----
+test("a mothballed ship does not move, and a waking ship counts down without moving", () => {
+  const s = G.newGame(5, 1), sh = s.ships[0];
+  G.orderShip(s, 0, 0);
+  const x = sh.x, y = sh.y;
+  sh.mothballed = true;
+  for (let i = 0; i < 60; i++) G.step(s, 1 / 30);
+  assert.strictEqual(sh.x, x); assert.strictEqual(sh.y, y); assert.strictEqual(sh.mv, 0);
+  sh.mothballed = false; sh.wake = 1;
+  for (let i = 0; i < 15; i++) G.step(s, 1 / 30);
+  assert.strictEqual(sh.x, x); assert.ok(Math.abs(sh.wake - 0.5) < 1e-9, "wake counts down: " + sh.wake);
+  for (let i = 0; i < 30; i++) G.step(s, 1 / 30);
+  assert.strictEqual(sh.wake, 0);
+  for (let i = 0; i < 60; i++) G.step(s, 1 / 30);
+  assert.ok(sh.x !== x || sh.y !== y, "it moves again once awake");
+});
+test("every order function asks shipAvailable and shipUnavailableReason", () => {
+  const s = G.newGame(5, 1);
+  const w = G.addShip(s, "warship", 0); const wid = w.ok === false ? s.ships.length - 1 : (w.id != null ? w.id : s.ships.length - 1);
+  const calls = [];
+  const oa = G.shipAvailable, or = G.shipUnavailableReason;
+  G.shipAvailable = (st, sh) => { calls.push(sh.id); return false; };
+  G.shipUnavailableReason = (st, sh) => "parked " + sh.id;
+  try {
+    const res = [
+      G.orderShip(s, 0, 0), G.orderShipToStar(s, 0, 0), G.orderToTarget(s, 0, 1), G.recallShip(s, 0), G.returnToBase(s, 0, 0),
+      G.orderNearestBase(s, 0), G.takeManual(s, 0),
+      G.orderPatrol(s, wid, 100, 100), G.orderEscort(s, wid, 0), G.orderAttack(s, wid, 0), G.recallShip(s, wid),
+    ];
+    res.forEach((r, i) => { assert.strictEqual(r.ok, false, "order " + i); assert.ok(/^parked [0-9]+$/.test(r.reason), "reason " + i + ": " + r.reason); });
+    assert.ok(calls.length >= res.length);
+    assert.notStrictEqual(s.ships[0].st, G.MANUAL);
+  } finally { G.shipAvailable = oa; G.shipUnavailableReason = or; }
+  s.ships[0].dead = true;
+  assert.strictEqual(G.orderShip(s, 0, 0).reason, s.ships[0].name + " was lost.", "a lost ship keeps its reason");
+});
+test("saved nest ids are kept when valid and unique; duplicates and invalid ones drop", () => {
+  const s = G.newGame(8, 3), raw = JSON.parse(G.serialize(s));
+  const n = (id, x) => ({ id, kind: "nest", x, y: 10, hp: 5, max: 10 });
+  raw.nests = [n(7, 1), n(3, 2), n(7, 3), { id: 4, kind: "bogus", x: 4, y: 4 }, n(-1, 5), n("x", 6), n(undefined, 7)];
+  const r = G.deserialize(JSON.stringify(raw));
+  assert.ok(r.ok);
+  const got = r.state.nests;
+  assert.deepStrictEqual(got.slice(0, 2).map(q => [q.id, q.x]), [[7, 1], [3, 2]]);
+  const ids = got.map(q => q.id);
+  assert.strictEqual(new Set(ids).size, ids.length, "ids are unique");
+  assert.ok(!got.some(q => q.x === 3 || q.x === 4), "the duplicate and the bad kind are gone");
+});
+
 // ---- science-tree tests ----
 // (slice a adds its tests here, and only here)
 

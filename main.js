@@ -1848,6 +1848,11 @@
 
   // An extra control for a ship's row in the Mission board (a node), or null. Called once when the row is built. owner: slice b
   function shipRowExtra(ship) { return null; }
+  function updateShipRowExtra(ship, node) { }   // owner: slice b (called on every board refresh for each ship row)
+  function renderScience() { }   // owner: slice a
+  function renderEcon() { }   // owner: slice b
+  function onScienceMsg(e) { }   // owner: slice a (one event from G.drainEvents)
+  function onEconMsg(e) { }   // owner: slice b (one event from G.drainEvents)
 
   function renderBoard() {
     const list = $("board");
@@ -1879,6 +1884,7 @@
     let live = 0, busy = 0;
     for (let i = 0; i < game.ships.length; i++) {
       const s = game.ships[i], row = boardRows[i];
+      updateShipRowExtra(s, row.li);
       const pct = s.cargo > 0 ? Math.round((s.cargo / G.SHIP_TYPES[s.type].cap) * 100) : 0;
       const job = G.jobText(game, s, labelArg()), nm = shipName(s);
       const hurt = !s.dead && s.hp < s.maxHp, at = hurt && !game.over ? atBase(s) : -1;
@@ -1964,6 +1970,8 @@
     renderBases();
     if (ui.selected != null && (!game.ships[ui.selected] || game.ships[ui.selected].dead)) { ui.selected = null; boardKey = ""; buildHtml = ""; }   // the selected ship was lost
     renderBoard();
+    renderScience();
+    renderEcon();
     renderAlerts();
     $("b-pause").textContent = ui.paused ? "Resume" : "Pause";
     $("paused").style.display = ui.paused ? "block" : "none";
@@ -3156,6 +3164,7 @@
       let n = 0;
       while (acc >= STEP && n < MAX_STEPS) { G.step(game, STEP); time += STEP; acc -= STEP; n++; addTrailPoints(); }
       if (n === MAX_STEPS) acc = 0;
+      for (const e of G.drainEvents(game)) { onScienceMsg(e); onEconMsg(e); }
       G.checkWin(game);
       if (game.starsGot !== ui.starsSeen || game.over || (game.won && !ui.winShown)) refresh();
     }

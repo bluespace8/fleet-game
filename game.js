@@ -498,7 +498,9 @@
     for (const n of list.slice(0, 8)) {
       if (!n || (n.kind !== "beacon" && n.kind !== "nest")) continue;
       const max = Math.min(99999, Math.max(1, num(n.max, 1))), hp = Math.min(max, Math.max(0, num(n.hp, max)));
-      out.push({ id: out.length, kind: n.kind, x: Math.min(state.w, Math.max(0, num(n.x, 0))), y: Math.min(state.h, Math.max(0, num(n.y, 0))),
+      const id = Number.isInteger(n.id) && n.id >= 0 && n.id < 1e6 ? n.id : out.length;
+      if (out.some(o => o.id === id)) continue;
+      out.push({ id, kind: n.kind, x: Math.min(state.w, Math.max(0, num(n.x, 0))), y: Math.min(state.h, Math.max(0, num(n.y, 0))),
         hp, max, dead: n.dead === true || hp <= 0,
         guardIn: Array.isArray(n.guardIn) ? n.guardIn.slice(0, 8).map(v => Math.min(600, Math.max(0, num(v, 0)))) : [] });
     }
@@ -671,10 +673,15 @@
   function lostReason(ship) { return ship.dead ? ship.name + " was lost." : ""; }
   function warReason(ship) { return SHIP_TYPES[ship.type].war ? ship.name + " is a warship. It cannot mine. Give it a patrol, escort or attack order." : ""; }
 
+  // Slice b decides when a ship is out of reach of orders (mothballed, waking); both go through api so a test can swap them.
+  function shipAvailable(state, ship) { return !ship.dead; }                         // owner: slice b
+  function shipUnavailableReason(state, ship) { return lostReason(ship); }           // owner: slice b
+  function unavailable(state, ship) { return api.shipAvailable(state, ship) ? null : { ok: false, reason: api.shipUnavailableReason(state, ship) }; }
+
   function orderShip(state, shipId, bodyId, labels) {
     const ship = state.ships[shipId], body = state.bodies[bodyId];
     if (!ship || !body) return { ok: false, reason: "No such ship or body." };
-    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    { const u = unavailable(state, ship); if (u) return u; }
     if (SHIP_TYPES[ship.type].war) return { ok: false, reason: warReason(ship) };
     if (body.amount <= 1e-6) return { ok: false, reason: bodyLabel(body, labels) + " is empty." };
     clearManual(ship);
@@ -692,7 +699,7 @@
   function orderShipToStar(state, shipId, starId) {
     const ship = state.ships[shipId], star = state.stars[starId];
     if (!ship || !star) return { ok: false, reason: "No such ship or star." };
-    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    { const u = unavailable(state, ship); if (u) return u; }
     if (SHIP_TYPES[ship.type].war) return { ok: false, reason: warReason(ship) };
     if (star.taken) return { ok: false, reason: "That star is already taken." };
     clearManual(ship);
@@ -706,7 +713,7 @@
   function recallShip(state, shipId) {
     const ship = state.ships[shipId];
     if (!ship) return { ok: false, reason: "No such ship." };
-    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    { const u = unavailable(state, ship); if (u) return u; }
     if (SHIP_TYPES[ship.type].war) return guardBase(state, ship, nearestBase(state, ship.x, ship.y));
     clearManual(ship);
     ship.target = -1;
@@ -729,7 +736,7 @@
   function returnToBase(state, shipId, baseId, labels) {
     const ship = state.ships[shipId], base = state.bases[baseId];
     if (!ship || !base) return { ok: false, reason: "No such ship or " + (labels ? labels.base : "base") + "." };
-    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    { const u = unavailable(state, ship); if (u) return u; }
     if (SHIP_TYPES[ship.type].war) return guardBase(state, ship, baseId);
     clearManual(ship);
     ship.target = -1;
@@ -749,7 +756,7 @@
     const ship = state.ships[shipId];
     if (!ship) return { ok: false, reason: "No such ship." };
     if (state.over) return { ok: false, reason: "This run is over." };
-    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    { const u = unavailable(state, ship); if (u) return u; }
     clearManual(ship);
     ship.st = MANUAL;
     ship.target = -1; ship.dest = -1; ship.star = -1; ship.wait = 0; ship.wo = ""; ship.wt = -1;
@@ -834,6 +841,7 @@
   function orderToTarget(state, shipId, n, labels) {
     const ship = state.ships[shipId];
     if (!ship) return { ok: false, reason: "No such ship." };
+    { const u = unavailable(state, ship); if (u) return u; }
     const nb = state.bodies.length;
     if (Number.isInteger(n) && n >= 1 && n <= nb) return orderShip(state, shipId, n - 1, labels);
     if (Number.isInteger(n) && n > nb && n - nb <= state.stars.length) return orderShipToStar(state, shipId, n - nb - 1);
@@ -843,6 +851,7 @@
   function orderNearestBase(state, shipId, labels) {
     const ship = state.ships[shipId];
     if (!ship) return { ok: false, reason: "No such ship." };
+    { const u = unavailable(state, ship); if (u) return u; }
     return returnToBase(state, shipId, nearestBase(state, ship.x, ship.y), labels);
   }
 
@@ -1048,6 +1057,8 @@
 
   function stepShip(state, ship, dt) {
     if (ship.dead) return;
+    if (ship.mothballed) { ship.mv = 0; return; }
+    if (ship.wake > 0) { ship.wake = Math.max(0, ship.wake - dt); ship.mv = 0; return; }
     const def = SHIP_TYPES[ship.type];
     if (ship.hitCd > 0) ship.hitCd = Math.max(0, ship.hitCd - dt);
     if (state.showers.length) { meteorCheck(state, ship, dt); if (ship.dead) return; }
@@ -1419,7 +1430,7 @@
     const ship = state.ships[shipId];
     if (!ship) return { ok: false, reason: "No such ship." };
     if (state.over) return { ok: false, reason: "This run is over." };
-    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    { const u = unavailable(state, ship); if (u) return u; }
     if (!SHIP_TYPES[ship.type].war) return { ok: false, reason: ship.name + " is not a warship." };
     return { ok: true, ship };
   }
@@ -2511,7 +2522,7 @@
     rng, newGame, canAfford, buildShip, addShip, baseSpotProblem, placeBase, checkWin,
     clampSector, mapScale, worldSize, mapSeed, goalBases, amountMult, crystalCount, bodyCount, crystalRich, BODY_SPECS, costMult, stormCount, showersOn,
     showerGap, showerHit, parTime, baseCost, shipCost, upgradeCost, upgradeBase, warpToNextSector,
-    orderShip, orderShipToStar, recallShip, returnToBase, nearestBase, inStorm, step, isStranded, retire, scoreTotal,
+    shipAvailable, shipUnavailableReason, orderShip, orderShipToStar, recallShip, returnToBase, nearestBase, inStorm, step, isStranded, retire, scoreTotal,
     jobText, spawnStress, serialize, deserialize, addBackup,
     hrand, eventsOn, aliensOn, eventGap, eventPower, raidOdds, fogRadius, flareDur, showerRadius, showerDmg,
     alienCount, alienHp, alienDmg, alienSpeed, addonCost, buildAddon, repairCost, repairShip, repairBase,
