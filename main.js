@@ -14,7 +14,10 @@
   const AUTO_KEY = "fleet-game-autosave-v1";     // autosave, new game and base placement
   const BAD_KEY = "fleet-game-damaged-save-v1";  // first version's single damaged-save copy; only read, to seed the list
   const BACKUPS_KEY = "fleet-game-damaged-saves-v2";   // the last few damaged saves, newest first
-  const PROFILE_KEY = "fleet-game-bank-v1";      // star bank, hangar choices and best score; never part of a save
+  const PROFILE_KEY = "fleet-game-bank-v1";      // the old single star bank: read once to move it into Player 1, then never written
+  const PLAYERS_KEY = "fleet-game-players-v1";   // every player and their star bank, hangar choices and best score
+  const RUNS_KEY = "fleet-game-runs-v1";         // one record per finished run
+  const BUYS_KEY = "fleet-game-purchases-v1";    // one record per hangar purchase
   const STEP = 1 / 30, MAX_STEPS = 6;          // fixed simulation step, and a cap so a slow frame cannot spiral
   const STRESS = /[?&]stress\b/.test(location.search);
   const STRESS_SECTOR = G.clampSector(Number((/[?&]sector=(\d+)/.exec(location.search) || [])[1]) || 1);
@@ -26,10 +29,15 @@
   };
   const TIER_NAME = ["", "Lv 2", "Lv 3"];
 
+  // Players, scoreboard and logs need the newer rules; without them the page keeps the single-bank behaviour.
+  const HAS = typeof G.parseRoster === "function";
+
   let game = null;
+  let roster = null, runLog = null, buyLog = null;   // only set when HAS
   let profile = G.newProfile(), looks = G.currentLooks(profile);
   const ui = { selected: null, placing: false, paused: false, mouse: null, winShown: false, winOpen: false,
-    endShown: false, endOpen: false, hangar: false, starsSeen: 0 };
+    endShown: false, endOpen: false, hangar: false, starsSeen: 0,
+    dlg: [], sort: { col: "best", dir: "desc" }, noLog: false };
   const view = { sc: 1, ox: 0, oy: 0, W: 1, H: 1, dpr: 1 };
   let skyStars = [], nebula = null;
   const trails = new Map();
@@ -41,23 +49,85 @@
 
   // ---------------------------------------------------------------- profile (stars, looks, best score)
 
-  function loadProfile() {
-    let text = null;
-    try { text = localStorage.getItem(PROFILE_KEY); } catch (e) { /* no storage: play without a bank */ }
-    const r = G.parseProfile(text);
-    profile = r.profile;
+  // One place for every localStorage write: stress mode writes nothing, and a full or blocked store
+  // shows a notice instead of breaking the game.
+  function store(key, text, what) {
+    if (STRESS) return false;
+    try { localStorage.setItem(key, text); return true; }
+    catch (e) { toast("Could not save " + what + ": " + e.message); return false; }
+  }
+
+  function readKey(key) {
+    try { return localStorage.getItem(key); } catch (e) { return null; }   // no storage: play without it
+  }
+
+  const nowIso = () => new Date().toISOString();
+  const me = () => G.currentPlayer(roster);
+
+  function useProfile(p) {
+    profile = p;
     looks = G.currentLooks(profile);
-    if (!r.ok) {
-      addBackup(PROFILE_KEY, text);
-      return r.error + " A fresh bank was started; a copy of the old one was kept.";
+  }
+
+  function saveRoster() { return store(PLAYERS_KEY, G.serializeRoster(roster), "the players"); }
+  function saveRuns() { return store(RUNS_KEY, G.serializeRunLog(runLog), "the run log"); }
+  function saveBuys() { return store(BUYS_KEY, G.serializeBuyLog(buyLog), "the purchase log"); }
+
+  // Returns a notice ("" when everything loaded cleanly).
+  function loadProfile() {
+    if (!HAS) {
+      const text = readKey(PROFILE_KEY);
+      const r = G.parseProfile(text);
+      useProfile(r.profile);
+      if (!r.ok) {
+        addBackup(PROFILE_KEY, text);
+        return r.error + " A fresh bank was started; a copy of the old one was kept.";
+      }
+      return "";
     }
-    return "";
+    const notes = [];
+    const rtext = readKey(PLAYERS_KEY);
+    const r = G.parseRoster(rtext, readKey(PROFILE_KEY), nowIso());
+    roster = r.roster;
+    if (!r.ok) {
+      addBackup(PLAYERS_KEY, rtext);
+      saveRoster();
+      notes.push((r.error || "The players list was damaged.") + " A fresh Player 1 was started; a copy of the old list was kept.");
+    } else if (r.migrated) {
+      if (saveRoster() || STRESS) notes.push("Your best score and stars moved to Player 1");
+    }
+    const runsText = readKey(RUNS_KEY), rl = G.parseRunLog(runsText);
+    runLog = rl.log;
+    if (!rl.ok || rl.dropped) {
+      addBackup(RUNS_KEY, runsText);
+      saveRuns();
+      notes.push(rl.ok ? rl.dropped + " damaged run record" + (rl.dropped > 1 ? "s were" : " was") + " dropped; a copy was kept."
+        : "The run log was damaged; a fresh one was started and a copy was kept.");
+    }
+    const buysText = readKey(BUYS_KEY), bl = G.parseBuyLog(buysText);
+    buyLog = bl.log;
+    if (!bl.ok || bl.dropped) {
+      addBackup(BUYS_KEY, buysText);
+      saveBuys();
+      notes.push(bl.ok ? bl.dropped + " damaged purchase record" + (bl.dropped > 1 ? "s were" : " was") + " dropped; a copy was kept."
+        : "The purchase log was damaged; a fresh one was started and a copy was kept.");
+    }
+    useProfile(me().profile);
+    return notes.join(" ");
   }
 
   function saveProfile() {
     if (STRESS) return;   // the test fleet never touches the real bank
-    try { localStorage.setItem(PROFILE_KEY, G.serializeProfile(profile)); }
-    catch (e) { toast("Could not save the star bank: " + e.message); }
+    if (HAS) saveRoster();
+    else store(PROFILE_KEY, G.serializeProfile(profile), "the star bank");
+  }
+
+  // Log the run in `game` under the current player. Never in stress mode, and never twice for one run
+  // (addRun replaces an entry with the same key).
+  function logRun(result) {
+    if (!HAS || STRESS || !game || ui.noLog || !G.shouldLogRun(game)) return;
+    runLog = G.addRun(runLog, G.runRecord(game, me().id, result, nowIso()));
+    saveRuns();
   }
 
   // Move any newly collected stars into the bank.
@@ -86,8 +156,9 @@
     resize();
   }
 
-  function start(g) {
+  function start(g, loaded) {
     game = g;
+    ui.noLog = !!loaded && g.over;   // a finished run that is only loaded was logged when it ended
     G.syncClaimed(game, profile);       // stars the bank already paid for are gone from a reloaded map
     ui.winShown = !!g.won; ui.winOpen = false; ui.endShown = false; ui.endOpen = false; ui.starsSeen = g.starsGot;
     $("win").hidden = true; $("end").hidden = true;
@@ -97,6 +168,7 @@
 
   function newGame(ask) {
     if (ask && game && !game.over && !confirm("Start a new game with a new map? Unsaved progress is lost.")) return;
+    if (game && !game.over) logRun("abandoned");
     if (game && G.recordBest(profile, G.scoreTotal(game))) saveProfile();   // an abandoned run still counts for the best score
     start(freshGame());
     saveNow();
@@ -120,8 +192,7 @@
 
   function saveNow(key) {
     if (STRESS) return true;   // never overwrite a real save with the 30-ship test fleet
-    try { localStorage.setItem(key || AUTO_KEY, G.serialize(game)); return true; }
-    catch (e) { toast("Could not save: " + e.message); return false; }
+    return store(key || AUTO_KEY, G.serialize(game), "the game");
   }
 
   // Keep the last few damaged saves (newest first) so nothing is lost silently.
@@ -159,7 +230,7 @@
   function loadNow() {
     const r = readSaves([SAVE_KEY, AUTO_KEY]);
     if (!r.state) { toast(r.notice ? r.notice + " Nothing to load." : "Nothing saved yet.", true); return false; }
-    start(r.state);
+    start(r.state, true);
     toast(r.notice ? r.notice.trim() + (r.damaged ? " Loaded the other save." : " Loaded.") : "Loaded.", !!r.notice);
     return true;
   }
@@ -669,6 +740,7 @@
     const left = game.stars.filter(s => !s.taken).length;
     $("goal").innerHTML = `Sector <b>${game.sector}</b> &middot; Bases built <b>${game.bases.length - 1} / ${G.goalBases(game.sector)}</b> &middot; Stars <b>${game.stars.length - left} / ${game.stars.length}</b>`;
     $("score").innerHTML = `Score <b>${G.scoreTotal(game)}</b> &middot; Best <b>${Math.max(profile.best, G.scoreTotal(game))}</b> &middot; <span class="bankstar">&#9733; <b>${profile.stars}</b></span>`;
+    updatePlayerButton();
     $("b-warp").hidden = !(game.won && !game.over);
     $("b-retire").disabled = game.over;
     renderBuild();
@@ -693,7 +765,7 @@
     $("win-text").textContent = `${G.goalBases(c.sector)} bases built in ${Math.floor(c.secs / 60)}m ${c.secs % 60}s. ` +
       `+${c.sectorPts} for the sector, +${c.timePts} time bonus. Score so far ${G.scoreTotal(game)}. ` +
       `Warp to sector ${c.sector + 1}: a bigger map, with less to mine and higher prices.`;
-    $("win").hidden = ui.hangar;
+    $("win").hidden = modal();
   }
 
   function showEnd() {
@@ -701,6 +773,7 @@
     claim();
     const total = G.scoreTotal(game), isBest = G.recordBest(profile, total);
     saveProfile();
+    logRun(game.endReason);
     $("end-title").textContent = game.endReason === "stranded" ? "Stranded" : "Run over";
     $("end-text").textContent = (game.endReason === "stranded"
       ? "Nothing left to mine and not enough to build with. "
@@ -709,7 +782,7 @@
     $("end-score").innerHTML = row("Materials delivered", Math.floor(s.mat)) + row("Bases built", Math.floor(s.bases)) +
       row("Sectors cleared", Math.floor(s.sectors)) + row("Time bonus", Math.floor(s.time)) + row("Score", total, "sum");
     $("end-best").textContent = (isBest ? "New best score! " : "") + `Best score ${profile.best}. Stars collected this run ${game.starsGot}; ${profile.stars} in the bank.`;
-    $("end").hidden = ui.hangar;
+    $("end").hidden = modal();
   }
 
   // ---------------------------------------------------------------- hangar
@@ -723,6 +796,7 @@
 
   function renderHangar() {
     $("h-stars").textContent = profile.stars;
+    renderHistory($("h-history"), 20);
     $("h-body").innerHTML = G.LOOK_KINDS.map(kind => {
       const items = G.LOOKS[kind].map(l => {
         const owned = profile.owned[kind].indexOf(l.id) >= 0, picked = profile.pick[kind] === l.id;
@@ -745,7 +819,13 @@
   function closeHangar() {
     ui.hangar = false;
     $("hangar").hidden = true;
-    $("win").hidden = !ui.winOpen; $("end").hidden = !ui.endOpen;
+    showCards();
+  }
+
+  // The win and run-end cards show only when no hangar or dialog is on top.
+  const modal = () => ui.hangar || ui.dlg.length > 0;
+  function showCards() {
+    $("win").hidden = modal() || !ui.winOpen; $("end").hidden = modal() || !ui.endOpen;
   }
 
   $("h-body").addEventListener("click", ev => {
@@ -753,8 +833,13 @@
     if (!btn) return;
     const kind = btn.dataset.kind, id = btn.dataset.id;
     if (profile.owned[kind].indexOf(id) < 0) {
+      const before = profile.stars;
       const r = G.buyLook(profile, kind, id);
       if (!r.ok) return toast(r.reason);
+      if (HAS) {
+        buyLog = G.addBuy(buyLog, G.buyRecord(me().id, kind, id, before - profile.stars, profile.stars, nowIso()));
+        saveBuys();
+      }
     }
     G.chooseLook(profile, kind, id);
     saveProfile();
@@ -767,6 +852,237 @@
   $("h-close").addEventListener("click", closeHangar);
   $("b-hangar").addEventListener("click", () => (ui.hangar ? closeHangar() : openHangar()));
   $("e-hangar").addEventListener("click", openHangar);
+
+  // ---------------------------------------------------------------- players, scoreboard, stats
+
+  // Everything below builds DOM with textContent only, so a player name can never inject markup.
+  function el(tag, cls, text, kids) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    if (kids) for (const k of kids) e.appendChild(k);
+    return e;
+  }
+
+  function btn(label, onClick, cls, disabled) {
+    const b = el("button", cls || "", label);
+    b.type = "button";
+    if (disabled) b.disabled = true;
+    b.addEventListener("click", onClick);
+    return b;
+  }
+
+  const pad2 = n => (n < 10 ? "0" : "") + n;
+  function fmtDate(iso) {
+    const d = new Date(iso);
+    if (!iso || isNaN(d.getTime())) return "";
+    return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()) + " " + pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+  }
+  function fmtSecs(s) { s = Math.max(0, Math.floor(Number(s) || 0)); return Math.floor(s / 60) + ":" + pad2(s % 60); }
+  const num = v => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : 0);
+  const nameOf = id => { const p = roster.players.find(q => q.id === id); return p ? p.name : "(removed)"; };
+
+  // A table from header labels and rows of cell texts. opts: sort (col keys per header), rowClass(i), onRow(i).
+  function table(heads, rows, opts) {
+    opts = opts || {};
+    const t = el("table", "grid");
+    const tr = el("tr");
+    heads.forEach((h, i) => {
+      const th = el("th", opts.keys && opts.keys[i] ? "sortable" : "", h);
+      if (opts.keys && opts.keys[i]) {
+        const key = opts.keys[i];
+        if (ui.sort.col === key) th.textContent = h + (ui.sort.dir === "asc" ? " ▲" : " ▼");
+        th.addEventListener("click", () => opts.onSort(key));
+      }
+      tr.appendChild(th);
+    });
+    t.appendChild(el("thead", "", null, [tr]));
+    const body = el("tbody");
+    rows.forEach((cells, i) => {
+      const r = el("tr", (opts.rowClass && opts.rowClass(i)) || "");
+      cells.forEach(c => r.appendChild(el("td", "", c)));
+      if (opts.onRow) { r.classList.add("click"); r.addEventListener("click", () => opts.onRow(i)); }
+      body.appendChild(r);
+    });
+    if (!rows.length) {
+      const r = el("tr"), td = el("td", "empty", opts.empty || "Nothing yet.");
+      td.colSpan = heads.length;
+      r.appendChild(td); body.appendChild(r);
+    }
+    t.appendChild(body);
+    return t;
+  }
+
+  function buyRows(list) {
+    return list.map(b => [fmtDate(b.at), b.name || b.item, b.kind, "★ " + num(b.cost), "★ " + num(b.left) + " left"]);
+  }
+
+  // The hangar's History section: this player's newest purchases.
+  function renderHistory(box, n) {
+    box.textContent = "";
+    if (!HAS) return;
+    const list = G.playerBuys(buyLog, me().id).slice(0, n);
+    box.appendChild(table(["When", "Item", "Kind", "Cost", "Stars after"], buyRows(list), { empty: "No purchases yet." }));
+    if (G.playerBuys(buyLog, me().id).length > n) box.appendChild(el("p", "note", "Showing the newest " + n + ". The full list is in your stats."));
+  }
+
+  function openDlg(view, id) {
+    ui.dlg.push({ view, id });
+    showDlg();
+  }
+  function popDlg() { ui.dlg.pop(); showDlg(); }
+  function closeAllDlg() { ui.dlg.length = 0; showDlg(); }
+  function showDlg() {
+    const top = ui.dlg[ui.dlg.length - 1];
+    $("dlg").hidden = !top;
+    if (!top) { $("dlg-body").textContent = ""; showCards(); return; }
+    $("win").hidden = true; $("end").hidden = true;
+    renderDlg();
+  }
+  function renderDlg() {
+    const top = ui.dlg[ui.dlg.length - 1];
+    if (!top) return;
+    const body = $("dlg-body");
+    body.textContent = "";
+    if (top.view === "players") viewPlayers(body);
+    else if (top.view === "stats") viewStats(body, top.id);
+    else viewScores(body);
+  }
+
+  function sortBy(col) {
+    if (ui.sort.col === col) ui.sort.dir = ui.sort.dir === "asc" ? "desc" : "asc";
+    else ui.sort = { col, dir: col === "name" ? "asc" : "desc" };
+    renderDlg();
+  }
+
+  function viewScores(body) {
+    const rows = G.rankPlayers(G.playerTotals(roster, runLog), ui.sort.col, ui.sort.dir);
+    body.appendChild(el("h1", "", "Scoreboard"));
+    body.appendChild(el("p", "note", "Every player on this browser. Click a heading to sort, click a player for their stats."));
+    body.appendChild(table(["Player", "Best", "Runs", "Best sector", "Delivered", "Stars"],
+      rows.map(r => [r.name, num(r.best), num(r.runs), num(r.bestSector), num(r.delivered && r.delivered.all), num(r.stars)]),
+      { keys: ["name", "best", "runs", "bestSector", "delivered", "stars"], onSort: sortBy,
+        rowClass: i => (rows[i].id === me().id ? "me" : ""), onRow: i => openDlg("stats", rows[i].id) }));
+    body.appendChild(el("h2", "", "Top runs"));
+    const top = G.topRuns(runLog, 10);
+    body.appendChild(table(["#", "Player", "Score", "Sector", "When", "Result"],
+      top.map((r, i) => [String(i + 1), nameOf(r.player), num(r.score), num(r.sector), fmtDate(r.at), r.result]),
+      { empty: "No finished runs yet.", rowClass: i => (top[i].player === me().id ? "me" : "") }));
+    body.appendChild(el("div", "row", null, [
+      btn("Players", () => openDlg("players")), btn("Export logs", exportLogs),
+      btn("Close", closeAllDlg, "primary")]));
+  }
+
+  function viewStats(body, id) {
+    const t = G.playerTotals(roster, runLog).find(r => r.id === id);
+    if (!t) { body.appendChild(el("p", "", "That player is gone.")); body.appendChild(el("div", "row", null, [btn("Back", popDlg, "primary")])); return; }
+    const d = t.delivered || {};
+    body.appendChild(el("h1", "", t.name + (t.id === me().id ? " (playing)" : "")));
+    body.appendChild(table(["Best", "Runs", "Best sector", "Ore", "Ice", "Crystal", "Stars collected", "Stars banked", "Time played"],
+      [[num(t.best), num(t.runs), num(t.bestSector), num(d.ore), num(d.ice), num(d.crystal), num(t.stars), num(t.bank), fmtSecs(t.secs)]]));
+    body.appendChild(el("h2", "", "Runs, newest first"));
+    const runs = G.playerRuns(runLog, id);
+    const wrap = el("div", "scroll");
+    wrap.appendChild(table(["When", "Score", "Sector", "Ore", "Ice", "Crystal", "Ships", "Bases", "Stars", "Time", "Result"],
+      runs.map(r => { const q = r.delivered || {};
+        return [fmtDate(r.at), num(r.score), num(r.sector), num(q.ore), num(q.ice), num(q.crystal), num(r.ships), num(r.bases), num(r.stars), fmtSecs(r.secs), r.result]; }),
+      { empty: "No finished runs yet." }));
+    body.appendChild(wrap);
+    body.appendChild(el("h2", "", "Hangar purchases, newest first"));
+    const wrap2 = el("div", "scroll");
+    wrap2.appendChild(table(["When", "Item", "Kind", "Cost", "Stars after"], buyRows(G.playerBuys(buyLog, id)), { empty: "No purchases yet." }));
+    body.appendChild(wrap2);
+    body.appendChild(el("div", "row", null, [btn("Back", popDlg), btn("Close", closeAllDlg, "primary")]));
+  }
+
+  const nameMax = () => (G.TUNING.logs && G.TUNING.logs.nameMax) || 24;
+
+  function viewPlayers(body) {
+    body.appendChild(el("h1", "", "Players"));
+    body.appendChild(el("p", "note", "Each player has their own stars, looks and best score. Playing as: " + me().name));
+    const list = el("div", "plist");
+    const totals = G.playerTotals(roster, runLog);
+    for (const p of roster.players) {
+      const t = totals.find(r => r.id === p.id) || {};
+      const cur = p.id === me().id;
+      list.appendChild(el("div", "prow" + (cur ? " me" : ""), null, [
+        el("span", "pname", p.name + (cur ? " (playing)" : "")),
+        el("small", "", "best " + num(t.best) + ", " + num(t.runs) + " runs, ★ " + num(p.profile && p.profile.stars)),
+        btn("Play", () => switchPlayer(p.id), "", cur),
+        btn("Rename", () => {
+          const v = prompt("New name for " + p.name + ":", p.name);
+          if (v == null) return;
+          const r = G.renamePlayer(roster, p.id, v);
+          if (!r.ok) return toast(r.reason || "That name cannot be used.");
+          saveRoster(); renderDlg(); refresh();
+        }),
+        btn("Stats", () => openDlg("stats", p.id)),
+        btn("Clear data", () => clearData(p)),
+      ]));
+    }
+    body.appendChild(list);
+    const input = el("input", "name-in");
+    input.type = "text"; input.maxLength = nameMax(); input.placeholder = "New player name";
+    const add = () => {
+      const r = G.addPlayer(roster, input.value, nowIso());
+      if (!r.ok) return toast(r.reason || "That name cannot be used.");
+      saveRoster();
+      toast("Added " + r.player.name + ". Press Play to switch to them.");
+      renderDlg();
+    };
+    input.addEventListener("keydown", ev => { if (ev.key === "Enter") add(); ev.stopPropagation(); });   // typing must not pause or cancel
+    input.addEventListener("keyup", ev => ev.stopPropagation());
+    body.appendChild(el("div", "row", null, [input, btn("Add player", add)]));
+    body.appendChild(el("div", "row", null, [btn("Scores", () => openDlg("scores")), btn("Close", closeAllDlg, "primary")]));
+  }
+
+  function clearData(p) {
+    if (!confirm("Clear all runs, purchases and the best score for " + p.name + "? Their name, stars and owned looks stay. This cannot be undone.")) return;
+    const r = G.clearPlayerData(roster, runLog, buyLog, p.id);
+    if (!r.ok) return toast(r.reason || "Nothing was cleared.");
+    saveRoster(); saveRuns(); saveBuys();
+    toast("Cleared " + r.runs + " run" + (r.runs === 1 ? "" : "s") + " and " + r.buys + " purchase" + (r.buys === 1 ? "" : "s") + " for " + p.name + ".");
+    renderDlg(); refresh();
+  }
+
+  // Change player. A run in progress is logged as abandoned and a new run starts for the new player.
+  function switchPlayer(id) {
+    if (id === me().id) return;
+    const live = game && !game.over;
+    if (live && !confirm("Switch player? Your current run ends as abandoned, and " + nameOf(id) + " starts a new run.")) return;
+    if (live) logRun("abandoned");
+    if (game && G.recordBest(profile, G.scoreTotal(game))) saveProfile();
+    const r = G.choosePlayer(roster, id);
+    if (!r.ok) return toast(r.reason || "Could not switch player.");
+    saveRoster();
+    useProfile(me().profile);
+    start(freshGame());
+    saveNow();
+    toast("Now playing as " + me().name + ".");
+    renderDlg();
+  }
+
+  function exportLogs() {
+    const text = G.exportLogs(roster, runLog, buyLog, nowIso());
+    const d = new Date();
+    const a = document.createElement("a");
+    const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+    a.href = url;
+    a.download = "fleet-game-logs-" + d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()) + ".json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    toast("Exported " + a.download);
+  }
+
+  $("dlg").addEventListener("click", ev => { if (ev.target === $("dlg")) popDlg(); });
+  $("b-player").addEventListener("click", () => openDlg("players"));
+  $("b-scores").addEventListener("click", () => openDlg("scores"));
+  $("e-scores").addEventListener("click", () => openDlg("scores"));
+  if (!HAS) for (const id of ["b-player", "b-scores", "e-scores", "h-history-wrap"]) $(id).hidden = true;
+
+  function updatePlayerButton() { if (HAS) $("b-player").textContent = "☺ " + me().name; }
 
   // ---------------------------------------------------------------- input
 
@@ -801,7 +1117,7 @@
   }
 
   function onClick(ev) {
-    if (!game || ui.hangar) return;
+    if (!game || modal()) return;
     const p = toWorld(ev);
     if (ui.placing) {
       const r = G.placeBase(game, p.x, p.y);
@@ -879,6 +1195,7 @@
   $("w-keep").addEventListener("click", () => { ui.winOpen = false; $("win").hidden = true; });
   window.addEventListener("keydown", ev => {
     if (ev.key !== "Escape") return;
+    if (ui.dlg.length) return popDlg();   // the top dialog; a stats view opened from the scoreboard goes back to it
     if (ui.hangar) return closeHangar();
     ui.placing = false; ui.selected = null; boardKey = ""; buildHtml = ""; refresh();
   });
@@ -886,11 +1203,11 @@
   // focused button does not also "click" (keydown for most browsers, keyup for Firefox).
   const isSpace = ev => ev.key === " " || ev.code === "Space";
   window.addEventListener("keydown", ev => {
-    if (!isSpace(ev)) return;
+    if (!isSpace(ev) || (ev.target && ev.target.tagName === "INPUT")) return;   // a space typed in a name box is just a space
     ev.preventDefault();
     if (!ev.repeat) setPaused(!ui.paused);
   }, true);
-  window.addEventListener("keyup", ev => { if (isSpace(ev)) ev.preventDefault(); }, true);
+  window.addEventListener("keyup", ev => { if (isSpace(ev) && !(ev.target && ev.target.tagName === "INPUT")) ev.preventDefault(); }, true);
   window.addEventListener("beforeunload", () => { if (game) saveNow(AUTO_KEY); });
   window.addEventListener("resize", resize);
 
@@ -907,7 +1224,7 @@
       $("fps").textContent = `${Math.round(fps.frames / fps.acc)} fps, worst ${Math.round(fps.worst)} ms, ${game.ships.length} ships`;
       fps.frames = 0; fps.acc = 0; fps.worst = 0;
     }
-    const running = !ui.paused && !ui.hangar && !game.over;
+    const running = !ui.paused && !modal() && !game.over;
     if (running) {   // fixed-step simulation; drawing happens once per animation frame
       acc += dt;
       let n = 0;
@@ -937,7 +1254,7 @@
     const r = readSaves([AUTO_KEY, SAVE_KEY]);   // the autosave is the newest; the manual save is the fallback
     first = r.state; notice = r.notice; damaged = r.damaged;
   }
-  start(first || freshGame());
+  start(first || freshGame(), !!first);
   const msgs = [profileNotice, notice && (notice.trim() + (first ? (damaged ? " Loaded the other save." : "") : " Started a new game; a copy of the damaged save was kept."))].filter(Boolean);
   if (msgs.length) toast(msgs.join(" "), true);
   requestAnimationFrame(t => { lastT = t; lastSave = t; requestAnimationFrame(loop); });
