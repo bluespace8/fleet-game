@@ -1099,7 +1099,7 @@
     ctx.textAlign = "center";
     ctx.font = "600 11.5px system-ui, sans-serif";
     ctx.fillStyle = "rgba(235,240,255,0.92)";
-    labelText(b.name, b.x, b.y + ringR + 15);
+    labelText(G.bodyLabel ? G.bodyLabel(b, LB()) : b.name, b.x, b.y + ringR + 15);
     ctx.font = "10px system-ui, sans-serif";
     ctx.fillStyle = empty ? "rgba(200,210,240,0.5)" : hexA(RES_COLOR[b.res], 0.9);
     labelText(empty ? "EMPTY" : `${Math.floor(b.amount)} ${(LB().res[b.res] || b.res).toUpperCase()}`, b.x, b.y + ringR + 28);
@@ -1319,6 +1319,19 @@
     ctx.lineCap = "butt";
   }
 
+  // One trail point per ship per simulation step, so a trail is the same length (about a second of flight)
+  // whatever the frame rate. A ship that stops lets its trail drain away.
+  const TRAIL_POINTS = 30;
+  function addTrailPoints() {
+    for (const s of game.ships) {
+      let tr = trails.get(s.id);
+      if (!tr) trails.set(s.id, tr = []);
+      const moving = s.st === G.TO_BODY || s.st === G.TO_BASE || s.st === G.TO_STAR;
+      if (moving) tr.push([s.x, s.y]);
+      if (tr.length > TRAIL_POINTS || (!moving && tr.length)) tr.shift();
+    }
+  }
+
   // Engine trail, in the style picked in the hangar.
   function drawTrail(ship, color) {
     const t = trails.get(ship.id);
@@ -1327,8 +1340,8 @@
     if (style === "spark") {
       for (let i = 0; i < t.length; i++) {
         const a = (i + 1) / t.length;
-        ctx.fillStyle = hexA(color, a * 0.85);
-        ctx.beginPath(); ctx.arc(t[i][0], t[i][1] + Math.sin(i * 2.1 + ship.id) * 2, 0.8 + a * 2.2, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = hexA(color, 0.25 + a * 0.7);
+        ctx.beginPath(); ctx.arc(t[i][0], t[i][1] + Math.sin(i * 2.1 + ship.id) * 2.5, 1.2 + a * 2.6, 0, Math.PI * 2); ctx.fill();
       }
       return;
     }
@@ -1336,15 +1349,15 @@
       ctx.lineCap = "round"; ctx.lineJoin = "round";
       ctx.beginPath(); ctx.moveTo(t[0][0], t[0][1]);
       for (let i = 1; i < t.length; i++) ctx.lineTo(t[i][0], t[i][1]);
-      ctx.strokeStyle = hexA(color, 0.14); ctx.lineWidth = 7; ctx.stroke();
-      ctx.strokeStyle = hexA(color, 0.4); ctx.lineWidth = 2.5; ctx.stroke();
+      ctx.strokeStyle = hexA(color, 0.22); ctx.lineWidth = 9; ctx.stroke();
+      ctx.strokeStyle = hexA(color, 0.6); ctx.lineWidth = 3.5; ctx.stroke();
       ctx.lineCap = "butt"; ctx.lineJoin = "miter";
       return;
     }
     ctx.lineCap = "round";
     for (let i = 1; i < t.length; i++) {
       const a = i / t.length;
-      ctx.strokeStyle = hexA(color, a * 0.45); ctx.lineWidth = 1 + a * 2;
+      ctx.strokeStyle = hexA(color, 0.1 + a * 0.7); ctx.lineWidth = 1.5 + a * 2.5;
       ctx.beginPath(); ctx.moveTo(t[i - 1][0], t[i - 1][1]); ctx.lineTo(t[i][0], t[i][1]); ctx.stroke();
     }
     ctx.lineCap = "butt";
@@ -2272,7 +2285,7 @@
       return;
     }
     if (h && h.kind === "body") {
-      const r = G.orderShip(game, ui.selected, h.o.id);
+      const r = G.orderShip(game, ui.selected, h.o.id, labelArg());
       if (!r.ok) return toast(r.reason);
     } else if (h && h.kind === "star") {
       const r = G.orderShipToStar(game, ui.selected, h.o.id);
@@ -2367,15 +2380,8 @@
     if (running) {   // fixed-step simulation; drawing happens once per animation frame
       acc += dt;
       let n = 0;
-      while (acc >= STEP && n < MAX_STEPS) { G.step(game, STEP); time += STEP; acc -= STEP; n++; }
+      while (acc >= STEP && n < MAX_STEPS) { G.step(game, STEP); time += STEP; acc -= STEP; n++; addTrailPoints(); }
       if (n === MAX_STEPS) acc = 0;
-      for (const s of game.ships) {
-        let tr = trails.get(s.id);
-        if (!tr) trails.set(s.id, tr = []);
-        const moving = s.st === G.TO_BODY || s.st === G.TO_BASE || s.st === G.TO_STAR;
-        if (moving) tr.push([s.x, s.y]);
-        if (tr.length > 14 || (!moving && tr.length)) tr.shift();
-      }
       G.checkWin(game);
       if (game.starsGot !== ui.starsSeen || game.over || (game.won && !ui.winShown)) refresh();
     }

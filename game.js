@@ -114,6 +114,7 @@
   // hazard takes an optional trailing "labels" argument (from labelsFor); left out, the text is the space wording.
   function deepFreeze(o) { for (const k of Object.keys(o)) if (o[k] && typeof o[k] === "object") deepFreeze(o[k]); return Object.freeze(o); }
   const SPACE_LABELS = deepFreeze({
+    id: "space",
     res: { ore: "ore", ice: "ice", crystal: "crystal" },
     resTitle: { ore: "Ore", ice: "Ice", crystal: "Crystal" },
     ship: { miner: "Miner", hauler: "Hauler" }, ships: "Ships",
@@ -406,10 +407,10 @@
 
   // ---------------------------------------------------------------- orders
 
-  function orderShip(state, shipId, bodyId) {
+  function orderShip(state, shipId, bodyId, labels) {
     const ship = state.ships[shipId], body = state.bodies[bodyId];
     if (!ship || !body) return { ok: false, reason: "No such ship or body." };
-    if (body.amount <= 1e-6) return { ok: false, reason: body.name + " is empty." };
+    if (body.amount <= 1e-6) return { ok: false, reason: bodyLabel(body, labels) + " is empty." };
     ship.target = bodyId;
     ship.dest = -1;
     ship.star = -1;
@@ -642,18 +643,30 @@
 
   function r0(n) { return Math.floor(n + 1e-6); }
 
+  // A body is stored with a generated name ("Rock 42", "Kavelo"). In a theme it is shown with one of the theme's own
+  // names for that kind of body, picked by body id so it is the same every frame and in every save. Space and any
+  // unknown theme show the stored name.
+  function bodyLabel(body, labels) {
+    if (!body) return "";
+    const theme = labels && labels.id && labels.id !== "space" ? lookById("theme", labels.id) : null;
+    const pool = theme && theme.names && theme.names[body.kind];
+    if (!pool || !pool.length) return String(body.name);
+    const id = Math.max(0, Math.floor(Number(body.id) || 0)), n = Math.floor(id / pool.length);
+    return pool[id % pool.length] + (n ? " " + (n + 1) : "");
+  }
+
   function jobText(state, ship, labels) {
     const L = labels || SPACE_LABELS;
     const body = ship.target >= 0 ? state.bodies[ship.target] : null;
     const def = SHIP_TYPES[ship.type];
     switch (ship.st) {
-      case TO_BODY: return "Flying to " + (body ? body.name : "target");
-      case MINING: return "Mining " + (body ? body.name : "") + " " + r0(ship.cargo) + "/" + def.cap;
+      case TO_BODY: return "Flying to " + (body ? bodyLabel(body, L) : "target");
+      case MINING: return "Mining " + (body ? bodyLabel(body, L) : "") + " " + r0(ship.cargo) + "/" + def.cap;
       case TO_STAR: return "Flying to a star";
       case UNLOADING: return "Unloading";
       case TO_BASE:
         return ship.cargo > 0 ? "Hauling " + r0(ship.cargo) + " " + (L.res[ship.res] || ship.res) + " home"
-          : (body ? "Back to " + L.base + ", then " + body.name : "Returning to " + L.base);
+          : (body ? "Back to " + L.base + ", then " + bodyLabel(body, L) : "Returning to " + L.base);
       default: return "Idle. Select it, then pick a target.";
     }
   }
@@ -820,14 +833,24 @@
   const LOOKS = {
     theme: [   // scene: the one sky a theme draws (null = the chosen background); labels: wording overrides
       { id: "space", name: "Space", cost: 0, scene: null, note: "Ships, bases and backgrounds as chosen below.", labels: {} },
-      { id: "dwarven", name: "Dwarven", cost: 60, scene: "cavern", note: "Dwarves and mine carts dig ores and gems for forge halls, deep underground.",
-        labels: { res: { ore: "iron", ice: "silver", crystal: "gems" }, resTitle: { ore: "Iron", ice: "Silver", crystal: "Gems" },
+      { id: "dwarven", name: "Dwarven", cost: 30, scene: "cavern", note: "Dwarves and mine carts dig ores and gems for forge halls, deep underground.",
+        names: {
+          asteroid: ["Ironhold Vein", "Deepdelve", "Anvil Seam", "Blackpick", "Stoneback", "Hammerfall", "Coalbeard", "Rustvein", "Ironroot", "Granite Gut"],
+          moon: ["Silverglint", "Moonvein", "Argent Seam", "Glimmerdeep", "Starlode", "Pale Seam"],
+          iceplanet: ["Argentum", "Brightbeard Lode", "Silverhall", "Bellowdeep", "Quicksilver"],
+          rare: ["Ruby Hollow", "Emerald Heart", "Sapphire Vault", "Diamondmaw", "Opal Cleft", "Garnet Grotto"] },
+        labels: { id: "dwarven", res: { ore: "iron", ice: "silver", crystal: "gems" }, resTitle: { ore: "Iron", ice: "Silver", crystal: "Gems" },
           ship: { miner: "Dwarf", hauler: "Mine cart" }, ships: "Dwarves",
           base: "forge", baseTitle: "Forge", bases: "Forges", home: "Great hall", newBase: "New forge",
           body: { asteroid: "Iron vein", moon: "Silver seam", iceplanet: "Silver lode", rare: "Gem geode" },
           storm: "Flooded tunnel", shower: "Cave-in", sector: "Depth", warp: "Dig to next depth", edge: "the cavern wall" } },
-      { id: "hamster", name: "Hamster", cost: 120, scene: "habitat", note: "Hamsters fetch seeds, nuts and carrots for their running wheels.",
-        labels: { res: { ore: "seeds", ice: "nuts", crystal: "carrots" }, resTitle: { ore: "Seeds", ice: "Nuts", crystal: "Carrots" },
+      { id: "hamster", name: "Hamster", cost: 60, scene: "habitat", note: "Hamsters fetch seeds, nuts and carrots for their running wheels.",
+        names: {
+          asteroid: ["Sunflower Heap", "Millet Mound", "Oat Hill", "Barley Bank", "Seed Stack", "Pumpkin Pile"],
+          moon: ["Walnut Stash", "Peanut Cache", "Hazel Hoard", "Almond Nook", "Pecan Pocket", "Chestnut Hide"],
+          iceplanet: ["Big Blue Bowl", "Cashew Dish", "Pistachio Pan", "Brazil Bowl", "Macadamia Mug"],
+          rare: ["Carrot Corner", "Baby Carrot Bed", "Orange Row", "Crunchy Patch", "Garden Gold"] },
+        labels: { id: "hamster", res: { ore: "seeds", ice: "nuts", crystal: "carrots" }, resTitle: { ore: "Seeds", ice: "Nuts", crystal: "Carrots" },
           ship: { miner: "Hamster", hauler: "Big hamster" }, ships: "Hamsters",
           base: "wheel", baseTitle: "Wheel", bases: "Wheels", home: "Home wheel", newBase: "New wheel",
           body: { asteroid: "Seed pile", moon: "Nut stash", iceplanet: "Nut bowl", rare: "Carrot patch" },
@@ -1422,7 +1445,7 @@
     playerRuns, playerBuys, playerTotals, rankPlayers, topRuns, clearPlayerData, exportLogs,
     VERSION, TUNING, BASE_R, BASE_GAP, GOAL_BASES, RES, START_STOCK, SHIP_TYPES, BASE_COST, MAX_TIER,
     IDLE, TO_BODY, MINING, TO_BASE, UNLOADING, TO_STAR,
-    LOOKS, LOOK_KINDS, LOOK_TITLES, SPACE_LABELS, labelsFor, sceneFor, shipLabel,
+    LOOKS, LOOK_KINDS, LOOK_TITLES, SPACE_LABELS, labelsFor, sceneFor, shipLabel, bodyLabel,
     rng, newGame, canAfford, buildShip, addShip, baseSpotProblem, placeBase, checkWin,
     clampSector, mapScale, worldSize, mapSeed, goalBases, amountMult, crystalCount, bodyCount, crystalRich, BODY_SPECS, costMult, stormCount, showersOn,
     showerGap, showerHit, parTime, baseCost, shipCost, upgradeCost, upgradeBase, warpToNextSector,
