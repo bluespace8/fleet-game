@@ -499,7 +499,7 @@
     const ship = state.ships[shipId];
     if (!ship || ship.st !== MANUAL) return { ok: false, reason: "Not flying by hand." };
     if (state.over) return { ok: false, reason: "This run is over." };
-    if (ship.mm === 1 || ship.mm === 2) { ship.mm = 0; ship.wait = 0; return { ok: true, did: "stop" }; }
+    if (ship.mm === 1 || ship.mm === 2) { ship.mm = 0; ship.wait = 0; ship.target = -1; return { ok: true, did: "stop" }; }
     const def = SHIP_TYPES[ship.type], L = labels || SPACE_LABELS;
     if (ship.cargo > 0) {
       const base = state.bases[nearestBase(state, ship.x, ship.y)], up = T.upgrades[base.tier | 0];
@@ -510,15 +510,17 @@
         return { ok: true, did: "unload" };
       }
     }
-    let best = null, bd = Infinity;
+    let best = null, bd = Infinity, wrongRes = false;
     for (let i = 0; i < state.bodies.length; i++) {
       const b = state.bodies[i];
       if (b.amount <= 1e-6) continue;
       const d = Math.hypot(ship.x - b.x, ship.y - b.y);
-      if (d <= b.r + 12 + MANUAL_SLACK && d < bd) { bd = d; best = b; }
+      if (d > b.r + 12 + MANUAL_SLACK) continue;
+      if (ship.cargo > 0 && ship.res !== b.res) { wrongRes = true; continue; }   // carrying another resource: keep looking
+      if (d < bd) { bd = d; best = b; }
     }
+    if (!best && wrongRes) return { ok: false, reason: "Carrying " + (L.res[ship.res] || ship.res) + ". Unload at a " + L.base + " first." };
     if (!best) return { ok: false, reason: "Nothing in reach." };
-    if (ship.cargo > 0 && ship.res !== best.res) return { ok: false, reason: "Carrying " + (L.res[ship.res] || ship.res) + ". Unload at a " + L.base + " first." };
     if (ship.cargo >= def.cap - 1e-9) return { ok: false, reason: "Full. Unload at a " + L.base + " first." };
     ship.mm = 1; ship.target = best.id; ship.res = best.res;
     return { ok: true, did: "mine" };
@@ -634,12 +636,12 @@
     if (ship.mm === 2) {                       // unloading: the delivery was made when it started
       ship.mv = 0;
       ship.wait -= dt;
-      if (ship.wait <= 0) { ship.wait = 0; ship.mm = 0; }
+      if (ship.wait <= 0) { ship.wait = 0; ship.mm = 0; ship.target = -1; }
       return;
     }
     const len = Math.hypot(ship.ix, ship.iy);
     if (ship.mm === 1) {
-      if (len > 0) ship.mm = 0;                // any input cancels mining
+      if (len > 0) { ship.mm = 0; ship.target = -1; }   // any input cancels mining
       else {
         const body = state.bodies[ship.target];
         ship.mv = 0;
@@ -650,7 +652,7 @@
         ship.cargo += take;
         ship.res = body.res;
         state.stats[body.res] += take;
-        if (ship.cargo >= def.cap - 1e-9 || body.amount === 0) ship.mm = 0;
+        if (ship.cargo >= def.cap - 1e-9 || body.amount === 0) { ship.mm = 0; ship.target = -1; }
         return;
       }
     }

@@ -2164,6 +2164,43 @@ test("manual mining is refused out of reach, on an empty body, with the wrong ca
   assert.strictEqual(G.manualAction(s, 0).ok, false, "empty body is out of reach");
   assert.strictEqual(G.manualAction(s, 1).ok, false, "ship 1 is not manual");
 });
+test("manual mining skips an empty or other-resource body when a usable one is in reach", () => {
+  const s = manualShip(1), sh = s.ships[0], a = s.bodies[0], b = s.bodies[1], c = s.bodies[2];
+  a.res = "ore"; b.res = "ice"; c.res = "ore";
+  for (const o of [a, b, c]) { o.r = 20; o.amount = 100; }
+  sh.x = 500; sh.y = 500;
+  a.x = 500; a.y = 501; b.x = 500; b.y = 505; c.x = 512; c.y = 500;
+  a.amount = 0;                                   // nearest is empty
+  sh.cargo = 5; sh.res = "ore";                   // next nearest is ice, wrong resource
+  assert.deepStrictEqual(G.manualAction(s, 0), { ok: true, did: "mine" });
+  assert.strictEqual(sh.target, c.id); assert.strictEqual(sh.res, "ore");
+  const t = manualShip(1), ts = t.ships[0], tb = t.bodies[0], tc = t.bodies[1];
+  tb.res = "ice"; tc.res = "ore"; tb.r = tc.r = 20; tb.amount = 100; tc.amount = 0;
+  ts.x = 500; ts.y = 500; tb.x = 500; tb.y = 505; tc.x = 505; tc.y = 500;
+  ts.cargo = 5; ts.res = "ore";
+  const r = G.manualAction(t, 0);
+  assert.strictEqual(r.ok, false); assert.ok(/ore/i.test(r.reason) && !/Nothing/.test(r.reason), "wrong-resource reason: " + r.reason);
+  assert.strictEqual(ts.mm, 0);
+});
+test("manual mining clears the target whenever it ends", () => {
+  const body = s => nearBody(s);
+  let s = manualShip(1), sh = s.ships[0], b = body(s);
+  placeBeside(s, sh, b); b.amount = 3; G.manualAction(s, 0); stepFor(s, 3);
+  assert.strictEqual(sh.mm, 0); assert.strictEqual(sh.target, -1, "body ran dry");
+  s = manualShip(1); sh = s.ships[0]; b = body(s);
+  placeBeside(s, sh, b); G.manualAction(s, 0); stepFor(s, 10);
+  assert.strictEqual(sh.mm, 0); assert.strictEqual(sh.target, -1, "hold full");
+  s = manualShip(1); sh = s.ships[0]; b = body(s);
+  placeBeside(s, sh, b); G.manualAction(s, 0); G.setManualInput(s, 0, 1, 0); stepFor(s, 1);
+  assert.strictEqual(sh.target, -1, "input cancels");
+  s = manualShip(1); sh = s.ships[0]; b = body(s);
+  placeBeside(s, sh, b); G.manualAction(s, 0); G.manualAction(s, 0);
+  assert.strictEqual(sh.target, -1, "stop action");
+  s = manualShip(1); sh = s.ships[0]; sh.target = 3;
+  sh.x = s.bases[0].x + G.BASE_R + 15; sh.y = s.bases[0].y; sh.cargo = 10; sh.res = "ore";
+  G.manualAction(s, 0); stepFor(s, 3);
+  assert.strictEqual(sh.mm, 0); assert.strictEqual(sh.target, -1, "unload done");
+});
 test("any input cancels manual mining; the same action stops it too", () => {
   const s = manualShip(1), sh = s.ships[0], body = nearBody(s);
   placeBeside(s, sh, body);

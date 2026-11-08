@@ -175,6 +175,7 @@
 
   // Everything that depends on the current map: called for a new, loaded or warped game.
   function resetView() {
+    clearDigits();
     ui.selected = null; ui.placing = false; ui.cursor = null; acc = 0;
     trails.clear(); shapes.clear();
     boardKey = ""; buildHtml = ""; basesHtml = "";
@@ -1740,7 +1741,7 @@
 
   // Everything behind a dialog or card is unreachable by Tab and click while it is open.
   function syncInert() {
-    const block = !!(ui.feedback || ui.hangar || ui.dlg.length || !$("win").hidden || !$("end").hidden);
+    const block = !!(ui.feedback || ui.hangar || ui.dlg.length || !$("end").hidden);   // the win card covers only the stage
     $("side").inert = block; $("topbar").inert = block; $("paused").inert = ui.feedback;
   }
 
@@ -2341,6 +2342,7 @@
   }
 
   function select(id) {
+    clearDigits();
     ui.selected = id;
     ui.placing = false;
     boardKey = ""; buildHtml = "";
@@ -2440,8 +2442,6 @@
     const sel = game && ui.selected != null ? game.ships[ui.selected] : null;
     if (sel && sel.st === G.MANUAL) { G.releaseManual(game, sel.id); refresh(); return; }   // hand the ship back first
     ui.placing = false; ui.cursor = null; ui.selected = null; boardKey = ""; buildHtml = "";
-    const a = document.activeElement;
-    if (a && a !== document.body && a.blur && !(a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.tagName === "SELECT")) a.blur();
     refresh();
   });
   // Space toggles pause wherever focus is. It is handled in the capture phase and cancelled, so a
@@ -2523,7 +2523,11 @@
     if (r.n == null && !r.wait && digits.s.length > 1) { digits.s = d; r = G.resolveTargetKeys(d, count); }   // not a number: start over
     if (r.n == null && !r.wait) { clearDigits(); toast("No target " + d + "."); return; }
     if (r.wait) {
-      digits.timer = setTimeout(() => { const n = r.n; clearDigits(); if (n != null && game) orderTarget(n); }, 600);
+      const g0 = game, sel0 = ui.selected;
+      digits.timer = setTimeout(() => {
+        const n = r.n; clearDigits();
+        if (n != null && game === g0 && ui.selected === sel0 && !modal()) orderTarget(n);
+      }, 600);
       return;
     }
     clearDigits();
