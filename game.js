@@ -62,6 +62,7 @@
              parFirst: 420, parPerSector: 120, timePerSec: 2 },
     endCheckEvery: 1,          // seconds between stranded checks
     bank: { claimedKeep: 400, backups: 3 },
+    logs: { runs: 500, buys: 500, players: 50, nameMax: 24, minSecs: 5 },
   };
 
   const T = TUNING;
@@ -250,6 +251,7 @@
       stats: { ore: 0, ice: 0, crystal: 0, lost: 0 },   // total mined, and cargo knocked off by meteors
       score: { mat: 0, bases: 0, sectors: 0, time: 0 },
       cleared: 0, starsGot: 0, hits: 0,
+      delivered: { ore: 0, ice: 0, crystal: 0 },        // units handed in, by type
     };
   }
 
@@ -463,6 +465,7 @@
   function deliver(state, res, amount) {
     state.stock[res] += amount;
     state.score.mat += amount * T.score.value[res];
+    state.delivered[res] += amount;
   }
 
   // After unloading: repeat the run if the body still has something, else go idle.
@@ -747,6 +750,8 @@
       const body = s.target >= 0 ? state.bodies[s.target] : null;   // cargo that does not fit the target is dropped
       if (body && (s.st === TO_BODY || s.st === MINING) && s.res !== body.res) { s.cargo = 0; s.res = ""; }
     }
+    const dv = isObj(raw.delivered) ? raw.delivered : {};
+    for (const k of RES) state.delivered[k] = Math.max(0, num(dv[k], 0));
     const out = { ok: true, state };
     if (old) out.notice = "This save is from the first version of Fleet. It was loaded as sector 1.";
     return out;
@@ -893,7 +898,282 @@
     return false;
   }
 
+  // ---------------------------------------------------------------- players, run log, purchase log
+  // Plain data in, plain data out. The UI owns the storage and passes `now` as an ISO string.
+
+  const LG = T.logs;
+
+  function parseJsonText(text) {   // { empty: true } | { err: true } | { raw }
+    if (text == null) return { empty: true };
+    if (typeof text !== "string") return { err: true };
+    if (text.trim() === "") return { empty: true };
+    try { return { raw: JSON.parse(text) }; } catch (e) { return { err: true }; }
+  }
+  function isObj(v) { return !!v && typeof v === "object" && !Array.isArray(v); }
+  function cleanName(v) {
+    if (typeof v !== "string") return "";
+    return v.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
+  }
+  function cleanStr(v, max) { return typeof v === "string" ? v.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").slice(0, max) : ""; }
+  function nat(v, hi) { return intIn(v, 0, hi || 1e12, 0); }
+  function cmpText(a, b) { a = String(a).toLowerCase(); b = String(b).toLowerCase(); return a < b ? -1 : a > b ? 1 : 0; }
+
+  function newRoster(now) {
+    return { ver: 1, current: "p1", next: 2, players: [{ id: "p1", name: "Player 1", created: String(now || ""), profile: newProfile() }] };
+  }
+
+  function parseRoster(text, legacyBankText, now) {
+    const j = parseJsonText(text);
+    if (j.empty) {
+      const roster = newRoster(now);
+      let migrated = false;
+      if (typeof legacyBankText === "string" && legacyBankText.trim() !== "") {
+        const lp = parseProfile(legacyBankText);
+        if (lp.ok) { roster.players[0].profile = lp.profile; migrated = true; }
+      }
+      return { ok: true, roster, migrated };
+    }
+    const bad = error => ({ ok: false, roster: newRoster(now), migrated: false, error });
+    if (j.err) return bad("The players list is not valid JSON.");
+    const raw = j.raw;
+    if (!isObj(raw) || !Array.isArray(raw.players)) return bad("The players list has the wrong shape.");
+    const players = [], ids = {}, names = {};
+    let maxNum = 0;
+    for (const p of raw.players.slice(0, LG.players * 4)) {
+      if (players.length >= LG.players) break;
+      if (!isObj(p) || typeof p.id !== "string" || !/^[A-Za-z0-9_-]{1,16}$/.test(p.id) || ids[p.id]) continue;
+      let name = cleanName(p.name).slice(0, LG.nameMax).trim();
+      if (!name) name = "Player " + p.id.replace(/^p/, "");
+      if (names[name.toLowerCase()]) {          // keep names unique
+        let k = 2, cand;
+        do { const suf = " " + k++; cand = name.slice(0, LG.nameMax - suf.length).trim() + suf; } while (names[cand.toLowerCase()]);
+        name = cand;
+      }
+      ids[p.id] = true; names[name.toLowerCase()] = true;
+      const m = /^p(\d{1,9})$/.exec(p.id);
+      if (m) maxNum = Math.max(maxNum, +m[1]);
+      let prof;
+      try { prof = parseProfile(JSON.stringify(p.profile)).profile; } catch (e) { prof = newProfile(); }
+      players.push({ id: p.id, name, created: cleanStr(p.created, 40), profile: prof });
+    }
+    if (!players.length) return bad("The players list has no valid player.");
+    const current = typeof raw.current === "string" && ids[raw.current] ? raw.current : players[0].id;
+    const next = Math.max(maxNum + 1, intIn(raw.next, 1, 1e9, 1));
+    return { ok: true, roster: { ver: 1, current, next, players }, migrated: false };
+  }
+
+  function serializeRoster(roster) { return JSON.stringify(roster); }
+
+  function currentPlayer(roster) {
+    if (!Array.isArray(roster.players)) roster.players = [];
+    if (!roster.players.length) roster.players.push({ id: "p1", name: "Player 1", created: "", profile: newProfile() });
+    for (const p of roster.players) if (p.id === roster.current) return p;
+    roster.current = roster.players[0].id;
+    return roster.players[0];
+  }
+
+  // The reason text when the name is not allowed, else ""; `selfId` may keep its own name.
+  function nameProblem(roster, name, selfId) {
+    if (typeof name !== "string") return "Type a name.";
+    const n = cleanName(name);
+    if (!n) return "Type a name.";
+    if (n.length > LG.nameMax) return "Names can be up to " + LG.nameMax + " letters.";
+    for (const p of roster.players) if (p.id !== selfId && p.name.toLowerCase() === n.toLowerCase()) return "That name is already used.";
+    return "";
+  }
+
+  function addPlayer(roster, name, now) {
+    if (roster.players.length >= LG.players) return { ok: false, reason: "No more than " + LG.players + " players." };
+    const why = nameProblem(roster, name, null);
+    if (why) return { ok: false, reason: why };
+    let n = Math.max(1, intIn(roster.next, 1, 1e9, 1));
+    while (roster.players.some(p => p.id === "p" + n)) n++;
+    const player = { id: "p" + n, name: cleanName(name), created: String(now || ""), profile: newProfile() };
+    roster.players.push(player);
+    roster.next = n + 1;
+    return { ok: true, player };
+  }
+
+  function renamePlayer(roster, id, name) {
+    const p = roster.players.find(q => q.id === id);
+    if (!p) return { ok: false, reason: "No such player." };
+    const why = nameProblem(roster, name, id);
+    if (why) return { ok: false, reason: why };
+    p.name = cleanName(name);
+    return { ok: true };
+  }
+
+  function choosePlayer(roster, id) {
+    if (!roster.players.some(q => q.id === id)) return { ok: false, reason: "No such player." };
+    roster.current = id;
+    return { ok: true };
+  }
+
+  // ---- run log
+
+  function newRunLog() { return { ver: 1, runs: [] }; }
+  function serializeRunLog(log) { return JSON.stringify(log); }
+
+  function cleanRun(r) {
+    if (!isObj(r)) return null;
+    if (typeof r.key !== "string" || !r.key || r.key.length > 64) return null;
+    if (typeof r.player !== "string" || !r.player || r.player.length > 16) return null;
+    if (typeof r.result !== "string" || !/^[a-z]{1,16}$/.test(r.result)) return null;
+    if (typeof r.score !== "number" || !isFinite(r.score)) return null;
+    const parts = {};
+    if (isObj(r.parts)) {
+      for (const k of Object.keys(r.parts).slice(0, 24)) if (/^[A-Za-z]{1,16}$/.test(k) && typeof r.parts[k] === "number" && isFinite(r.parts[k])) parts[k] = r.parts[k];
+    }
+    const d = isObj(r.delivered) ? r.delivered : {};
+    return { key: r.key, player: r.player, at: cleanStr(r.at, 40), score: nat(r.score), parts,
+      sector: intIn(r.sector, 1, 999, 1), cleared: nat(r.cleared, 999),
+      delivered: { ore: nat(d.ore), ice: nat(d.ice), crystal: nat(d.crystal) },
+      ships: nat(r.ships, 99999), bases: nat(r.bases, 99999), stars: nat(r.stars, 99999), secs: nat(r.secs), result: r.result };
+  }
+
+  function parseRunLog(text) {
+    const j = parseJsonText(text);
+    if (j.empty) return { ok: true, log: newRunLog(), dropped: 0 };
+    if (j.err) return { ok: false, log: newRunLog(), dropped: 0, error: "The run log is not valid JSON." };
+    if (!isObj(j.raw) || !Array.isArray(j.raw.runs)) return { ok: false, log: newRunLog(), dropped: 0, error: "The run log has the wrong shape." };
+    const all = j.raw.runs, tail = all.length > LG.runs ? all.slice(-LG.runs) : all;
+    let dropped = all.length - tail.length;
+    const log = newRunLog(), at = {};
+    for (const r of tail) {
+      const c = cleanRun(r);
+      if (!c) { dropped++; continue; }
+      if (Object.prototype.hasOwnProperty.call(at, c.key)) { log.runs[at[c.key]] = c; dropped++; continue; }   // same key twice: the later one wins
+      at[c.key] = log.runs.length;
+      log.runs.push(c);
+    }
+    return { ok: true, log, dropped };
+  }
+
+  function shouldLogRun(state) {
+    if (!state || state.stress) return false;
+    return !(state.time < LG.minSecs && scoreTotal(state) === 0);
+  }
+
+  function runRecord(state, playerId, result, now) {
+    const parts = {};
+    for (const k of Object.keys(state.score)) if (typeof state.score[k] === "number" && isFinite(state.score[k])) parts[k] = state.score[k];
+    const d = state.delivered || {};
+    const res = String(result == null ? "" : result).toLowerCase().replace(/[^a-z]/g, "").slice(0, 16) || "retired";
+    return { key: state.seed + ":" + playerId, player: playerId, at: String(now || ""), score: scoreTotal(state), parts,
+      sector: state.sector, cleared: state.cleared,
+      delivered: { ore: r0(num(d.ore, 0)), ice: r0(num(d.ice, 0)), crystal: r0(num(d.crystal, 0)) },
+      ships: Math.max(0, state.ships.length - 2), bases: Math.round(state.score.bases / T.score.base),
+      stars: state.starsGot, secs: Math.floor(state.time), result: res };
+  }
+
+  function addRun(log, run) {
+    const i = log.runs.findIndex(r => r.key === run.key);
+    if (i >= 0) log.runs[i] = run; else log.runs.push(run);
+    if (log.runs.length > LG.runs) log.runs.splice(0, log.runs.length - LG.runs);
+    return log;
+  }
+
+  // ---- purchase log
+
+  function newBuyLog() { return { ver: 1, buys: [] }; }
+  function serializeBuyLog(log) { return JSON.stringify(log); }
+
+  function cleanBuy(b) {
+    if (!isObj(b)) return null;
+    if (typeof b.player !== "string" || !b.player || b.player.length > 16) return null;
+    if (LOOK_KINDS.indexOf(b.kind) < 0 || typeof b.item !== "string" || !b.item || b.item.length > 40) return null;
+    if (typeof b.cost !== "number" || !isFinite(b.cost)) return null;
+    return { player: b.player, at: cleanStr(b.at, 40), kind: b.kind, item: b.item,
+      name: cleanStr(b.name, 40) || b.item, cost: nat(b.cost, 1e9), left: nat(b.left, 1e9) };
+  }
+
+  function parseBuyLog(text) {
+    const j = parseJsonText(text);
+    if (j.empty) return { ok: true, log: newBuyLog(), dropped: 0 };
+    if (j.err) return { ok: false, log: newBuyLog(), dropped: 0, error: "The purchase log is not valid JSON." };
+    if (!isObj(j.raw) || !Array.isArray(j.raw.buys)) return { ok: false, log: newBuyLog(), dropped: 0, error: "The purchase log has the wrong shape." };
+    const all = j.raw.buys, tail = all.length > LG.buys ? all.slice(-LG.buys) : all;
+    let dropped = all.length - tail.length;
+    const log = newBuyLog();
+    for (const b of tail) { const c = cleanBuy(b); if (c) log.buys.push(c); else dropped++; }
+    return { ok: true, log, dropped };
+  }
+
+  function buyRecord(playerId, kind, id, cost, left, now) {
+    const look = LOOKS[kind] ? lookById(kind, id) : null;
+    return { player: playerId, at: String(now || ""), kind, item: id, name: look ? look.name : String(id), cost, left };
+  }
+
+  function addBuy(log, buy) {
+    log.buys.push(buy);
+    if (log.buys.length > LG.buys) log.buys.splice(0, log.buys.length - LG.buys);
+    return log;
+  }
+
+  // ---- reading the logs
+
+  function playerRuns(log, id) { return log.runs.filter(r => r.player === id).reverse(); }
+  function playerBuys(log, id) { return log.buys.filter(b => b.player === id).reverse(); }
+
+  function playerTotals(roster, runLog) {
+    return roster.players.map(p => {
+      const row = { id: p.id, name: p.name, best: p.profile.best, runs: 0, bestSector: 0,
+        delivered: { ore: 0, ice: 0, crystal: 0, all: 0 }, stars: 0, bank: p.profile.stars, secs: 0 };
+      for (const r of runLog.runs) {
+        if (r.player !== p.id) continue;
+        row.runs++;
+        row.best = Math.max(row.best, r.score);
+        row.bestSector = Math.max(row.bestSector, r.sector);
+        for (const k of RES) { row.delivered[k] += r.delivered[k]; row.delivered.all += r.delivered[k]; }
+        row.stars += r.stars;
+        row.secs += r.secs;
+      }
+      return row;
+    });
+  }
+
+  const RANK_COLS = ["name", "best", "runs", "bestSector", "delivered", "stars"];
+  function rankPlayers(rows, col, dir) {
+    if (RANK_COLS.indexOf(col) < 0) col = "best";
+    const sign = dir === "asc" ? 1 : -1;
+    const val = r => col === "delivered" ? r.delivered.all : r[col];
+    return rows.slice().sort((a, b) => {
+      const c = col === "name" ? cmpText(a.name, b.name) * sign : (val(a) - val(b)) * sign;
+      if (c) return c;
+      return (b.best - a.best) || cmpText(a.name, b.name) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    });
+  }
+
+  function topRuns(log, n) {
+    n = n == null ? 10 : Math.max(0, Math.floor(num(n, 10)));
+    return log.runs.slice().sort((a, b) => (b.score - a.score) || (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)).slice(0, n);
+  }
+
+  function clearPlayerData(roster, runLog, buyLog, id) {
+    const p = roster.players.find(q => q.id === id);
+    if (!p) return { ok: false, reason: "No such player." };
+    function drop(list) {
+      let n = 0;
+      for (let i = list.length - 1; i >= 0; i--) if (list[i].player === id) { list.splice(i, 1); n++; }
+      return n;
+    }
+    const runs = drop(runLog.runs), buys = drop(buyLog.buys);
+    p.profile.best = 0;
+    return { ok: true, runs, buys };
+  }
+
+  function exportLogs(roster, runLog, buyLog, now) {
+    const rows = playerTotals(roster, runLog);
+    return JSON.stringify({ app: "fleet", kind: "fleet-logs", ver: 1, exported: String(now || ""),
+      players: rows.map((r, i) => ({ id: r.id, name: r.name, created: roster.players[i].created, best: r.best, bank: r.bank })),
+      runs: runLog.runs, purchases: buyLog.buys }, null, 2);
+  }
+
   return {
+    newRoster, parseRoster, serializeRoster, currentPlayer, addPlayer, renamePlayer, choosePlayer,
+    newRunLog, parseRunLog, serializeRunLog, shouldLogRun, runRecord, addRun,
+    newBuyLog, parseBuyLog, serializeBuyLog, buyRecord, addBuy,
+    playerRuns, playerBuys, playerTotals, rankPlayers, topRuns, clearPlayerData, exportLogs,
     VERSION, TUNING, BASE_R, BASE_GAP, GOAL_BASES, RES, START_STOCK, SHIP_TYPES, BASE_COST, MAX_TIER,
     IDLE, TO_BODY, MINING, TO_BASE, UNLOADING, TO_STAR,
     LOOKS, LOOK_KINDS, LOOK_TITLES,
