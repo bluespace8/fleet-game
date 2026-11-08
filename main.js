@@ -38,7 +38,7 @@
   let roster = null, runLog = null, buyLog = null;   // only set when HAS
   let profile = G.newProfile(), looks = G.currentLooks(profile);
   const ui = { selected: null, placing: false, paused: false, mouse: null, winShown: false, winOpen: false,
-    endShown: false, endOpen: false, hangar: false, feedback: false, starsSeen: 0,
+    endShown: false, endOpen: false, hangar: false, tech: false, feedback: false, starsSeen: 0,
     dlg: [], sort: { col: "best", dir: "desc" }, noLog: false, keyboard: false, cursor: null };   // cursor: keyboard base-placement spot
   const view = { sc: 1, ox: 0, oy: 0, W: 1, H: 1, dpr: 1 };
   let skyStars = [], nebula = null, scene = null;   // scene: the entry of SCENES in use
@@ -1752,6 +1752,9 @@
     ctx.restore();
   }
 
+  // The beacon and the alien nests, in world coordinates (inside frame's transform). owner: slice a
+  function drawNests() { }
+
   function frame(dt) {
     drawSky(dt);
     updateSpin(dt);
@@ -1763,6 +1766,7 @@
     for (const b of game.bodies) drawBody(b);
     for (const s of game.stars) if (!s.taken) drawStar(s);
     game.bases.forEach(drawBase);
+    drawNests();
     for (const s of game.ships) if (!s.dead) drawTrail(s, shipColor(s));
     for (const s of game.ships) if (!s.dead && (s.st === G.MINING || (s.st === G.MANUAL && s.mm === 1))) drawBeam(s);
     for (const s of game.ships) if (!s.dead) drawShip(s);
@@ -1842,6 +1846,9 @@
   // so a click never lands on a row that has just been thrown away.
   let boardRows = [];
 
+  // An extra control for a ship's row in the Mission board (a node), or null. Called once when the row is built. owner: slice b
+  function shipRowExtra(ship) { return null; }
+
   function renderBoard() {
     const list = $("board");
     const key = game.ships.map(s => s.id).join(",");
@@ -1863,6 +1870,8 @@
         bar.appendChild(fill);
         txt.append(name, hp, document.createElement("br"), job, bar);
         li.append(dot, txt, fix);
+        const extra = shipRowExtra(s);
+        if (extra) li.appendChild(extra);
         list.appendChild(li);
         return { li, dot, name, hp, job, fill, fix, last: "" };
       });
@@ -1987,6 +1996,18 @@
     focusCard();
   }
 
+  // Title and opening sentence of the run-end card, by game.endReason (L: the labels in use; crew: a miner or hauler is still
+  // afloat). The three economy causes are placeholders. owner: slice b
+  const END_TEXT = {
+    retired: { title: () => "Run over", text: () => "You retired the fleet. " },
+    stranded: { title: () => "Stranded", text: (L, crew) => crew ? "Nothing left to mine and not enough to build with. "
+      : `Every ${shipWord()} was lost and there is not enough left to build another. `},
+    destroyed: { title: L => (themed() ? L.home : "Home base") + " destroyed", text: L => `Your ${lc(L.home)} was destroyed. ` },
+    bankrupt: { title: () => "Run over", text: () => "" },
+    debt: { title: () => "Run over", text: () => "" },
+    timeout: { title: () => "Run over", text: () => "" },
+  };
+
   function showEnd() {
     ui.endShown = true; ui.endOpen = true;
     claim();
@@ -1995,11 +2016,9 @@
     logRun(game.endReason);
     const why = game.endReason, s = game.score, L = LB(), row = (a, b, cls) => `<tr${cls ? ` class="${cls}"` : ""}><td>${a}</td><td>${b}</td></tr>`;
     const crew = game.ships.some(sh => !sh.dead && !isWar(sh));   // a miner or hauler still afloat
-    $("end-title").textContent = why === "stranded" ? "Stranded" : why === "destroyed" ? (themed() ? L.home : "Home base") + " destroyed" : "Run over";
-    $("end-text").textContent = (why === "stranded"
-      ? (crew ? "Nothing left to mine and not enough to build with. " : `Every ${shipWord()} was lost and there is not enough left to build another. `)
-      : why === "destroyed" ? `Your ${lc(L.home)} was destroyed. `
-      : "You retired the fleet. ") + `You reached ${lc(L.sector)} ${game.sector} and cleared ${game.cleared}.`;
+    const ET = END_TEXT[why] || END_TEXT.retired;
+    $("end-title").textContent = ET.title(L);
+    $("end-text").textContent = ET.text(L, crew) + `You reached ${lc(L.sector)} ${game.sector} and cleared ${game.cleared}.`;
     $("end-score").innerHTML = row("Materials delivered", Math.floor(s.mat)) + row(L.bases + " built", Math.floor(s.bases)) +
       row(L.sector + "s cleared", Math.floor(s.sectors)) + row("Time bonus", Math.floor(s.time)) +
       (s.kills > 0 ? row("Aliens destroyed (" + ((game.stats && game.stats.kills) | 0) + ")", Math.floor(s.kills)) : "") + row("Score", total, "sum");
@@ -2065,6 +2084,22 @@
     (first || $("h-close")).focus();   // focus moves into the hangar
   }
 
+  // The tech tree window. openTech belongs to slice a: it sets ui.tech, shows #tech, fills #t-body and moves focus in.
+  let techOpener = null;
+  function openTech() { }
+  function closeTech() {
+    ui.tech = false;
+    $("tech").hidden = true;
+    showCards();
+    syncInert();
+    focusBack(techOpener, "b-tech");
+    techOpener = null;
+  }
+
+  // C focuses the credits panel (slice b fills it). M mothballs or wakes the selected ship (slice b).
+  function focusEcon() { }
+  function toggleMothball() { }
+
   function closeHangar() {
     ui.hangar = false;
     $("hangar").hidden = true;
@@ -2083,7 +2118,7 @@
 
   // Everything behind a dialog or card is unreachable by Tab and click while it is open.
   function syncInert() {
-    const block = !!(ui.feedback || ui.hangar || ui.dlg.length || !$("end").hidden);   // the win card covers only the stage
+    const block = !!(ui.feedback || ui.hangar || ui.tech || ui.dlg.length || !$("end").hidden);   // the win card covers only the stage
     $("side").inert = block; $("topbar").inert = block; $("paused").inert = ui.feedback;
   }
 
@@ -2095,7 +2130,7 @@
   }
 
   // The win and run-end cards show only when no hangar or dialog is on top.
-  const modal = () => ui.hangar || ui.feedback || ui.dlg.length > 0;
+  const modal = () => ui.hangar || ui.tech || ui.feedback || ui.dlg.length > 0;
   function showCards() {
     $("win").hidden = modal() || !ui.winOpen; $("end").hidden = modal() || !ui.endOpen;
     focusCard();
@@ -2124,6 +2159,8 @@
   });
   $("h-close").addEventListener("click", closeHangar);
   $("b-hangar").addEventListener("click", () => (ui.hangar ? closeHangar() : openHangar()));
+  $("b-tech").addEventListener("click", () => (ui.tech ? closeTech() : openTech()));
+  $("t-close").addEventListener("click", closeTech);
   $("e-hangar").addEventListener("click", openHangar);
 
   // ---------------------------------------------------------------- players, scoreboard, stats
@@ -2468,7 +2505,7 @@
     fb.opener = opener || document.activeElement;
     fb.wasPaused = ui.paused;
     ui.feedback = true; ui.paused = true;
-    $("win").hidden = true; $("end").hidden = true; $("hangar").hidden = true; $("dlg").hidden = true;   // an open Players/Scores/Stats stack waits underneath
+    $("win").hidden = true; $("end").hidden = true; $("hangar").hidden = true; $("tech").hidden = true; $("dlg").hidden = true;   // an open Players/Scores/Stats stack waits underneath
     for (const id of ["side", "topbar", "paused"]) $(id).inert = true;   // nothing behind the dialog can be reached
     $("feedback").hidden = false;
     fbCount(); fbStatus("");
@@ -2482,7 +2519,7 @@
     ui.feedback = false; ui.paused = fb.wasPaused;
     $("feedback").hidden = true;
     for (const id of ["side", "topbar", "paused"]) $(id).inert = false;
-    $("hangar").hidden = !ui.hangar;
+    $("hangar").hidden = !ui.hangar; $("tech").hidden = !ui.tech;
     if (ui.dlg.length) showDlg(); else showCards();
     if (game) refresh();
     const back =fb.opener && document.contains(fb.opener) && fb.opener.getClientRects().length ? fb.opener : $("b-feedback");
@@ -2819,6 +2856,7 @@
     if (ui.feedback) return closeFeedback();
     if (ui.dlg.length) return popDlg();   // the top dialog; a stats view opened from the scoreboard goes back to it
     if (ui.hangar) return closeHangar();
+    if (ui.tech) return closeTech();
     clearDigits();
     const sel = game && ui.selected != null ? game.ships[ui.selected] : null;
     if (sel && sel.st === G.MANUAL) { G.releaseManual(game, sel.id); refresh(); return; }   // hand the ship back first
@@ -2845,7 +2883,7 @@
   const digits = { s: "", timer: 0 };
 
   function keyActive(ev) {
-    if (!game || ui.feedback || ui.hangar || ui.dlg.length || ui.winOpen || ui.endOpen) return false;
+    if (!game || ui.feedback || ui.hangar || ui.tech || ui.dlg.length || ui.winOpen || ui.endOpen) return false;
     if (!$("win").hidden || !$("end").hidden) return false;
     const t = ev && ev.target, tag = t && t.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable)) return false;
@@ -3030,6 +3068,9 @@
     if (lk === "k") { if (!ev.repeat) setKeyboard(!ui.keyboard); return; }
     if (!ui.placing && !ev.repeat) {
       if (lk === "r") { repairKey(); return; }   // repair works with keyboard mode off
+      if (lk === "t") { openTech(); return; }       // T, C and M also work with keyboard mode off
+      if (lk === "c") { focusEcon(); return; }
+      if (lk === "m") { toggleMothball(); return; }
       if ((lk === "x" || lk === "p" || lk === "g") && (ui.keyboard || isWar(chosenShip()))) {   // warship orders: with a warship selected, or in keyboard mode
         if (lk === "x") attackKey(); else if (lk === "p") patrolKey(); else escortKey();
         return;
@@ -3078,6 +3119,7 @@
       ["H", "nearest " + base], ["F", "fly it by hand / hand back"], ["WASD, arrows", "steer"], ["E", "mine or unload nearby, again to stop"],
       ["R", "repair it, or the " + base + " it is at (works with keyboard mode off)"],
       ["X", "warship: attack the nearest alien"], ["P", "warship: patrol where it is"], ["G", "warship: escort the nearest " + sh + " (not a warship)"],
+      ["T", "tech tree (science from conquest)"], ["C", "focus the credits panel"], ["M", "mothball or wake it"],
       ["B", "focus the build panel"], ["Esc", "hand back, then cancel"], ["K", "keyboard mode off"]];
     box.textContent = "";
     box.appendChild(el("b", "", "Keys"));

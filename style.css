@@ -166,6 +166,12 @@ button:focus-visible, .grid th.sortable:focus-visible, .grid tr.click:focus-visi
 .base-extra small { color: #9aa4e0; }
 .base-extra small.done { align-self: center; color: #7fd8a8; }
 .base-extra button.fix { border-color: #4a9a70; }
+/* science and credits: hidden until their part of the game fills them in */
+#sci[hidden], #credits[hidden], #debt[hidden], #timeleft[hidden], #warnbar[hidden], #econ[hidden], #tech[hidden] { display: none; }
+#warnbar { position: absolute; left: 50%; top: 56px; transform: translateX(-50%); z-index: 2; background: rgba(70, 46, 8, 0.88); border: 1px solid #f0b020;
+  border-radius: 8px; padding: 4px 14px; color: #ffe2a0; pointer-events: none; }
+#warnbar.danger { background: rgba(74, 28, 42, 0.9); border-color: #ee6b6b; color: #ffb0b0; }
+#tech { position: absolute; inset: 0; background: rgba(3, 4, 11, 0.85); display: flex; align-items: center; justify-content: center; }
 #alerts { position: absolute; left: 10px; top: 56px; display: flex; flex-direction: column; gap: 4px; max-width: 340px; pointer-events: none; }
 #alerts:empty { display: none; }
 #alerts .chip { background: rgba(10, 11, 29, 0.82); border: 1px solid rgba(160, 180, 255, 0.3); border-radius: 8px; padding: 3px 10px; font-size: 12px; }
