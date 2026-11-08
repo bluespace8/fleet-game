@@ -22,10 +22,35 @@ Plain HTML, Canvas and JavaScript. No installs, no build step. The only network 
    autosaves every 10 seconds to a separate slot, and resumes from the newest save when you reopen the
    page. Load uses your own save first, then the autosave. If a save is damaged, the notice stays up
    with the "Loaded" message, and a copy of the damaged save is kept (the last 3, newest first, in
-   localStorage under `fleet-game-damaged-saves-v2`). Esc cancels a selection or placement.
+   localStorage under `fleet-game-damaged-saves-v2`). Esc cancels a selection or placement. Keys: see Keyboard controls.
 7. Frame-rate test: open `index.html?stress` for 30 ships mining at once. The corner shows fps.
    `?stress&sector=4` starts in sector 4 so storms (and, from sector 3, meteor showers) are on screen.
    Stress mode never writes to the save, the players, or the logs.
+
+## Keyboard controls
+
+The mouse always works. These keys add to it.
+
+- **Tab / Shift+Tab** select the next / previous ship (wrapping), with keyboard mode on or off. Tab only does this
+  when focus is on the map, or on a top-bar or side-panel button you clicked with the mouse. A button you reached
+  with the keyboard keeps the normal Tab walk, and Tab is left alone in every dialog, card and the feedback form.
+- **K**, or the **Keyboard** button in the top bar, turns keyboard mode on or off. The choice is kept in the browser
+  (localStorage key `fleet-game-keyboard-v1`). A key legend shows while it is on. The keys below need it on.
+- **Numbered targets:** every planet, asteroid and star shows a number badge. Press 1-9 (0 is ten) to send the
+  selected ship there. Targets above ten take two digits typed within 0.6 s (1 then 2 is 12). The numbers stay the same
+  for the whole sector; empty planets and collected stars lose their badge but nobody else's number changes.
+  **H** sends the ship to the nearest base. A bad order shows the same message as a bad click.
+- **Flying by hand:** **F** takes the selected ship; **WASD** or the arrow keys fly it (8 ways, same speed as an
+  auto ship, slowed by ion storms, hit by meteors). **E** near a planet mines it at the normal rate (any steering
+  stops it); **E** within reach of a base unloads; **E** again while mining or unloading stops. **F** or **Esc** hands
+  the ship back, idle, with its cargo still aboard. Turning keyboard mode off hands every ship back.
+- **Esc** closes things in this order: feedback form, dialog, Hangar, hand-flown ship, base placement or selection.
+- **Base placement:** click the New base button, then the arrow keys move a cursor from the middle of the map
+  (Shift moves faster), **Enter** places the base and **Esc** cancels. Moving the mouse takes the ghost back.
+- **Build, upgrades and dialogs:** **B** (keyboard mode) puts focus on the Build panel; then Tab, Shift+Tab and Enter work
+  the buttons in the side panel and top bar. Space still pauses, so use Enter to press a focused button. Dialogs, the
+  Hangar and the win and run-over cards take focus when they open and give it back when they close; the
+  scoreboard's sortable headers and rows work with Enter.
 
 ## Sectors, score and the end of a run
 
@@ -134,7 +159,7 @@ made from its seed.
 - `main.js`: drawing, input, panels, the Hangar, Players, Scores, Stats and Feedback screens, and the loop (fixed 30 Hz update, drawn on
   requestAnimationFrame).
 - `index.html`, `style.css`: page and layout.
-- `tests.js`: tests for `game.js` (including the feedback payload, replies and saved list).
+- `tests.js`: tests for `game.js` (including the feedback payload, replies, saved list, manual flying and numbered targets).
 
 ## How to test
 

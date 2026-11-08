@@ -2046,5 +2046,305 @@ test("main.js sends feedback only to FEEDBACK_URL, with only the one header", ()
   assert.ok(!/credentials|XMLHttpRequest|sendBeacon|WebSocket|https?:\/\//.test(src));
 });
 
+// ---------------------------------------------------------------- keyboard: manual flying and numbered targets
+console.log("manual flying and numbered targets");
+const MANUAL_DT = 1 / 30;
+function manualShip(seed, sector) {   // a fresh game with ship 0 taken by hand, parked mid-map
+  const s = G.newGame(seed || 1, sector || 1);
+  assert.ok(G.takeManual(s, 0).ok);
+  s.ships[0].x = s.w / 2; s.ships[0].y = s.h / 2;
+  return s;
+}
+function stepFor(s, secs) { for (let i = 0; i < Math.round(secs / MANUAL_DT); i++) G.step(s, MANUAL_DT); }
+function placeBeside(s, ship, body) { ship.x = body.x + body.r + 12; ship.y = body.y; }   // exactly the auto mining stop distance
+
+test("takeManual and releaseManual switch a ship between hand and idle, keeping its cargo", () => {
+  const s = G.newGame(1), sh = s.ships[0];
+  G.orderShip(s, 0, nearBody(s).id);
+  sh.cargo = 7; sh.res = "ore";
+  assert.deepStrictEqual(G.takeManual(s, 0), { ok: true });
+  assert.strictEqual(sh.st, G.MANUAL); assert.strictEqual(G.MANUAL, 6);
+  assert.strictEqual(sh.mm, 0); assert.strictEqual(sh.target, -1); assert.strictEqual(sh.cargo, 7);
+  assert.ok(G.releaseManual(s, 0).ok);
+  assert.strictEqual(sh.st, G.IDLE); assert.strictEqual(sh.cargo, 7); assert.strictEqual(sh.res, "ore");
+  assert.strictEqual(G.releaseManual(s, 0).ok, false, "not manual any more");
+  assert.strictEqual(G.takeManual(s, 99).ok, false);
+  s.over = true;
+  const r = G.takeManual(s, 1);
+  assert.strictEqual(r.ok, false); assert.ok(/over/.test(r.reason));
+});
+test("setManualInput clamps its input and only works on a manual ship", () => {
+  const s = G.newGame(1);
+  assert.strictEqual(G.setManualInput(s, 0, 1, 0).ok, false);
+  G.takeManual(s, 0);
+  assert.ok(G.setManualInput(s, 0, 5, -9).ok);
+  assert.strictEqual(s.ships[0].ix, 1); assert.strictEqual(s.ships[0].iy, -1);
+  G.setManualInput(s, 0, NaN, "x");
+  assert.strictEqual(s.ships[0].ix, 0); assert.strictEqual(s.ships[0].iy, 0);
+});
+test("thrust moves the ship at its normal speed, diagonals no faster", () => {
+  const s = manualShip(1), sh = s.ships[0], spec = G.SHIP_TYPES.miner;
+  const x0 = sh.x, y0 = sh.y;
+  G.setManualInput(s, 0, 1, 0);
+  stepFor(s, 1);
+  assert.ok(Math.abs(sh.x - x0 - spec.speed) < 1e-6, "moved " + (sh.x - x0)); assert.strictEqual(sh.y, y0);
+  assert.strictEqual(sh.ang, 0); assert.strictEqual(sh.mv, 1);
+  const x1 = sh.x, y1 = sh.y;
+  G.setManualInput(s, 0, -1, -1);
+  stepFor(s, 1);
+  assert.ok(Math.abs(Math.hypot(sh.x - x1, sh.y - y1) - spec.speed) < 1e-6);
+  G.setManualInput(s, 0, 0, 0);
+  const x2 = sh.x; stepFor(s, 1);
+  assert.strictEqual(sh.x, x2); assert.strictEqual(sh.mv, 0);
+});
+test("a hauler flies at hauler speed by hand", () => {
+  const s = G.newGame(1); const h = G.addShip(s, "hauler");
+  G.takeManual(s, h.id); h.x = s.w / 2; h.y = s.h / 2;
+  G.setManualInput(s, h.id, 0, 1);
+  const y0 = h.y; stepFor(s, 1);
+  assert.ok(Math.abs(h.y - y0 - G.SHIP_TYPES.hauler.speed) < 1e-6);
+});
+test("an ion storm slows a ship flown by hand", () => {
+  const s = manualShip(1, 2), sh = s.ships[0];
+  s.storms[0].x = sh.x; s.storms[0].y = sh.y; s.storms[0].r = 600; s.storms[0].vx = 0; s.storms[0].vy = 0;
+  assert.ok(G.inStorm(s, sh.x, sh.y));
+  G.setManualInput(s, 0, 1, 0);
+  const x0 = sh.x; stepFor(s, 1);
+  assert.ok(Math.abs(sh.x - x0 - G.SHIP_TYPES.miner.speed * G.TUNING.storms.slow) < 1e-6, "moved " + (sh.x - x0));
+});
+test("a ship flown by hand stays inside the map", () => {
+  const s = manualShip(1), sh = s.ships[0];
+  G.setManualInput(s, 0, 1, 1);
+  stepFor(s, 60);
+  assert.strictEqual(sh.x, s.w); assert.strictEqual(sh.y, s.h);
+  G.setManualInput(s, 0, -1, -1);
+  stepFor(s, 60);
+  assert.strictEqual(sh.x, 0); assert.strictEqual(sh.y, 0);
+});
+test("manual mining in reach runs at the ship's normal rate and matches an auto miner", () => {
+  const s = manualShip(1), sh = s.ships[0], body = nearBody(s), rate = G.SHIP_TYPES.miner.rate;
+  placeBeside(s, sh, body);
+  const amount0 = body.amount;
+  assert.deepStrictEqual(G.manualAction(s, 0), { ok: true, did: "mine" });
+  assert.strictEqual(sh.mm, 1); assert.strictEqual(sh.target, body.id);
+  stepFor(s, 2);
+  assert.ok(Math.abs(sh.cargo - rate * 2) < 1e-6, "cargo " + sh.cargo);
+  assert.ok(Math.abs(amount0 - body.amount - rate * 2) < 1e-6);
+  assert.strictEqual(sh.res, body.res);
+  assert.ok(/Manual: mining/.test(G.jobText(s, sh)));
+  // an auto miner on the same body, parked at the same spot, gains the same per second
+  const t = G.newGame(1), tb = nearBody(t); t.ships[0].x = tb.x + tb.r + 12; t.ships[0].y = tb.y; t.ships[0].st = G.MINING; t.ships[0].target = tb.id;
+  stepFor(t, 2);
+  assert.ok(Math.abs(t.ships[0].cargo - sh.cargo) < 1e-6);
+});
+test("manual mining stops by itself when the hold is full, and when the body runs dry", () => {
+  const s = manualShip(1), sh = s.ships[0], body = nearBody(s), cap = G.SHIP_TYPES.miner.cap;
+  placeBeside(s, sh, body);
+  G.manualAction(s, 0);
+  stepFor(s, 10);
+  assert.ok(Math.abs(sh.cargo - cap) < 1e-6); assert.strictEqual(sh.mm, 0); assert.strictEqual(sh.st, G.MANUAL);
+  const t = manualShip(1), ts = t.ships[0], tb = nearBody(t);
+  tb.amount = 3; placeBeside(t, ts, tb);
+  G.manualAction(t, 0); stepFor(t, 3);
+  assert.strictEqual(tb.amount, 0); assert.ok(Math.abs(ts.cargo - 3) < 1e-6); assert.strictEqual(ts.mm, 0);
+});
+test("manual mining is refused out of reach, on an empty body, with the wrong cargo or a full hold", () => {
+  const s = manualShip(1), sh = s.ships[0], body = nearBody(s);
+  sh.x = body.x + body.r + 80; sh.y = body.y;
+  let r = G.manualAction(s, 0);
+  assert.strictEqual(r.ok, false); assert.strictEqual(r.reason, "Nothing in reach.");
+  placeBeside(s, sh, body);
+  sh.cargo = 5; sh.res = "ice";
+  r = G.manualAction(s, 0);
+  assert.strictEqual(r.ok, false); assert.ok(/ice/.test(r.reason)); assert.strictEqual(sh.mm, 0);
+  sh.res = body.res; sh.cargo = G.SHIP_TYPES.miner.cap;
+  r = G.manualAction(s, 0);
+  assert.strictEqual(r.ok, false); assert.ok(/Full/.test(r.reason));
+  sh.cargo = 0; sh.res = ""; body.amount = 0;
+  assert.strictEqual(G.manualAction(s, 0).ok, false, "empty body is out of reach");
+  assert.strictEqual(G.manualAction(s, 1).ok, false, "ship 1 is not manual");
+});
+test("any input cancels manual mining; the same action stops it too", () => {
+  const s = manualShip(1), sh = s.ships[0], body = nearBody(s);
+  placeBeside(s, sh, body);
+  G.manualAction(s, 0); stepFor(s, 1);
+  const c = sh.cargo; assert.ok(c > 0);
+  G.setManualInput(s, 0, 0, -1);
+  const y0 = sh.y; stepFor(s, 1);
+  assert.strictEqual(sh.mm, 0); assert.ok(sh.y < y0, "flies off"); assert.ok(Math.abs(sh.cargo - c) < 5 / 30 + 1e-9, "at most one step of mining");
+  G.setManualInput(s, 0, 0, 0);
+  placeBeside(s, sh, body);
+  G.manualAction(s, 0);
+  assert.deepStrictEqual(G.manualAction(s, 0), { ok: true, did: "stop" });
+  assert.strictEqual(sh.mm, 0);
+});
+test("manual unloading in reach of a base delivers like an auto ship", () => {
+  const s = manualShip(1), sh = s.ships[0], home = s.bases[0], ore0 = s.stock.ore, mat0 = s.score.mat;
+  sh.x = home.x + G.BASE_R + 10 + 5; sh.y = home.y; sh.cargo = 20; sh.res = "ore";
+  const r = G.manualAction(s, 0);
+  assert.deepStrictEqual(r, { ok: true, did: "unload" });
+  assert.strictEqual(s.stock.ore, ore0 + 20); assert.strictEqual(s.score.mat, mat0 + 20); assert.strictEqual(s.delivered.ore, 20);
+  assert.strictEqual(sh.cargo, 0); assert.strictEqual(sh.res, ""); assert.strictEqual(sh.mm, 2);
+  assert.ok(Math.abs(sh.wait - 20 / G.TUNING.upgrades[0].unload) < 1e-9);
+  assert.strictEqual(G.jobText(s, sh), "Manual: unloading");
+  stepFor(s, 1);
+  assert.strictEqual(sh.mm, 0); assert.strictEqual(sh.st, G.MANUAL); assert.strictEqual(G.jobText(s, sh), "Manual");
+  // far from any base nothing happens
+  sh.x = 5; sh.y = 5; sh.cargo = 5; sh.res = "ore";   // a corner: no base or body within reach
+  const far = G.manualAction(s, 0);
+  assert.strictEqual(far.ok, false); assert.strictEqual(sh.cargo, 5);
+});
+test("an upgraded base takes manual ships from further away and unloads faster", () => {
+  const s = manualShip(1), sh = s.ships[0], home = s.bases[0];
+  sh.x = home.x + G.BASE_R + 10 + 20; sh.y = home.y; sh.cargo = 10; sh.res = "ore";
+  assert.strictEqual(G.manualAction(s, 0).ok, false, "tier 0 reach is shorter");
+  s.stock.ore = 999; s.stock.ice = 999; s.stock.crystal = 999;
+  assert.ok(G.upgradeBase(s, 0).ok);
+  assert.strictEqual(G.manualAction(s, 0).did, "unload");
+  assert.ok(Math.abs(sh.wait - 10 / G.TUNING.upgrades[1].unload) < 1e-9);
+});
+test("meteors still hit a loaded ship flown by hand", () => {
+  const s = manualShip(1, 3), sh = s.ships[0];
+  sh.cargo = 20; sh.res = "ore";
+  s.showers = [{ x: sh.x, y: sh.y, r: 120, age: 3 }]; s.showerIn = 1e6;
+  stepFor(s, 8);
+  assert.ok(s.hits > 0, "hit"); assert.ok(sh.cargo < 20); assert.ok(s.stats.lost > 0);
+});
+test("a mouse order releases a ship flown by hand", () => {
+  const s = manualShip(1), sh = s.ships[0], body = nearBody(s);
+  G.setManualInput(s, 0, 1, 0);
+  assert.ok(G.orderShip(s, 0, body.id).ok);
+  assert.strictEqual(sh.st, G.TO_BODY); assert.strictEqual(sh.mm, 0); assert.strictEqual(sh.ix, 0);
+  G.takeManual(s, 0);
+  G.recallShip(s, 0);
+  assert.strictEqual(sh.st, G.TO_BASE); assert.strictEqual(sh.mm, 0);
+  G.takeManual(s, 0);
+  assert.ok(G.returnToBase(s, 0, 0).ok); assert.strictEqual(sh.st, G.TO_BASE);
+});
+
+test("targetList numbers bodies then stars and keeps the numbers when targets go", () => {
+  const s = G.newGame(5), nb = s.bodies.length, ns = s.stars.length;
+  let list = G.targetList(s);
+  assert.strictEqual(list.length, nb + ns);
+  assert.deepStrictEqual(list[0], { n: 1, kind: "body", id: 0 });
+  assert.deepStrictEqual(list[nb - 1], { n: nb, kind: "body", id: nb - 1 });
+  assert.deepStrictEqual(list[nb], { n: nb + 1, kind: "star", id: 0 });
+  s.bodies[2].amount = 0; s.stars[1].taken = true;
+  list = G.targetList(s);
+  assert.strictEqual(list.length, nb + ns - 2);
+  assert.ok(!list.some(t => t.kind === "body" && t.id === 2));
+  assert.ok(!list.some(t => t.kind === "star" && t.id === 1));
+  assert.ok(list.some(t => t.kind === "body" && t.id === 3 && t.n === 4), "later bodies keep their number");
+  assert.ok(list.some(t => t.kind === "star" && t.id === 2 && t.n === nb + 3), "later stars keep their number");
+  for (let i = 1; i < list.length; i++) assert.ok(list[i].n > list[i - 1].n);
+});
+test("targetLabel gives 1-9, 0 for ten, then the plain number", () => {
+  assert.deepStrictEqual([1, 2, 9, 10, 11, 25, 100].map(G.targetLabel), ["1", "2", "9", "0", "11", "25", "100"]);
+});
+test("resolveTargetKeys maps typed digits to a target and says when to wait for another", () => {
+  assert.deepStrictEqual(G.resolveTargetKeys("5", 14), { n: 5, wait: false });
+  assert.deepStrictEqual(G.resolveTargetKeys("1", 14), { n: 1, wait: true }, "10-14 exist");
+  assert.deepStrictEqual(G.resolveTargetKeys("1", 5), { n: 1, wait: false });
+  assert.deepStrictEqual(G.resolveTargetKeys("0", 14), { n: 10, wait: false });
+  assert.deepStrictEqual(G.resolveTargetKeys("0", 9), { n: null, wait: false });
+  assert.deepStrictEqual(G.resolveTargetKeys("12", 14), { n: 12, wait: false });
+  assert.deepStrictEqual(G.resolveTargetKeys("15", 14), { n: null, wait: false });
+  assert.deepStrictEqual(G.resolveTargetKeys("7", 5), { n: null, wait: false });
+  assert.deepStrictEqual(G.resolveTargetKeys("2", 25), { n: 2, wait: true });
+  assert.deepStrictEqual(G.resolveTargetKeys("3", 25), { n: 3, wait: false });
+  assert.deepStrictEqual(G.resolveTargetKeys("", 14), { n: null, wait: false });
+  assert.deepStrictEqual(G.resolveTargetKeys("x", 14), { n: null, wait: false });
+  assert.deepStrictEqual(G.resolveTargetKeys("05", 14), { n: null, wait: false });
+});
+test("orderToTarget sends a ship to a numbered body or star, and refuses bad numbers like a bad click", () => {
+  const s = G.newGame(5), nb = s.bodies.length;
+  assert.deepStrictEqual(G.orderToTarget(s, 0, 3), { ok: true });
+  assert.strictEqual(s.ships[0].st, G.TO_BODY); assert.strictEqual(s.ships[0].target, 2);
+  assert.deepStrictEqual(G.orderToTarget(s, 1, nb + 2), { ok: true });
+  assert.strictEqual(s.ships[1].st, G.TO_STAR); assert.strictEqual(s.ships[1].star, 1);
+  for (const n of [0, -1, nb + s.stars.length + 1, 1.5, NaN, "3", undefined]) {
+    const r = G.orderToTarget(s, 0, n);
+    assert.strictEqual(r.ok, false); assert.strictEqual(r.reason, "No target " + n + ".");
+  }
+  s.bodies[4].amount = 0; s.stars[0].taken = true;
+  const e = G.orderToTarget(s, 0, 5), t = G.orderToTarget(s, 0, nb + 1);
+  assert.deepStrictEqual(e, G.orderShip(s, 0, 4)); assert.ok(/empty/.test(e.reason));
+  assert.deepStrictEqual(t, G.orderShipToStar(s, 0, 0)); assert.ok(/taken/.test(t.reason));
+  assert.strictEqual(G.orderToTarget(s, 9, 1).ok, false);
+  const m = manualShip(5);
+  assert.ok(G.orderToTarget(m, 0, 1).ok); assert.strictEqual(m.ships[0].st, G.TO_BODY); assert.strictEqual(m.ships[0].mm, 0);
+});
+test("orderNearestBase sends any ship to the closest base", () => {
+  const s = G.newGame(1); s.stock.ore = 9999; s.stock.ice = 9999; s.stock.crystal = 9999;
+  const home = s.bases[0];
+  let spot = null;
+  for (let x = 120; x < s.w - 120 && !spot; x += 40) for (let y = 120; y < s.h - 120 && !spot; y += 40) if (!G.baseSpotProblem(s, x, y) && Math.hypot(x - home.x, y - home.y) > 300) spot = { x, y };
+  assert.ok(G.placeBase(s, spot.x, spot.y).ok);
+  const sh = s.ships[0]; sh.x = spot.x + 40; sh.y = spot.y;
+  assert.deepStrictEqual(G.orderNearestBase(s, 0), { ok: true });
+  assert.strictEqual(sh.st, G.TO_BASE); assert.strictEqual(sh.dest, 1);
+  sh.x = home.x - 20; sh.y = home.y;
+  G.orderNearestBase(s, 0);
+  assert.strictEqual(sh.dest, 0);
+  assert.strictEqual(G.orderNearestBase(s, 9).ok, false);
+  const m = manualShip(1);
+  G.orderNearestBase(m, 0);
+  assert.strictEqual(m.ships[0].st, G.TO_BASE); assert.strictEqual(m.ships[0].mm, 0);
+});
+
+test("a save made mid-manual-flight loads and runs the same", () => {
+  for (const mode of [0, 1, 2]) {
+    const s = manualShip(9), sh = s.ships[0], body = nearBody(s);
+    if (mode === 1) { placeBeside(s, sh, body); G.manualAction(s, 0); stepFor(s, 1); }
+    if (mode === 2) { const h = s.bases[0]; sh.x = h.x + 40; sh.y = h.y; sh.cargo = 20; sh.res = "ore"; G.manualAction(s, 0); }
+    if (mode === 0) { G.setManualInput(s, 0, 1, 0); stepFor(s, 1); }
+    const r = G.deserialize(G.serialize(s));
+    assert.ok(r.ok);
+    assert.strictEqual(r.state.ships[0].st, G.MANUAL); assert.strictEqual(r.state.ships[0].mm, mode);
+    assert.strictEqual(r.state.ships[0].ix, 0); assert.strictEqual(r.state.ships[0].iy, 0);
+    G.setManualInput(s, 0, 0, 0);
+    stepFor(s, 3); stepFor(r.state, 3);
+    assert.strictEqual(G.serialize(r.state), G.serialize(s), "mode " + mode);
+  }
+});
+test("old saves without manual fields load, and bad st or mm values fall back safely", () => {
+  const raw = JSON.parse(G.serialize(G.newGame(3)));
+  for (const sh of raw.ships) { delete sh.mm; delete sh.ix; delete sh.iy; }
+  const old = G.deserialize(JSON.stringify(raw));
+  assert.ok(old.ok); assert.strictEqual(old.state.ships[0].mm, 0); assert.strictEqual(old.state.ships[0].ix, 0);
+  const bad = JSON.parse(G.serialize(G.newGame(3)));
+  bad.ships[0].st = 99; bad.ships[0].mm = 2;
+  bad.ships[1].st = 6; bad.ships[1].mm = "junk";
+  let r = G.deserialize(JSON.stringify(bad));
+  assert.ok(r.ok); assert.strictEqual(r.state.ships[0].st, G.IDLE); assert.strictEqual(r.state.ships[0].mm, 0);
+  assert.strictEqual(r.state.ships[1].st, G.MANUAL); assert.strictEqual(r.state.ships[1].mm, 0);
+  bad.ships[0].st = -3; bad.ships[1].mm = 7;
+  r = G.deserialize(JSON.stringify(bad));
+  assert.strictEqual(r.state.ships[0].st, G.IDLE); assert.strictEqual(r.state.ships[1].mm, 0);
+  bad.ships[1].st = 6; bad.ships[1].mm = 1; bad.ships[1].target = 9999; bad.ships[1].ix = 1;   // mining nothing
+  r = G.deserialize(JSON.stringify(bad));
+  assert.ok(r.ok); assert.strictEqual(r.state.ships[1].mm, 0); assert.strictEqual(r.state.ships[1].ix, 0);
+  bad.ships[1].st = 3; bad.ships[1].mm = 2;
+  r = G.deserialize(JSON.stringify(bad));
+  assert.strictEqual(r.state.ships[1].mm, 0, "mm only counts while manual");
+  const v1 = JSON.parse(G.serialize(G.newGame(3))); v1.ver = 1;
+  assert.ok(G.deserialize(JSON.stringify(v1)).ok);
+});
+test("a warp hands every ship back from manual flight", () => {
+  const s = manualShip(1);
+  s.won = true;
+  assert.ok(G.warpToNextSector(s).ok);
+  assert.strictEqual(s.ships[0].st, G.IDLE); assert.strictEqual(s.ships[0].mm, 0);
+});
+test("main.js has one key guard, and never cancels Tab inside a dialog", () => {
+  const src = require("fs").readFileSync(__dirname + "/main.js", "utf8");
+  const g = /function keyActive\(ev\) \{[\s\S]*?\n  \}/.exec(src);
+  assert.ok(g, "keyActive exists");
+  for (const w of ["ui.feedback", "ui.hangar", "ui.dlg.length", "ui.winOpen", "ui.endOpen", "INPUT", "TEXTAREA", "SELECT"]) assert.ok(g[0].indexOf(w) >= 0, w);
+  const t = /function onTab\(ev\) \{[\s\S]*?\n  \}/.exec(src);
+  assert.ok(t && /if \(!keyActive\(ev\)\) return;[\s\S]*preventDefault/.test(t[0]), "Tab is only handled when keyActive");
+  assert.ok(/function typeDigit[\s\S]*resolveTargetKeys/.test(src));
+});
+
 console.log("\n" + passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);

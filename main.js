@@ -19,6 +19,7 @@
   const RUNS_KEY = "fleet-game-runs-v1";         // one record per finished run
   const BUYS_KEY = "fleet-game-purchases-v1";    // one record per hangar purchase
   const FEEDBACK_KEY = "fleet-game-feedback-v1";  // saved feedback entries; never part of a save
+  const KEYBOARD_KEY = "fleet-game-keyboard-v1";  // "1" when keyboard mode is on
   const STEP = 1 / 30, MAX_STEPS = 6;          // fixed simulation step, and a cap so a slow frame cannot spiral
   const STRESS = /[?&]stress\b/.test(location.search);
   const STRESS_SECTOR = G.clampSector(Number((/[?&]sector=(\d+)/.exec(location.search) || [])[1]) || 1);
@@ -38,7 +39,7 @@
   let profile = G.newProfile(), looks = G.currentLooks(profile);
   const ui = { selected: null, placing: false, paused: false, mouse: null, winShown: false, winOpen: false,
     endShown: false, endOpen: false, hangar: false, feedback: false, starsSeen: 0,
-    dlg: [], sort: { col: "best", dir: "desc" }, noLog: false };
+    dlg: [], sort: { col: "best", dir: "desc" }, noLog: false, keyboard: false, cursor: null };   // cursor: keyboard base-placement spot
   const view = { sc: 1, ox: 0, oy: 0, W: 1, H: 1, dpr: 1 };
   let skyStars = [], nebula = null, scene = null;   // scene: the entry of SCENES in use
   const trails = new Map();
@@ -174,7 +175,7 @@
 
   // Everything that depends on the current map: called for a new, loaded or warped game.
   function resetView() {
-    ui.selected = null; ui.placing = false; acc = 0;
+    ui.selected = null; ui.placing = false; ui.cursor = null; acc = 0;
     trails.clear(); shapes.clear();
     boardKey = ""; buildHtml = ""; basesHtml = "";
     resize();
@@ -1046,6 +1047,16 @@
     ctx.fillText(t, x, y);
   }
 
+  // Keyboard mode: the number to type for a target, in a small badge. Text only; the label strings are made once.
+  const NUM_LABEL = [];
+  function drawNum(n, x, y) {
+    ctx.fillStyle = "rgba(10,11,29,0.85)";
+    ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "#8fd8ff"; ctx.lineWidth = 1.2; ctx.stroke();
+    ctx.textAlign = "center"; ctx.font = "700 11px system-ui, sans-serif"; ctx.fillStyle = "#e6f4ff";
+    ctx.fillText(NUM_LABEL[n] || (NUM_LABEL[n] = G.targetLabel(n)), x, y + 4);
+  }
+
   function drawBody(b) {
     const [light, base, dark] = BODY_HUE[b.kind] || BODY_HUE.asteroid;
     const frac = b.max > 0 ? b.amount / b.max : 0;
@@ -1103,6 +1114,7 @@
     ctx.font = "10px system-ui, sans-serif";
     ctx.fillStyle = empty ? "rgba(200,210,240,0.5)" : hexA(RES_COLOR[b.res], 0.9);
     labelText(empty ? "EMPTY" : `${Math.floor(b.amount)} ${(LB().res[b.res] || b.res).toUpperCase()}`, b.x, b.y + ringR + 28);
+    if (ui.keyboard && !empty) drawNum(b.id + 1, b.x, b.y - ringR - 10);
   }
 
   // Upgraded bases are visibly different: a solid outer ring at Lv 2, plus a counter-turning second ring
@@ -1229,6 +1241,7 @@
       ctx.strokeStyle = "rgba(255,226,110," + (0.25 + 0.3 * pulse) + ")"; ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.arc(s.x, s.y, R + 7 + pulse * 3, 0, Math.PI * 2); ctx.stroke();
     }
+    if (ui.keyboard) drawNum(game.bodies.length + s.id + 1, s.x, s.y - R - 12);
   }
 
   // Ion storms: a drifting blue-violet cloud with a few turning arcs.
@@ -1326,7 +1339,7 @@
     for (const s of game.ships) {
       let tr = trails.get(s.id);
       if (!tr) trails.set(s.id, tr = []);
-      const moving = s.st === G.TO_BODY || s.st === G.TO_BASE || s.st === G.TO_STAR;
+      const moving = s.st === G.TO_BODY || s.st === G.TO_BASE || s.st === G.TO_STAR || (s.st === G.MANUAL && s.mv === 1);
       if (moving) tr.push([s.x, s.y]);
       if (tr.length > TRAIL_POINTS || (!moving && tr.length)) tr.shift();
     }
@@ -1381,7 +1394,8 @@
   function drawShip(ship) {
     const color = shipColor(ship);
     const busy = ship.st !== G.IDLE;
-    const moving = ship.st === G.TO_BODY || ship.st === G.TO_BASE || ship.st === G.TO_STAR;
+    const moving = ship.st === G.TO_BODY || ship.st === G.TO_BASE || ship.st === G.TO_STAR || (ship.st === G.MANUAL && ship.mv === 1);
+    const mining = ship.st === G.MINING || (ship.st === G.MANUAL && ship.mm === 1);
     const k = ship.type === "hauler" ? 1.3 : 1;
     const spec = G.SHIP_TYPES[ship.type];
     ctx.save();
@@ -1393,7 +1407,7 @@
       ctx.drawImage(shipSprite(ship), -20, -20, 40, 40);
       ctx.globalAlpha = 1;
     } else {
-    if (moving || ship.st === G.MINING) {
+    if (moving || mining) {
       const len = (moving ? 12 : 6) + (reduceMotion ? 0 : Math.random() * 5);
       const flame = ctx.createLinearGradient(-5, 0, -5 - len, 0);
       flame.addColorStop(0, "rgba(255,255,255,0.95)");
@@ -1437,6 +1451,10 @@
       ctx.strokeStyle = "rgba(255,110,70," + Math.min(1, ship.hitCd - 3) + ")"; ctx.lineWidth = 3;
       ctx.beginPath(); ctx.arc(ship.x, ship.y, 21 * k, 0, Math.PI * 2); ctx.stroke();
     }
+    if (ship.st === G.MANUAL) {   // flown by hand: a gold ring
+      ctx.strokeStyle = "rgba(255,216,74,0.85)"; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(ship.x, ship.y, 27, 0, Math.PI * 2); ctx.stroke();
+    }
     if (ship.id === ui.selected) {
       ctx.strokeStyle = "#8fd8ff"; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]);
       ctx.beginPath(); ctx.arc(ship.x, ship.y, 22, 0, Math.PI * 2); ctx.stroke();
@@ -1449,12 +1467,13 @@
   }
 
   function drawGhost() {
-    if (!ui.placing || !ui.mouse) return;
-    const ok = !G.baseSpotProblem(game, ui.mouse.x, ui.mouse.y, labelArg());
+    const p = ui.cursor || ui.mouse;
+    if (!ui.placing || !p) return;
+    const ok = !G.baseSpotProblem(game, p.x, p.y, labelArg());
     ctx.save();
     ctx.strokeStyle = ok ? "#5fd0b0" : "#ee6b6b"; ctx.fillStyle = ok ? "rgba(95,208,176,0.15)" : "rgba(238,107,107,0.15)";
     ctx.lineWidth = 2; ctx.setLineDash([4, 4]);
-    ctx.beginPath(); ctx.arc(ui.mouse.x, ui.mouse.y, G.BASE_R * 1.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(p.x, p.y, G.BASE_R * 1.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
     ctx.restore();
   }
 
@@ -1470,7 +1489,7 @@
     for (const s of game.stars) if (!s.taken) drawStar(s);
     game.bases.forEach(drawBase);
     for (const s of game.ships) drawTrail(s, shipColor(s));
-    for (const s of game.ships) if (s.st === G.MINING) drawBeam(s);
+    for (const s of game.ships) if (s.st === G.MINING || (s.st === G.MANUAL && s.mm === 1)) drawBeam(s);
     for (const s of game.ships) drawShip(s);
     game.showers.forEach(drawShower);
     drawGhost();
@@ -1489,6 +1508,14 @@
     return G.RES.filter(r => cost[r]).map(r => `${cost[r]} ${L.res[r]}`).join(", ");
   }
 
+  // Replace a panel's buttons without dropping keyboard focus: the focused button (found by its data attribute) gets focus back.
+  function setHtml(box, html, attr) {
+    const a = document.activeElement;
+    const id = a && a !== document.body && box.contains(a) && a.getAttribute ? a.getAttribute(attr) : null;
+    box.innerHTML = html;
+    if (id != null) { const n = box.querySelector("[" + attr + "=\"" + id + "\"]"); if (n && !n.disabled) n.focus(); }
+  }
+
   function renderBuild() {
     const L = LB();
     const items = [["miner", L.ship.miner, G.SHIP_TYPES.miner.blurb, G.shipCost(game, "miner")],
@@ -1499,7 +1526,7 @@
       return `<button type="button" class="build-btn${key === "base" && ui.placing ? " active" : ""}" data-build="${key}"${ok ? "" : " disabled"}>
         <b>${label}</b> <small>${costText(cost)}</small><small>${note}</small></button>`;
     }).join("");
-    if (html !== buildHtml) { buildHtml = html; $("build").innerHTML = html; }
+    if (html !== buildHtml) { buildHtml = html; setHtml($("build"), html, "data-build"); }
   }
 
   function renderBases() {
@@ -1513,7 +1540,7 @@
       const note = `unloads ${G.TUNING.upgrades[tier].unload}/s` + (next ? `, next ${next.unload}/s` : "");
       return `<div class="base-row"><span class="lbl"><b>${label}</b><small>${note}</small></span>${btn}</div>`;
     }).join("");
-    if (html !== basesHtml) { basesHtml = html; $("bases").innerHTML = html; }
+    if (html !== basesHtml) { basesHtml = html; setHtml($("bases"), html, "data-up"); }
   }
 
   // Rows are built once per ship set. Every refresh only updates text, widths and classes in place,
@@ -1599,6 +1626,9 @@
         : `Click ${an(lc(L.body.asteroid))} or ${an(lc(L.body.iceplanet))} to mine it, a star to collect it, or ${an(L.base)} to send it there (Esc to deselect)`)
       : ui.placing ? "Click empty space to place the base (Esc to cancel)"
       : "Click a planet or asteroid to mine it, a star to collect it, or a base to send this ship there (Esc to deselect)";
+    if (ui.keyboard && ui.placing) hint.textContent = `Arrow keys move the cursor (Shift: faster), Enter places the ${themed() ? L.base : "base"}, Esc cancels`;
+    renderLegend();
+    syncInert();
     if (game.starsGot !== ui.starsSeen) claim();
     if (game.won && !ui.winShown && !game.over) showWin();
     if (game.over && !ui.endShown) showEnd();
@@ -1614,6 +1644,7 @@
       `+${c.sectorPts} for the ${sec}, +${c.timePts} time bonus. Score so far ${G.scoreTotal(game)}. ` +
       (themed() ? `Go on to ${sec} ${c.sector + 1}` : `Warp to sector ${c.sector + 1}`) + `: a bigger map, with less to mine and higher prices.`;
     $("win").hidden = modal();
+    focusCard();
   }
 
   function showEnd() {
@@ -1631,6 +1662,7 @@
       row(L.sector + "s cleared", Math.floor(s.sectors)) + row("Time bonus", Math.floor(s.time)) + row("Score", total, "sum");
     $("end-best").textContent = (isBest ? "New best score! " : "") + `Best score ${profile.best}. Stars collected this run ${game.starsGot}; ${profile.stars} in the bank.`;
     $("end").hidden = modal();
+    focusCard();
   }
 
   // ---------------------------------------------------------------- hangar
@@ -1678,23 +1710,52 @@
     for (const c of $("h-body").querySelectorAll("canvas.tp")) paintThemePreview(c, c.dataset.theme);
   }
 
+  let hangarOpener = null;
   function openHangar() {
+    if (!ui.hangar) hangarOpener = document.activeElement;
     ui.hangar = true;
     renderHangar();
     $("hangar").hidden = false;
     $("win").hidden = true; $("end").hidden = true;
+    syncInert();
+    const first = $("h-body").querySelector("button");
+    (first || $("h-close")).focus();   // focus moves into the hangar
   }
 
   function closeHangar() {
     ui.hangar = false;
     $("hangar").hidden = true;
     showCards();
+    syncInert();
+    focusBack(hangarOpener, "b-hangar");
+    hangarOpener = null;
+  }
+
+  // Put focus back on the element that opened a dialog, if it can still take it.
+  function focusBack(el, fallbackId) {
+    const ok = n => n && document.contains(n) && !n.disabled && !n.inert && n.getClientRects().length && !(n.closest && n.closest("[inert]"));
+    const t = ok(el) ? el : fallbackId && ok($(fallbackId)) ? $(fallbackId) : null;
+    if (t && t.focus) t.focus();
+  }
+
+  // Everything behind a dialog or card is unreachable by Tab and click while it is open.
+  function syncInert() {
+    const block = !!(ui.feedback || ui.hangar || ui.dlg.length || !$("win").hidden || !$("end").hidden);
+    $("side").inert = block; $("topbar").inert = block; $("paused").inert = ui.feedback;
+  }
+
+  // The win and run-end cards take focus when they appear, on their main button.
+  function focusCard() {
+    syncInert();
+    const c = !$("win").hidden ? $("w-warp") : !$("end").hidden ? $("e-new") : null;
+    if (c && c.focus) c.focus();
   }
 
   // The win and run-end cards show only when no hangar or dialog is on top.
   const modal = () => ui.hangar || ui.feedback || ui.dlg.length > 0;
   function showCards() {
     $("win").hidden = modal() || !ui.winOpen; $("end").hidden = modal() || !ui.endOpen;
+    focusCard();
   }
 
   $("h-body").addEventListener("click", ev => {
@@ -1762,6 +1823,13 @@
         const key = opts.keys[i];
         if (ui.sort.col === key) th.textContent = h + (ui.sort.dir === "asc" ? " ▲" : " ▼");
         th.addEventListener("click", () => opts.onSort(key));
+        th.tabIndex = 0; th.dataset.key = key; th.setAttribute("role", "button");
+        th.addEventListener("keydown", ev => {   // Enter sorts from the keyboard; the table is rebuilt, so focus goes back to the same header
+          if (ev.key !== "Enter") return;
+          ev.preventDefault(); opts.onSort(key);
+          const again = $("dlg-body").querySelector('th[data-key="' + key + '"]');
+          if (again) again.focus();
+        });
       }
       tr.appendChild(th);
     });
@@ -1770,7 +1838,11 @@
     rows.forEach((cells, i) => {
       const r = el("tr", (opts.rowClass && opts.rowClass(i)) || "");
       cells.forEach(c => r.appendChild(el("td", "", c)));
-      if (opts.onRow) { r.classList.add("click"); r.addEventListener("click", () => opts.onRow(i)); }
+      if (opts.onRow) {
+        r.classList.add("click"); r.addEventListener("click", () => opts.onRow(i));
+        r.tabIndex = 0;
+        r.addEventListener("keydown", ev => { if (ev.key === "Enter") { ev.preventDefault(); opts.onRow(i); } });
+      }
       body.appendChild(r);
     });
     if (!rows.length) {
@@ -1799,16 +1871,25 @@
     if (ui.feedback) return;   // the feedback form has the screen
     const cur = ui.dlg[ui.dlg.length - 1];
     if (cur && cur.view === view && cur.id === id) return;   // already on top
+    if (!ui.dlg.length) dlgOpener = document.activeElement;
     ui.dlg.push({ view, id });
     showDlg();
   }
-  function popDlg() { ui.dlg.pop(); showDlg(); }
-  function closeAllDlg() { ui.dlg.length = 0; showDlg(); }
+  let dlgOpener = null;
+  function dlgClosed() {
+    if (ui.dlg.length) return;
+    syncInert();
+    focusBack(dlgOpener, null);
+    dlgOpener = null;
+  }
+  function popDlg() { ui.dlg.pop(); showDlg(); dlgClosed(); }
+  function closeAllDlg() { ui.dlg.length = 0; showDlg(); dlgClosed(); }
   function showDlg() {
     const top = ui.dlg[ui.dlg.length - 1];
     $("dlg").hidden = !top;
     if (!top) { $("dlg-body").textContent = ""; showCards(); return; }
     $("win").hidden = true; $("end").hidden = true;
+    syncInert();
     renderDlg();
     // keep focus off the opener under the overlay, and off any player's Play button: name box in Players,
     // else the Close button, else (fallback) the first enabled button
@@ -2266,18 +2347,19 @@
     refresh();
   }
 
+  function tryPlace(p) {
+    const r = G.placeBase(game, p.x, p.y, labelArg());
+    if (!r.ok) return toast(r.reason);
+    ui.placing = false; ui.cursor = null;
+    saveNow();
+    buildHtml = ""; basesHtml = "";
+    refresh();
+  }
+
   function onClick(ev) {
     if (!game || modal()) return;
     const p = toWorld(ev);
-    if (ui.placing) {
-      const r = G.placeBase(game, p.x, p.y, labelArg());
-      if (!r.ok) return toast(r.reason);
-      ui.placing = false;
-      saveNow();
-      buildHtml = ""; basesHtml = "";
-      refresh();
-      return;
-    }
+    if (ui.placing) return tryPlace(p);
     const h = hit(p);
     if (h && h.kind === "ship") return select(h.o.id === ui.selected ? null : h.o.id);
     if (ui.selected == null) {
@@ -2298,6 +2380,7 @@
   canvas.addEventListener("click", onClick);
   canvas.addEventListener("mousemove", ev => {
     ui.mouse = toWorld(ev);
+    ui.cursor = null;   // the mouse takes the placement ghost back from the keyboard cursor
     if (!game) return;
     const h = hit(ui.mouse);
     canvas.style.cursor = ui.placing ? "crosshair" : h ? "pointer" : "default";
@@ -2308,7 +2391,12 @@
     const btn = ev.target.closest("[data-build]");
     if (!btn || !game) return;
     const key = btn.dataset.build;
-    if (key === "base") { ui.placing = !ui.placing; ui.selected = null; boardKey = ""; buildHtml = ""; refresh(); return; }
+    if (key === "base") {
+      ui.placing = !ui.placing; ui.selected = null; boardKey = ""; buildHtml = "";
+      ui.cursor = ui.placing && ui.keyboard ? { x: game.w / 2, y: game.h / 2 } : null;   // keyboard placement starts mid-map
+      if (ui.placing && document.activeElement && document.activeElement.blur) document.activeElement.blur();   // Enter and Esc now go to the game
+      refresh(); return;
+    }
     const r = G.buildShip(game, key, labelArg());
     if (!r.ok) toast(r.reason);
     else { select(r.ship.id); saveNow(); }
@@ -2348,7 +2436,13 @@
     if (ui.feedback) return closeFeedback();
     if (ui.dlg.length) return popDlg();   // the top dialog; a stats view opened from the scoreboard goes back to it
     if (ui.hangar) return closeHangar();
-    ui.placing = false; ui.selected = null; boardKey = ""; buildHtml = ""; refresh();
+    clearDigits();
+    const sel = game && ui.selected != null ? game.ships[ui.selected] : null;
+    if (sel && sel.st === G.MANUAL) { G.releaseManual(game, sel.id); refresh(); return; }   // hand the ship back first
+    ui.placing = false; ui.cursor = null; ui.selected = null; boardKey = ""; buildHtml = "";
+    const a = document.activeElement;
+    if (a && a !== document.body && a.blur && !(a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.tagName === "SELECT")) a.blur();
+    refresh();
   });
   // Space toggles pause wherever focus is. It is handled in the capture phase and cancelled, so a
   // focused button does not also "click" (keydown for most browsers, keyup for Firefox).
@@ -2360,6 +2454,190 @@
     if (!ev.repeat) setPaused(!ui.paused);
   }, true);
   window.addEventListener("keyup", ev => { if (isSpace(ev) && !typing(ev)) ev.preventDefault(); }, true);
+  // ---------------------------------------------------------------- keyboard mode
+  // Tab cycles ships whether or not keyboard mode is on. Everything else below needs it on (K toggles it).
+  // keyActive is the one guard for every game key: nothing happens while a dialog, card or the feedback form is up,
+  // or while focus is in a text box, so typing a name with K, F, E, H, WASD or digits works as normal.
+
+  const held = { up: false, down: false, left: false, right: false };
+  const DIR_KEYS = { arrowup: "up", w: "up", arrowdown: "down", s: "down", arrowleft: "left", a: "left", arrowright: "right", d: "right" };
+  const digits = { s: "", timer: 0 };
+
+  function keyActive(ev) {
+    if (!game || ui.feedback || ui.hangar || ui.dlg.length || ui.winOpen || ui.endOpen) return false;
+    if (!$("win").hidden || !$("end").hidden) return false;
+    const t = ev && ev.target, tag = t && t.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable)) return false;
+    return !(ev.ctrlKey || ev.metaKey || ev.altKey);
+  }
+
+  const chosenShip = () => (game && ui.selected != null ? game.ships[ui.selected] : null);
+  function needShip() {
+    const s = chosenShip();
+    if (!s) toast(`Select ${an(shipWord())} first (Tab).`);
+    return s;
+  }
+
+  function mouseFocused(a) {   // a button the mouse clicked: Tab should still cycle ships, not walk the page
+    try { return !a.matches(":focus-visible"); } catch (e) { return false; }
+  }
+
+  function cycleShip(dir) {
+    const n = game.ships.length;
+    if (!n) return;
+    const cur = ui.selected == null ? (dir > 0 ? -1 : 0) : ui.selected;
+    const id = (((cur + dir) % n) + n) % n;
+    select(id);
+    const row = boardRows[id];
+    if (row && row.li.scrollIntoView) row.li.scrollIntoView({ block: "nearest" });
+  }
+
+  // Tab/Shift+Tab take over only on the map, or on a top-bar or panel button focused by the mouse. Never in a dialog
+  // (keyActive), and a keyboard-focused button keeps the normal Tab walk so every control stays reachable.
+  function onTab(ev) {
+    if (!keyActive(ev)) return;
+    const a = document.activeElement;
+    const onMap = !a || a === document.body || a === canvas || (a.closest && a.closest("#topbar, #side") && mouseFocused(a));
+    if (!onMap) return;
+    ev.preventDefault();
+    cycleShip(ev.shiftKey ? -1 : 1);
+  }
+
+  function clearDigits() { clearTimeout(digits.timer); digits.s = ""; digits.timer = 0; }
+
+  function orderTarget(n) {
+    const sh = needShip();
+    if (!sh) return;
+    const r = G.orderToTarget(game, sh.id, n, labelArg());
+    if (!r.ok) toast(r.reason);
+    refresh();
+  }
+
+  // Digits typed within 0.6 s of each other make one number (1 then 2 is 12); 1-9 act at once when no longer number exists.
+  function typeDigit(d) {
+    if (!needShip()) { clearDigits(); return; }
+    clearTimeout(digits.timer);
+    const count = game.bodies.length + game.stars.length;
+    digits.s += d;
+    let r = G.resolveTargetKeys(digits.s, count);
+    if (r.n == null && !r.wait && digits.s.length > 1) { digits.s = d; r = G.resolveTargetKeys(d, count); }   // not a number: start over
+    if (r.n == null && !r.wait) { clearDigits(); toast("No target " + d + "."); return; }
+    if (r.wait) {
+      digits.timer = setTimeout(() => { const n = r.n; clearDigits(); if (n != null && game) orderTarget(n); }, 600);
+      return;
+    }
+    clearDigits();
+    orderTarget(r.n);
+  }
+
+  function toggleManual() {
+    const sh = needShip();
+    if (!sh) return;
+    const r = sh.st === G.MANUAL ? G.releaseManual(game, sh.id) : G.takeManual(game, sh.id);
+    if (!r.ok) toast(r.reason);
+    refresh();
+  }
+
+  function manualAct() {
+    const sh = needShip();
+    if (!sh) return;
+    if (sh.st !== G.MANUAL) return toast("Press F to fly this ship by hand first.");
+    const r = G.manualAction(game, sh.id, labelArg());
+    if (!r.ok) toast(r.reason);
+    refresh();
+  }
+
+  // Each tick the keys held now become the input of the selected manual ship; other manual ships hold still.
+  function syncManualInput() {
+    const ix = (held.right ? 1 : 0) - (held.left ? 1 : 0), iy = (held.down ? 1 : 0) - (held.up ? 1 : 0);
+    const ships = game.ships;
+    for (let i = 0; i < ships.length; i++) {
+      if (ships[i].st !== G.MANUAL) continue;
+      const own = ui.keyboard && ships[i].id === ui.selected;
+      G.setManualInput(game, ships[i].id, own ? ix : 0, own ? iy : 0);
+    }
+  }
+
+  function placementKey(ev, lk) {
+    if (ev.key === "Enter") {
+      ev.preventDefault();
+      const p = ui.cursor || ui.mouse;
+      if (p) tryPlace(p); else toast("Move the cursor with the arrow keys first.");
+      return;
+    }
+    const dir = DIR_KEYS[lk];
+    if (!dir) return;
+    ev.preventDefault();
+    const step = ev.shiftKey ? 40 : 10, c = ui.cursor || (ui.cursor = { x: game.w / 2, y: game.h / 2 });
+    c.x = Math.max(0, Math.min(game.w, c.x + (dir === "right" ? step : dir === "left" ? -step : 0)));
+    c.y = Math.max(0, Math.min(game.h, c.y + (dir === "down" ? step : dir === "up" ? -step : 0)));
+  }
+
+  function focusBuild() {
+    const b = $("build").querySelector("button:not([disabled])") || $("side").querySelector("button:not([disabled])");
+    if (b) b.focus(); else toast("Nothing to press in the panels yet.");
+  }
+
+  window.addEventListener("keydown", ev => {
+    if (!game || !ev.key) return;
+    if (ev.key === "Tab") return onTab(ev);
+    if (!keyActive(ev)) return;
+    const lk = ev.key.toLowerCase();
+    if (lk === "k") { if (!ev.repeat) setKeyboard(!ui.keyboard); return; }
+    if (!ui.keyboard) return;
+    if (ui.placing) return placementKey(ev, lk);
+    if (ev.key >= "0" && ev.key <= "9" && ev.key.length === 1) { if (!ev.repeat && !ev.shiftKey) typeDigit(ev.key); return; }
+    const dir = DIR_KEYS[lk];
+    if (dir) {
+      const sh = chosenShip();
+      if (sh && sh.st === G.MANUAL) { ev.preventDefault(); held[dir] = true; }
+      return;
+    }
+    if (ev.repeat) return;
+    if (lk === "h") { const sh = needShip(); if (sh) { const r = G.orderNearestBase(game, sh.id, labelArg()); if (!r.ok) toast(r.reason); refresh(); } }
+    else if (lk === "f") toggleManual();
+    else if (lk === "e") manualAct();
+    else if (lk === "b") focusBuild();
+  });
+  window.addEventListener("keyup", ev => { const d = ev.key && DIR_KEYS[ev.key.toLowerCase()]; if (d) held[d] = false; });   // always, so a key never sticks
+  window.addEventListener("blur", () => { held.up = held.down = held.left = held.right = false; });
+
+  function setKeyboard(on) {
+    ui.keyboard = !!on;
+    if (!ui.keyboard) {   // hand every hand-flown ship back, and drop half-typed numbers and the placement cursor
+      if (game) for (const sh of game.ships) if (sh.st === G.MANUAL) G.releaseManual(game, sh.id);
+      clearDigits(); ui.cursor = null;
+      held.up = held.down = held.left = held.right = false;
+    } else if (ui.placing && game) ui.cursor = { x: game.w / 2, y: game.h / 2 };
+    store(KEYBOARD_KEY, ui.keyboard ? "1" : "0", "the keyboard setting");
+    applyKeyboardUi();
+    if (game) refresh();
+  }
+
+  let legendKey = null;
+  function renderLegend() {
+    const key = ui.keyboard + "|" + themeId();
+    if (key === legendKey) return;
+    legendKey = key;
+    const box = $("keys");
+    box.hidden = !ui.keyboard;
+    if (!ui.keyboard) return;
+    const L = LB(), sh = shipWord(), base = themed() ? L.base : "base";
+    const rows = [["Tab / Shift+Tab", "next / previous " + sh], ["1-9, 0", "send it to that target (two digits: type fast)"],
+      ["H", "nearest " + base], ["F", "fly it by hand / hand back"], ["WASD, arrows", "steer"], ["E", "mine or unload nearby, again to stop"],
+      ["B", "focus the build panel"], ["Esc", "hand back, then cancel"], ["K", "keyboard mode off"]];
+    box.textContent = "";
+    box.appendChild(el("b", "", "Keys"));
+    for (const [k, t] of rows) box.appendChild(el("div", "", null, [el("kbd", "", k), el("span", "", " " + t)]));
+  }
+
+  function applyKeyboardUi() {
+    $("b-keys").setAttribute("aria-pressed", ui.keyboard ? "true" : "false");
+    $("b-keys").classList.toggle("active", ui.keyboard);
+    renderLegend();
+  }
+  $("b-keys").addEventListener("click", () => setKeyboard(!ui.keyboard));
+
   window.addEventListener("beforeunload", () => { if (game) saveNow(AUTO_KEY); });
   window.addEventListener("resize", resize);
 
@@ -2378,6 +2656,7 @@
     }
     const running = !ui.paused && !modal() && !game.over;
     if (running) {   // fixed-step simulation; drawing happens once per animation frame
+      syncManualInput();
       acc += dt;
       let n = 0;
       while (acc >= STEP && n < MAX_STEPS) { G.step(game, STEP); time += STEP; acc -= STEP; n++; addTrailPoints(); }
@@ -2392,6 +2671,8 @@
 
   // ---------------------------------------------------------------- go
 
+  ui.keyboard = readKey(KEYBOARD_KEY) === "1";
+  applyKeyboardUi();
   const profileNotice = loadProfile();
   loadFeedbackList();
   resize();

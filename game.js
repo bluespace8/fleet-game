@@ -76,7 +76,8 @@
   const MAX_TIER = T.upgrades.length - 1;
 
   // ship states
-  const IDLE = 0, TO_BODY = 1, MINING = 2, TO_BASE = 3, UNLOADING = 4, TO_STAR = 5;
+  const IDLE = 0, TO_BODY = 1, MINING = 2, TO_BASE = 3, UNLOADING = 4, TO_STAR = 5, MANUAL = 6;
+  const MANUAL_SLACK = 10;   // extra reach (world units) for the manual mine and unload actions, on top of the auto stop distance
 
   // ---------------------------------------------------------------- random
 
@@ -319,7 +320,8 @@
     for (let i = 0; i < id; i++) if (state.ships[i].type === type) count++;
     const ship = { id, type, name: SHIP_TYPES[type].label + " " + count,
       x: 0, y: 0, ang: 0,
-      st: IDLE, target: -1, dest: -1, star: -1, cargo: 0, res: "", mv: 0, wait: 0, hitCd: 0 };
+      st: IDLE, target: -1, dest: -1, star: -1, cargo: 0, res: "", mv: 0, wait: 0, hitCd: 0,
+      ix: 0, iy: 0, mm: 0 };   // ix, iy: manual flight input (runtime only); mm: manual sub-mode 0 flying, 1 mining, 2 unloading
     state.ships.push(ship);
     parkShip(state, ship);
     return ship;
@@ -397,7 +399,7 @@
     if (!state.won) return { ok: false, reason: "Build " + goalBases(state.sector) + " " + lc(labels ? labels.bases : "bases") + " first." };
     for (const s of state.ships) {            // cargo still aboard is handed in before the jump
       if (s.cargo > 0 && s.res) { deliver(state, s.res, s.cargo); }
-      s.cargo = 0; s.res = ""; s.st = IDLE; s.target = -1; s.dest = -1; s.star = -1; s.wait = 0; s.hitCd = 0; s.mv = 0;
+      s.cargo = 0; s.res = ""; s.st = IDLE; s.target = -1; s.dest = -1; s.star = -1; s.wait = 0; s.hitCd = 0; s.mv = 0; s.mm = 0; s.ix = 0; s.iy = 0;
     }
     buildSector(state, state.sector + 1);
     state.clearInfo = null;
@@ -411,6 +413,7 @@
     const ship = state.ships[shipId], body = state.bodies[bodyId];
     if (!ship || !body) return { ok: false, reason: "No such ship or body." };
     if (body.amount <= 1e-6) return { ok: false, reason: bodyLabel(body, labels) + " is empty." };
+    clearManual(ship);
     ship.target = bodyId;
     ship.dest = -1;
     ship.star = -1;
@@ -426,6 +429,7 @@
     const ship = state.ships[shipId], star = state.stars[starId];
     if (!ship || !star) return { ok: false, reason: "No such ship or star." };
     if (star.taken) return { ok: false, reason: "That star is already taken." };
+    clearManual(ship);
     ship.star = starId;
     ship.target = -1;
     ship.dest = -1;
@@ -436,6 +440,7 @@
   function recallShip(state, shipId) {
     const ship = state.ships[shipId];
     if (!ship) return { ok: false, reason: "No such ship." };
+    clearManual(ship);
     ship.target = -1;
     ship.dest = -1;
     ship.star = -1;
@@ -447,11 +452,114 @@
   function returnToBase(state, shipId, baseId, labels) {
     const ship = state.ships[shipId], base = state.bases[baseId];
     if (!ship || !base) return { ok: false, reason: "No such ship or " + (labels ? labels.base : "base") + "." };
+    clearManual(ship);
     ship.target = -1;
     ship.dest = baseId;
     ship.star = -1;
     ship.st = TO_BASE;
     return { ok: true };
+  }
+
+  function clearManual(ship) { ship.mm = 0; ship.ix = 0; ship.iy = 0; }
+
+  // ---------------------------------------------------------------- manual flying and numbered targets
+  // A player can fly one ship by hand (state MANUAL). It moves at the ship's normal speed (storms slow it), mines at the
+  // ship's normal rate and unloads like an auto ship; there is no bonus. mm: 0 flying, 1 mining, 2 unloading.
+
+  function takeManual(state, shipId) {
+    const ship = state.ships[shipId];
+    if (!ship) return { ok: false, reason: "No such ship." };
+    if (state.over) return { ok: false, reason: "This run is over." };
+    clearManual(ship);
+    ship.st = MANUAL;
+    ship.target = -1; ship.dest = -1; ship.star = -1; ship.wait = 0;
+    return { ok: true };
+  }
+
+  function releaseManual(state, shipId) {
+    const ship = state.ships[shipId];
+    if (!ship) return { ok: false, reason: "No such ship." };
+    if (ship.st !== MANUAL) return { ok: false, reason: "Not flying by hand." };
+    clearManual(ship);
+    ship.st = IDLE; ship.target = -1; ship.wait = 0; ship.mv = 0;
+    return { ok: true };
+  }
+
+  function clampAxis(v) { return typeof v === "number" && isFinite(v) ? Math.max(-1, Math.min(1, v)) : 0; }
+
+  function setManualInput(state, shipId, ix, iy) {
+    const ship = state.ships[shipId];
+    if (!ship || ship.st !== MANUAL) return { ok: false, reason: "Not flying by hand." };
+    ship.ix = clampAxis(ix); ship.iy = clampAxis(iy);
+    return { ok: true };
+  }
+
+  // The one action key: unload at a base in reach, else mine a body in reach, else (while mining or unloading) stop.
+  function manualAction(state, shipId, labels) {
+    const ship = state.ships[shipId];
+    if (!ship || ship.st !== MANUAL) return { ok: false, reason: "Not flying by hand." };
+    if (state.over) return { ok: false, reason: "This run is over." };
+    if (ship.mm === 1 || ship.mm === 2) { ship.mm = 0; ship.wait = 0; return { ok: true, did: "stop" }; }
+    const def = SHIP_TYPES[ship.type], L = labels || SPACE_LABELS;
+    if (ship.cargo > 0) {
+      const base = state.bases[nearestBase(state, ship.x, ship.y)], up = T.upgrades[base.tier | 0];
+      if (Math.hypot(ship.x - base.x, ship.y - base.y) <= BASE_R + 10 + up.dock + MANUAL_SLACK) {
+        ship.wait = ship.cargo / up.unload;
+        deliver(state, ship.res, ship.cargo);
+        ship.cargo = 0; ship.res = ""; ship.mm = 2;
+        return { ok: true, did: "unload" };
+      }
+    }
+    let best = null, bd = Infinity;
+    for (let i = 0; i < state.bodies.length; i++) {
+      const b = state.bodies[i];
+      if (b.amount <= 1e-6) continue;
+      const d = Math.hypot(ship.x - b.x, ship.y - b.y);
+      if (d <= b.r + 12 + MANUAL_SLACK && d < bd) { bd = d; best = b; }
+    }
+    if (!best) return { ok: false, reason: "Nothing in reach." };
+    if (ship.cargo > 0 && ship.res !== best.res) return { ok: false, reason: "Carrying " + (L.res[ship.res] || ship.res) + ". Unload at a " + L.base + " first." };
+    if (ship.cargo >= def.cap - 1e-9) return { ok: false, reason: "Full. Unload at a " + L.base + " first." };
+    ship.mm = 1; ship.target = best.id; ship.res = best.res;
+    return { ok: true, did: "mine" };
+  }
+
+  // Every body that still holds something and every star not yet taken, with a stable number: bodies 1..B in index order,
+  // then stars B+1.. in index order. Empty bodies and taken stars keep their number but are left out.
+  function targetList(state) {
+    const out = [], nb = state.bodies.length;
+    for (let i = 0; i < nb; i++) if (state.bodies[i].amount > 1e-6) out.push({ n: i + 1, kind: "body", id: i });
+    for (let i = 0; i < state.stars.length; i++) if (!state.stars[i].taken) out.push({ n: nb + i + 1, kind: "star", id: i });
+    return out;
+  }
+
+  // The key for target n: 1-9, 0 for ten, then the plain number (typed as two digits).
+  function targetLabel(n) { return n === 10 ? "0" : String(n); }
+
+  // buf is the digits typed so far, count the highest target number. wait is true when a longer number starting with
+  // buf could still be typed, so the caller waits a moment for another digit before acting on n.
+  function resolveTargetKeys(buf, count) {
+    buf = String(buf == null ? "" : buf);
+    if (!/^[0-9]+$/.test(buf) || !(count >= 1)) return { n: null, wait: false };
+    if (buf === "0") return { n: count >= 10 ? 10 : null, wait: false };
+    if (buf[0] === "0") return { n: null, wait: false };
+    const v = parseInt(buf, 10);
+    return { n: v <= count ? v : null, wait: count >= v * 10 };
+  }
+
+  function orderToTarget(state, shipId, n, labels) {
+    const ship = state.ships[shipId];
+    if (!ship) return { ok: false, reason: "No such ship." };
+    const nb = state.bodies.length;
+    if (Number.isInteger(n) && n >= 1 && n <= nb) return orderShip(state, shipId, n - 1, labels);
+    if (Number.isInteger(n) && n > nb && n - nb <= state.stars.length) return orderShipToStar(state, shipId, n - nb - 1);
+    return { ok: false, reason: "No target " + n + "." };
+  }
+
+  function orderNearestBase(state, shipId, labels) {
+    const ship = state.ships[shipId];
+    if (!ship) return { ok: false, reason: "No such ship." };
+    return returnToBase(state, shipId, nearestBase(state, ship.x, ship.y), labels);
   }
 
   // ---------------------------------------------------------------- simulation
@@ -522,6 +630,38 @@
     }
   }
 
+  function stepManual(state, ship, dt, mult, def) {
+    if (ship.mm === 2) {                       // unloading: the delivery was made when it started
+      ship.mv = 0;
+      ship.wait -= dt;
+      if (ship.wait <= 0) { ship.wait = 0; ship.mm = 0; }
+      return;
+    }
+    const len = Math.hypot(ship.ix, ship.iy);
+    if (ship.mm === 1) {
+      if (len > 0) ship.mm = 0;                // any input cancels mining
+      else {
+        const body = state.bodies[ship.target];
+        ship.mv = 0;
+        if (!body || body.amount <= 1e-6) { ship.mm = 0; ship.target = -1; return; }
+        const take = Math.min(def.rate * dt, body.amount, def.cap - ship.cargo);
+        body.amount -= take;
+        if (body.amount < 1e-6) body.amount = 0;
+        ship.cargo += take;
+        ship.res = body.res;
+        state.stats[body.res] += take;
+        if (ship.cargo >= def.cap - 1e-9 || body.amount === 0) ship.mm = 0;
+        return;
+      }
+    }
+    if (!(len > 0)) { ship.mv = 0; return; }
+    const step = def.speed * dt * mult / len;
+    ship.x = Math.max(0, Math.min(state.w, ship.x + ship.ix * step));
+    ship.y = Math.max(0, Math.min(state.h, ship.y + ship.iy * step));
+    ship.ang = Math.atan2(ship.iy, ship.ix);
+    ship.mv = 1;
+  }
+
   function stepShip(state, ship, dt) {
     const def = SHIP_TYPES[ship.type];
     if (ship.hitCd > 0) ship.hitCd = Math.max(0, ship.hitCd - dt);
@@ -534,6 +674,7 @@
       return;
     }
     const mult = state.storms.length ? speedMult(state, ship.x, ship.y) : 1;
+    if (ship.st === MANUAL) { stepManual(state, ship, dt, mult, def); return; }
     if (ship.st === TO_STAR) {
       const star = state.stars[ship.star];
       if (!star || star.taken) { ship.star = -1; ship.st = TO_BASE; return; }   // someone else got it
@@ -664,6 +805,7 @@
       case MINING: return "Mining " + (body ? bodyLabel(body, L) : "") + " " + r0(ship.cargo) + "/" + def.cap;
       case TO_STAR: return "Flying to a star";
       case UNLOADING: return "Unloading";
+      case MANUAL: return ship.mm === 1 ? "Manual: mining " + (body ? bodyLabel(body, L) : "") : ship.mm === 2 ? "Manual: unloading" : "Manual";
       case TO_BASE:
         return ship.cargo > 0 ? "Hauling " + r0(ship.cargo) + " " + (L.res[ship.res] || ship.res) + " home"
           : (body ? "Back to " + L.base + ", then " + bodyLabel(body, L) : "Returning to " + L.base);
@@ -792,7 +934,10 @@
     for (let i = 0; i < raw.ships.length; i++) {
       const s = raw.ships[i];
       if (!s || typeof s.type !== "string" || !Object.prototype.hasOwnProperty.call(SHIP_TYPES, s.type)) return { ok: false, error: "Save has a bad ship." };
-      const st = intIn(s.st, 0, 5, 0);
+      const stRaw = Math.floor(num(s.st, 0));
+      const st = stRaw >= 0 && stRaw <= MANUAL ? stRaw : 0;                     // anything else: idle
+      const mmRaw = Math.floor(num(s.mm, 0));
+      const mm = st === MANUAL && mmRaw >= 0 && mmRaw <= 2 ? mmRaw : 0;
       const target = intIn(s.target, -1, 1e9, -1);
       const dest = intIn(s.dest, -1, 1e9, -1);
       const star = intIn(s.star, -1, 1e9, -1);
@@ -802,11 +947,18 @@
         ang: num(s.ang, 0), st, target: target < state.bodies.length ? target : -1,
         dest: dest >= 0 && dest < state.bases.length ? dest : -1,
         star: star < state.stars.length ? star : -1, cargo, res, mv: 0,
-        wait: Math.max(0, num(s.wait, 0)), hitCd: Math.max(0, num(s.hitCd, 0)) });
+        wait: Math.max(0, num(s.wait, 0)), hitCd: Math.max(0, num(s.hitCd, 0)), ix: 0, iy: 0, mm });
     }
     for (const s of state.ships) {            // a ship that needs a target but has none just goes home
       if ((s.st === TO_BODY || s.st === MINING) && s.target < 0) s.st = TO_BASE;
       if (s.st === TO_STAR && s.star < 0) s.st = TO_BASE;
+      if (s.st === MANUAL) {                   // manual flight keeps no order; mining needs a live body that fits the hold
+        const mb = s.mm === 1 && s.target >= 0 ? state.bodies[s.target] : null;
+        if (s.mm === 1 && !(mb && mb.amount > 1e-6 && (s.cargo <= 0 || s.res === mb.res))) s.mm = 0;
+        if (s.mm !== 1) s.target = -1;
+        s.dest = -1; s.star = -1;
+        if (s.mm !== 2) s.wait = 0;
+      }
       const body = s.target >= 0 ? state.bodies[s.target] : null;   // cargo that does not fit the target is dropped
       if (body && (s.st === TO_BODY || s.st === MINING) && s.res !== body.res) { s.cargo = 0; s.res = ""; }
     }
@@ -1444,7 +1596,8 @@
     newBuyLog, parseBuyLog, serializeBuyLog, buyRecord, addBuy,
     playerRuns, playerBuys, playerTotals, rankPlayers, topRuns, clearPlayerData, exportLogs,
     VERSION, TUNING, BASE_R, BASE_GAP, GOAL_BASES, RES, START_STOCK, SHIP_TYPES, BASE_COST, MAX_TIER,
-    IDLE, TO_BODY, MINING, TO_BASE, UNLOADING, TO_STAR,
+    IDLE, TO_BODY, MINING, TO_BASE, UNLOADING, TO_STAR, MANUAL, MANUAL_SLACK,
+    takeManual, releaseManual, setManualInput, manualAction, targetList, targetLabel, resolveTargetKeys, orderToTarget, orderNearestBase,
     LOOKS, LOOK_KINDS, LOOK_TITLES, SPACE_LABELS, labelsFor, sceneFor, shipLabel, bodyLabel,
     rng, newGame, canAfford, buildShip, addShip, baseSpotProblem, placeBase, checkWin,
     clampSector, mapScale, worldSize, mapSeed, goalBases, amountMult, crystalCount, bodyCount, crystalRich, BODY_SPECS, costMult, stormCount, showersOn,
