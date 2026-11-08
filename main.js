@@ -12,48 +12,110 @@
 
   const SAVE_KEY = "fleet-game-save-v1";         // the Save button
   const AUTO_KEY = "fleet-game-autosave-v1";     // autosave, new game and base placement
-  const BAD_KEY = "fleet-game-damaged-save-v1";  // a copy of the last damaged save, kept for the player
+  const BAD_KEY = "fleet-game-damaged-save-v1";  // first version's single damaged-save copy; only read, to seed the list
+  const BACKUPS_KEY = "fleet-game-damaged-saves-v2";   // the last few damaged saves, newest first
+  const PROFILE_KEY = "fleet-game-bank-v1";      // star bank, hangar choices and best score; never part of a save
   const STEP = 1 / 30, MAX_STEPS = 6;          // fixed simulation step, and a cap so a slow frame cannot spiral
   const STRESS = /[?&]stress\b/.test(location.search);
-  const WORLD = { w: G.WORLD_W, h: G.WORLD_H };
+  const STRESS_SECTOR = G.clampSector(Number((/[?&]sector=(\d+)/.exec(location.search) || [])[1]) || 1);
 
-  const SHIP_COLOR = { miner: "#5b9cf0", hauler: "#f0b020" };
   const RES_COLOR = { ore: "#e08a50", ice: "#7fd8f0", crystal: "#e27be0" };
   const BODY_HUE = {   // [light, base, dark], like PLANET_HUES in mission.js
     asteroid: ["#d9b08c", "#8a6044", "#33211a"], moon: ["#e4f6ff", "#7aa8c4", "#1f3342"],
     iceplanet: ["#9fe3f0", "#2f8fa8", "#0e3440"], rare: ["#e2b7ff", "#a64fc4", "#341d4f"],
   };
+  const TIER_NAME = ["", "Lv 2", "Lv 3"];
 
   let game = null;
-  const ui = { selected: null, placing: false, paused: false, mouse: null, winShown: false };
+  let profile = G.newProfile(), looks = G.currentLooks(profile);
+  const ui = { selected: null, placing: false, paused: false, mouse: null, winShown: false, winOpen: false,
+    endShown: false, endOpen: false, hangar: false, starsSeen: 0 };
   const view = { sc: 1, ox: 0, oy: 0, W: 1, H: 1, dpr: 1 };
-  let stars = [], nebula = null;
+  let skyStars = [], nebula = null;
   const trails = new Map();
   const shapes = new Map();
-  let time = 0, acc = 0, lastT = 0, lastBoard = 0, lastSave = 0, boardKey = "", buildHtml = "", toastTimer = 0;
+  let time = 0, acc = 0, lastT = 0, lastBoard = 0, lastSave = 0, boardKey = "", buildHtml = "", basesHtml = "", toastTimer = 0, topH = 0;
   const fps = { frames: 0, acc: 0, worst: 0 };
+
+  const shipColor = ship => looks.ship[ship.type];
+
+  // ---------------------------------------------------------------- profile (stars, looks, best score)
+
+  function loadProfile() {
+    let text = null;
+    try { text = localStorage.getItem(PROFILE_KEY); } catch (e) { /* no storage: play without a bank */ }
+    const r = G.parseProfile(text);
+    profile = r.profile;
+    looks = G.currentLooks(profile);
+    if (!r.ok) {
+      addBackup(PROFILE_KEY, text);
+      return r.error + " A fresh bank was started; a copy of the old one was kept.";
+    }
+    return "";
+  }
+
+  function saveProfile() {
+    if (STRESS) return;   // the test fleet never touches the real bank
+    try { localStorage.setItem(PROFILE_KEY, G.serializeProfile(profile)); }
+    catch (e) { toast("Could not save the star bank: " + e.message); }
+  }
+
+  // Move any newly collected stars into the bank.
+  function claim() {
+    if (!game) return;
+    ui.starsSeen = game.starsGot;
+    const n = G.claimStars(profile, game);
+    if (!n) return;
+    saveProfile();
+    toast("+" + n + " star" + (n > 1 ? "s" : "") + " banked (" + profile.stars + " in all)", true);
+  }
 
   // ---------------------------------------------------------------- game lifecycle
 
   function freshGame() {
-    const g = G.newGame((Math.random() * 4294967296) >>> 0);
+    const g = G.newGame((Math.random() * 4294967296) >>> 0, STRESS ? STRESS_SECTOR : 1);
     if (STRESS) G.spawnStress(g, 30);
     return g;
   }
 
+  // Everything that depends on the current map: called for a new, loaded or warped game.
+  function resetView() {
+    ui.selected = null; ui.placing = false; acc = 0;
+    trails.clear(); shapes.clear();
+    boardKey = ""; buildHtml = ""; basesHtml = "";
+    resize();
+  }
+
   function start(g) {
     game = g;
-    ui.selected = null; ui.placing = false; ui.winShown = !!g.won; acc = 0;
-    trails.clear(); shapes.clear();
-    boardKey = ""; buildHtml = "";
-    $("win").hidden = true;
+    G.syncClaimed(game, profile);       // stars the bank already paid for are gone from a reloaded map
+    ui.winShown = !!g.won; ui.winOpen = false; ui.endShown = false; ui.endOpen = false; ui.starsSeen = g.starsGot;
+    $("win").hidden = true; $("end").hidden = true;
+    resetView();
     refresh();
   }
 
   function newGame(ask) {
-    if (ask && !confirm("Start a new game with a new map? Unsaved progress is lost.")) return;
+    if (ask && game && !game.over && !confirm("Start a new game with a new map? Unsaved progress is lost.")) return;
+    if (game && G.recordBest(profile, G.scoreTotal(game))) saveProfile();   // an abandoned run still counts for the best score
     start(freshGame());
     saveNow();
+  }
+
+  function warp() {
+    const r = G.warpToNextSector(game);
+    if (!r.ok) return toast(r.reason);
+    ui.winShown = false; ui.winOpen = false; $("win").hidden = true;
+    resetView();
+    saveNow();
+    refresh();
+    toast("Sector " + game.sector + ": further out, harder" + hazardNote(game.sector), true);
+  }
+
+  function hazardNote(n) {
+    if (n === G.TUNING.storms.firstSector) return ". Ion storms slow ships.";
+    if (n === G.TUNING.showers.firstSector) return ". Meteor showers can knock cargo off.";
+    return ".";
   }
 
   function saveNow(key) {
@@ -62,8 +124,21 @@
     catch (e) { toast("Could not save: " + e.message); return false; }
   }
 
+  // Keep the last few damaged saves (newest first) so nothing is lost silently.
+  function addBackup(from, text) {
+    let list = [];
+    try {
+      const raw = localStorage.getItem(BACKUPS_KEY);
+      if (raw) list = JSON.parse(raw);
+      else if (localStorage.getItem(BAD_KEY)) list = [{ at: "", from: "first version", text: localStorage.getItem(BAD_KEY) }];
+    } catch (e) { list = []; }
+    list = G.addBackup(list, { at: new Date().toISOString(), from, text: text || "" });
+    try { localStorage.setItem(BACKUPS_KEY, JSON.stringify(list)); }
+    catch (e) { /* storage full; the notice still shows */ }
+  }
+
   // Try the saves in order. Returns { state } for the first good one, plus a notice when a damaged
-  // one was passed over. A damaged save is copied to BAD_KEY first so nothing is lost silently.
+  // one was passed over or an old one was upgraded.
   function readSaves(keys) {
     let notice = "", found = false;
     for (const key of keys) {
@@ -72,27 +147,28 @@
       if (!text) continue;
       found = true;
       const res = G.deserialize(text);
-      if (res.ok) return { state: res.state, notice };
-      try { localStorage.setItem(BAD_KEY, text); } catch (e) { /* storage full; the notice still shows */ }
+      if (res.ok) return { state: res.state, notice: (notice ? notice + " " : "") + (res.notice || ""), found, damaged: !!notice };
+      addBackup(key, text);
       notice = (key === SAVE_KEY ? "Your saved game" : "The autosave") + " was damaged (" + res.error.replace(/.$/, "") + ").";
     }
-    return { state: null, notice, found };
+    return { state: null, notice, found, damaged: !!notice };
   }
 
+  // One message, once, so a warning is never hidden by a second "Loaded." toast.
   function loadNow() {
     const r = readSaves([SAVE_KEY, AUTO_KEY]);
-    if (!r.state) { toast(r.notice ? r.notice + " Nothing to load." : "Nothing saved yet."); return false; }
+    if (!r.state) { toast(r.notice ? r.notice + " Nothing to load." : "Nothing saved yet.", true); return false; }
     start(r.state);
-    if (r.notice) toast(r.notice + " Loaded the other save.");
+    toast(r.notice ? r.notice.trim() + (r.damaged ? " Loaded the other save." : " Loaded.") : "Loaded.", !!r.notice);
     return true;
   }
 
-  function toast(msg) {
+  function toast(msg, long) {
     const el = $("toast");
     el.textContent = msg;
     el.classList.add("show");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.classList.remove("show"), msg.length > 50 ? 5500 : 2200);
+    toastTimer = setTimeout(() => el.classList.remove("show"), long || msg.length > 50 ? Math.min(9000, 3000 + msg.length * 60) : 2200);
   }
 
   // ---------------------------------------------------------------- canvas setup
@@ -103,17 +179,18 @@
     view.W = Math.max(1, r.width); view.H = Math.max(1, r.height);
     canvas.width = Math.round(view.W * view.dpr);
     canvas.height = Math.round(view.H * view.dpr);
-    const top = 56;
-    view.sc = Math.max(0.2, Math.min(view.W / WORLD.w, (view.H - top - 10) / WORLD.h));
-    view.ox = (view.W - WORLD.w * view.sc) / 2;
-    view.oy = top + (view.H - top - 10 - WORLD.h * view.sc) / 2;
+    topH = $("topbar").offsetHeight;
+    const top = Math.max(56, topH + 18), ww = game ? game.w : G.TUNING.world.w, wh = game ? game.h : G.TUNING.world.h;
+    view.sc = Math.max(0.2, Math.min(view.W / ww, (view.H - top - 10) / wh));
+    view.ox = (view.W - ww * view.sc) / 2;
+    view.oy = top + (view.H - top - 10 - wh * view.sc) / 2;
     buildSky();
   }
 
   function buildSky() {
     const { W, H, dpr } = view;
     const count = Math.min(420, Math.round((W * H) / 3000));
-    stars = Array.from({ length: count }, () => {
+    skyStars = Array.from({ length: count }, () => {
       const layer = Math.random() < 0.6 ? 0 : Math.random() < 0.75 ? 1 : 2;
       return { x: Math.random() * W, y: Math.random() * H, layer, r: [0.6, 1, 1.5][layer] * (0.7 + Math.random() * 0.6),
         a: [0.45, 0.7, 0.95][layer], ph: Math.random() * 6.28, sp: 0.6 + Math.random() * 2.2,
@@ -123,19 +200,16 @@
     nebula.width = canvas.width; nebula.height = canvas.height;
     const n = nebula.getContext("2d");
     n.scale(dpr, dpr);
+    const bg = looks.bg;
     const base = n.createLinearGradient(0, 0, W, H);
-    base.addColorStop(0, "#03040b"); base.addColorStop(1, "#090a1c");
+    base.addColorStop(0, bg.top); base.addColorStop(1, bg.bottom);
     n.fillStyle = base; n.fillRect(0, 0, W, H);
-    const blob = (x, y, r, color) => {
-      const g = n.createRadialGradient(x, y, 0, x, y, r);
+    const big = Math.max(W, H);
+    for (const [fx, fy, fr, color] of bg.blobs) {
+      const g = n.createRadialGradient(W * fx, H * fy, 0, W * fx, H * fy, big * fr);
       g.addColorStop(0, color); g.addColorStop(1, "rgba(0,0,0,0)");
       n.fillStyle = g; n.fillRect(0, 0, W, H);
-    };
-    const big = Math.max(W, H);
-    blob(W * 0.22, H * 0.28, big * 0.55, "rgba(98,80,214,0.20)");
-    blob(W * 0.82, H * 0.72, big * 0.5, "rgba(42,120,214,0.16)");
-    blob(W * 0.62, H * 0.12, big * 0.32, "rgba(232,123,164,0.07)");
-    blob(W * 0.1, H * 0.9, big * 0.3, "rgba(27,175,122,0.06)");
+    }
   }
 
   // ---------------------------------------------------------------- drawing
@@ -149,7 +223,7 @@
     ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
     ctx.drawImage(nebula, 0, 0, view.W, view.H);
     const drift = [3, 7, 14];
-    for (const s of stars) {
+    for (const s of skyStars) {
       if (!reduceMotion) {
         s.x -= drift[s.layer] * dt;
         if (s.x < -2) { s.x = view.W + 2; s.y = Math.random() * view.H; }
@@ -241,22 +315,43 @@
     ctx.fillText(empty ? "EMPTY" : `${Math.floor(b.amount)} ${b.res.toUpperCase()}`, b.x, b.y + ringR + 28);
   }
 
+  // Upgraded bases are visibly different: a solid outer ring at Lv 2, plus a counter-turning second ring
+  // with bright nodes and a brighter core at Lv 3.
   function drawBase(b, i) {
-    const color = i === 0 ? "#a197f2" : "#5fd0b0";
+    const color = i === 0 ? looks.base.home : looks.base.main;
+    const tier = b.tier | 0;
     const sr = G.BASE_R, rot = reduceMotion ? 0 : time * 0.3 + i;
-    const glow = ctx.createRadialGradient(b.x, b.y, sr * 0.3, b.x, b.y, sr * 3);
-    glow.addColorStop(0, hexA(color, 0.4)); glow.addColorStop(1, hexA(color, 0));
+    const glow = ctx.createRadialGradient(b.x, b.y, sr * 0.3, b.x, b.y, sr * (3 + tier * 0.5));
+    glow.addColorStop(0, hexA(color, 0.4 + tier * 0.1)); glow.addColorStop(1, hexA(color, 0));
     ctx.fillStyle = glow;
-    ctx.beginPath(); ctx.arc(b.x, b.y, sr * 3, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(b.x, b.y, sr * (3 + tier * 0.5), 0, Math.PI * 2); ctx.fill();
     ctx.save();
     ctx.translate(b.x, b.y);
+    if (tier >= 1) {
+      ctx.strokeStyle = hexA(color, 0.6); ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(0, 0, sr * 1.95, 0, Math.PI * 2); ctx.stroke();
+    }
+    if (tier >= 2) {
+      ctx.save();
+      ctx.rotate(-rot * 1.5);
+      ctx.strokeStyle = hexA(color, 0.5); ctx.lineWidth = 1.5; ctx.setLineDash([sr * 0.3, sr * 0.2]);
+      ctx.beginPath(); ctx.arc(0, 0, sr * 2.3, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#ffffff";
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * Math.PI * 2;
+        ctx.beginPath(); ctx.arc(Math.cos(a) * sr * 1.95, Math.sin(a) * sr * 1.95, 2.2, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    }
     ctx.rotate(rot);
     ctx.strokeStyle = hexA(color, 0.75); ctx.lineWidth = 2;
     ctx.setLineDash([sr * 0.5, sr * 0.22]);
     ctx.beginPath(); ctx.arc(0, 0, sr * 1.5, 0, Math.PI * 2); ctx.stroke();
     ctx.setLineDash([]);
-    for (let k = 0; k < 4; k++) {
-      ctx.rotate(Math.PI / 2);
+    const arms = tier >= 1 ? 6 : 4;
+    for (let k = 0; k < arms; k++) {
+      ctx.rotate(Math.PI * 2 / arms);
       ctx.fillStyle = hexA(color, 0.85);
       ctx.fillRect(sr * 1.05, -2, sr * 0.62, 4);
       ctx.fillRect(sr * 1.62, -5, 4, 10);
@@ -268,22 +363,111 @@
       ctx[k ? "lineTo" : "moveTo"](Math.cos(a) * sr, Math.sin(a) * sr);
     }
     ctx.closePath();
-    ctx.fillStyle = "#17143a"; ctx.fill();
-    ctx.strokeStyle = color; ctx.lineWidth = 1.6; ctx.stroke();
+    ctx.fillStyle = tier >= 2 ? "#2a2468" : tier >= 1 ? "#201b50" : "#17143a"; ctx.fill();
+    ctx.strokeStyle = color; ctx.lineWidth = 1.6 + tier * 0.9; ctx.stroke();
     ctx.restore();
-    const core = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, sr * 0.55);
+    const cr = sr * (0.55 + tier * 0.1);
+    const core = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, cr);
     core.addColorStop(0, "#ffffff"); core.addColorStop(0.35, hexA(color, 0.9)); core.addColorStop(1, hexA(color, 0));
     ctx.fillStyle = core;
-    ctx.beginPath(); ctx.arc(b.x, b.y, sr * 0.55, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(b.x, b.y, cr, 0, Math.PI * 2); ctx.fill();
     ctx.textAlign = "center";
     ctx.font = "700 11px system-ui, sans-serif";
     ctx.fillStyle = "rgba(235,232,255,0.95)";
-    ctx.fillText(i === 0 ? "HOME" : "BASE " + (i + 1), b.x, b.y + sr * 1.5 + 16);
+    ctx.fillText((i === 0 ? "HOME" : "BASE " + (i + 1)) + (tier ? " " + TIER_NAME[tier] : ""), b.x, b.y + sr * (tier >= 2 ? 2.3 : 1.5) + 16);
   }
 
+  // A five-point collectible star with a soft pulse.
+  function drawStar(s) {
+    const pulse = reduceMotion ? 0.5 : 0.5 + 0.5 * Math.sin(time * 3 + s.id * 1.7);
+    const R = 11 + pulse * 1.5;
+    const glow = ctx.createRadialGradient(s.x, s.y, 2, s.x, s.y, R * 3);
+    glow.addColorStop(0, "rgba(255,226,110," + (0.35 + pulse * 0.2) + ")"); glow.addColorStop(1, "rgba(255,226,110,0)");
+    ctx.fillStyle = glow;
+    ctx.beginPath(); ctx.arc(s.x, s.y, R * 3, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath();
+    for (let k = 0; k < 10; k++) {
+      const a = -Math.PI / 2 + k * Math.PI / 5, rr = k % 2 ? R * 0.45 : R;
+      ctx[k ? "lineTo" : "moveTo"](s.x + Math.cos(a) * rr, s.y + Math.sin(a) * rr);
+    }
+    ctx.closePath();
+    ctx.fillStyle = "#ffd84a"; ctx.fill();
+    ctx.strokeStyle = "#fff6c4"; ctx.lineWidth = 1.2; ctx.stroke();
+    if (ui.selected != null) {
+      ctx.strokeStyle = "rgba(255,226,110," + (0.25 + 0.3 * pulse) + ")"; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(s.x, s.y, R + 7 + pulse * 3, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+
+  // Ion storms: a drifting blue-violet cloud with a few turning arcs.
+  function drawStorm(s, i) {
+    const g = ctx.createRadialGradient(s.x, s.y, s.r * 0.1, s.x, s.y, s.r);
+    g.addColorStop(0, "rgba(120,140,255,0.26)"); g.addColorStop(0.7, "rgba(90,110,235,0.14)"); g.addColorStop(1, "rgba(90,110,235,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "rgba(170,190,255,0.35)"; ctx.lineWidth = 1.5;
+    const a0 = reduceMotion ? i : time * 0.6 + i * 2;
+    for (let k = 0; k < 3; k++) {
+      const a = a0 + k * 2.09;
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r * (0.45 + 0.18 * k), a, a + 1.1); ctx.stroke();
+    }
+    ctx.textAlign = "center";
+    ctx.font = "600 10px system-ui, sans-serif";
+    ctx.fillStyle = "rgba(190,205,255,0.7)";
+    ctx.fillText("ION STORM", s.x, s.y + 4);
+  }
+
+  // Meteor showers: a dashed warning ring first, then streaks falling through the circle.
+  function drawShower(s) {
+    const W = G.TUNING.showers, live = s.age >= W.warn;
+    if (!live) {
+      const k = 0.5 + 0.5 * Math.sin(time * 8);
+      ctx.save();
+      ctx.strokeStyle = "rgba(255,170,90," + (0.35 + 0.4 * k) + ")"; ctx.lineWidth = 2; ctx.setLineDash([8, 6]);
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+      ctx.textAlign = "center"; ctx.font = "700 11px system-ui, sans-serif"; ctx.fillStyle = "rgba(255,190,120,0.95)";
+      ctx.fillText("METEORS IN " + Math.ceil(W.warn - s.age), s.x, s.y + 4);
+      return;
+    }
+    ctx.fillStyle = "rgba(255,120,60,0.07)";
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "rgba(255,150,80,0.4)"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.stroke();
+    ctx.lineCap = "round";
+    for (let k = 0; k < 14; k++) {   // streaks from a fixed pattern, so there is nothing to allocate or remember
+      const ph = (time * 0.8 + k * 0.173) % 1;
+      const ox = Math.sin(k * 12.9898) * s.r * 0.9, oy = Math.cos(k * 78.233) * s.r * 0.9;
+      const x = s.x + ox + (ph - 0.5) * 40, y = s.y + oy + (ph - 0.5) * 60;
+      ctx.strokeStyle = "rgba(255," + (170 + (k % 3) * 25) + ",110," + (0.9 * Math.sin(ph * Math.PI)) + ")";
+      ctx.lineWidth = 1.6;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - 9, y - 14); ctx.stroke();
+    }
+    ctx.lineCap = "butt";
+  }
+
+  // Engine trail, in the style picked in the hangar.
   function drawTrail(ship, color) {
     const t = trails.get(ship.id);
     if (!t || t.length < 2) return;
+    const style = looks.trail.id;
+    if (style === "spark") {
+      for (let i = 0; i < t.length; i++) {
+        const a = (i + 1) / t.length;
+        ctx.fillStyle = hexA(color, a * 0.85);
+        ctx.beginPath(); ctx.arc(t[i][0], t[i][1] + Math.sin(i * 2.1 + ship.id) * 2, 0.8 + a * 2.2, 0, Math.PI * 2); ctx.fill();
+      }
+      return;
+    }
+    if (style === "ribbon") {
+      ctx.lineCap = "round"; ctx.lineJoin = "round";
+      ctx.beginPath(); ctx.moveTo(t[0][0], t[0][1]);
+      for (let i = 1; i < t.length; i++) ctx.lineTo(t[i][0], t[i][1]);
+      ctx.strokeStyle = hexA(color, 0.14); ctx.lineWidth = 7; ctx.stroke();
+      ctx.strokeStyle = hexA(color, 0.4); ctx.lineWidth = 2.5; ctx.stroke();
+      ctx.lineCap = "butt"; ctx.lineJoin = "miter";
+      return;
+    }
     ctx.lineCap = "round";
     for (let i = 1; i < t.length; i++) {
       const a = i / t.length;
@@ -309,9 +493,9 @@
   }
 
   function drawShip(ship) {
-    const color = SHIP_COLOR[ship.type];
+    const color = shipColor(ship);
     const busy = ship.st !== G.IDLE;
-    const moving = ship.st === G.TO_BODY || ship.st === G.TO_BASE;
+    const moving = ship.st === G.TO_BODY || ship.st === G.TO_BASE || ship.st === G.TO_STAR;
     const k = ship.type === "hauler" ? 1.3 : 1;
     const spec = G.SHIP_TYPES[ship.type];
     ctx.save();
@@ -350,6 +534,16 @@
         ctx.beginPath(); ctx.arc(ship.x, ship.y, rr, 0, 0.9); ctx.stroke();
       }
     }
+    if (game.storms.length && G.inStorm(game, ship.x, ship.y)) {   // slowed by an ion storm
+      ctx.strokeStyle = "rgba(160,190,255," + (reduceMotion ? 0.6 : 0.4 + 0.3 * Math.sin(time * 14 + ship.id)) + ")";
+      ctx.lineWidth = 1.2; ctx.setLineDash([2, 3]);
+      ctx.beginPath(); ctx.arc(ship.x, ship.y, 19 * k, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    if (ship.hitCd > 3) {   // just hit by a meteor
+      ctx.strokeStyle = "rgba(255,110,70," + Math.min(1, ship.hitCd - 3) + ")"; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(ship.x, ship.y, 21 * k, 0, Math.PI * 2); ctx.stroke();
+    }
     if (ship.id === ui.selected) {
       ctx.strokeStyle = "#8fd8ff"; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]);
       ctx.beginPath(); ctx.arc(ship.x, ship.y, 22, 0, Math.PI * 2); ctx.stroke();
@@ -377,11 +571,14 @@
     ctx.translate(view.ox, view.oy);
     ctx.scale(view.sc, view.sc);
     drawOrbits();
+    game.storms.forEach(drawStorm);
     for (const b of game.bodies) drawBody(b);
+    for (const s of game.stars) if (!s.taken) drawStar(s);
     game.bases.forEach(drawBase);
-    for (const s of game.ships) drawTrail(s, SHIP_COLOR[s.type]);
+    for (const s of game.ships) drawTrail(s, shipColor(s));
     for (const s of game.ships) if (s.st === G.MINING) drawBeam(s);
     for (const s of game.ships) drawShip(s);
+    game.showers.forEach(drawShower);
     drawGhost();
     ctx.restore();
   }
@@ -397,15 +594,29 @@
   }
 
   function renderBuild() {
-    const items = [["miner", "Miner", G.SHIP_TYPES.miner.blurb, G.SHIP_TYPES.miner.cost],
-      ["hauler", "Hauler", G.SHIP_TYPES.hauler.blurb, G.SHIP_TYPES.hauler.cost],
-      ["base", "New base", "Click empty space to place it", G.BASE_COST]];
+    const items = [["miner", "Miner", G.SHIP_TYPES.miner.blurb, G.shipCost(game, "miner")],
+      ["hauler", "Hauler", G.SHIP_TYPES.hauler.blurb, G.shipCost(game, "hauler")],
+      ["base", "New base", "Click empty space to place it", G.baseCost(game)]];
     const html = items.map(([key, label, note, cost]) => {
-      const ok = G.canAfford(game, cost);
+      const ok = !game.over && G.canAfford(game, cost);
       return `<button type="button" class="build-btn${key === "base" && ui.placing ? " active" : ""}" data-build="${key}"${ok ? "" : " disabled"}>
         <b>${label}</b> <small>${costText(cost)}</small><small>${note}</small></button>`;
     }).join("");
     if (html !== buildHtml) { buildHtml = html; $("build").innerHTML = html; }
+  }
+
+  function renderBases() {
+    const html = game.bases.map((b, i) => {
+      const cost = G.upgradeCost(game, i), tier = b.tier | 0;
+      const label = (i === 0 ? "Home" : "Base " + (i + 1)) + (tier ? " " + TIER_NAME[tier] : "");
+      const next = G.TUNING.upgrades[tier + 1];
+      const btn = cost
+        ? `<button type="button" data-up="${i}"${!game.over && G.canAfford(game, cost) ? "" : " disabled"} title="Unloads faster and takes ships from further away">Upgrade<small>${costText(cost)}</small></button>`
+        : `<small>Fully upgraded</small>`;
+      const note = `unloads ${G.TUNING.upgrades[tier].unload}/s` + (next ? `, next ${next.unload}/s` : "");
+      return `<div class="base-row"><span class="lbl"><b>${label}</b><small>${note}</small></span>${btn}</div>`;
+    }).join("");
+    if (html !== basesHtml) { basesHtml = html; $("bases").innerHTML = html; }
   }
 
   // Rows are built once per ship set. Every refresh only updates text, widths and classes in place,
@@ -437,11 +648,11 @@
     for (let i = 0; i < game.ships.length; i++) {
       const s = game.ships[i], row = boardRows[i];
       const pct = s.cargo > 0 ? Math.round((s.cargo / G.SHIP_TYPES[s.type].cap) * 100) : 0;
-      const sig = s.name + "|" + s.type + "|" + s.st + "|" + s.res + "|" + pct + "|" + G.jobText(game, s) + "|" + (s.id === ui.selected);
+      const sig = s.name + "|" + s.type + "|" + s.st + "|" + s.res + "|" + pct + "|" + G.jobText(game, s) + "|" + (s.id === ui.selected) + "|" + looks.ship.id;
       if (sig === row.last) continue;
       row.last = sig;
       row.li.className = s.id === ui.selected ? "sel" : "";
-      row.dot.style.background = SHIP_COLOR[s.type];
+      row.dot.style.background = shipColor(s);
       row.dot.style.opacity = s.st === G.IDLE ? 0.45 : 1;
       row.name.textContent = s.name;
       row.job.textContent = G.jobText(game, s);
@@ -454,25 +665,107 @@
 
   function refresh() {
     $("res").innerHTML = resLine();
-    $("goal").textContent = `Bases built ${game.bases.length - 1} / ${G.GOAL_BASES}`;
+    const left = game.stars.filter(s => !s.taken).length;
+    $("goal").innerHTML = `Sector <b>${game.sector}</b> &middot; Bases built <b>${game.bases.length - 1} / ${G.goalBases(game.sector)}</b> &middot; Stars <b>${game.stars.length - left} / ${game.stars.length}</b>`;
+    $("score").innerHTML = `Score <b>${G.scoreTotal(game)}</b> &middot; Best <b>${Math.max(profile.best, G.scoreTotal(game))}</b> &middot; <span class="bankstar">&#9733; <b>${profile.stars}</b></span>`;
+    $("b-warp").hidden = !(game.won && !game.over);
+    $("b-retire").disabled = game.over;
     renderBuild();
+    renderBases();
     renderBoard();
     $("b-pause").textContent = ui.paused ? "Resume" : "Pause";
     $("paused").style.display = ui.paused ? "block" : "none";
     const hint = $("hint");
     hint.style.display = ui.placing || ui.selected != null ? "block" : "none";
     hint.textContent = ui.placing ? "Click empty space to place the base (Esc to cancel)"
-      : "Click a planet or asteroid to send this ship to mine it; click a base to send it home";
-    if (game.won && !ui.winShown) showWin();
+      : "Click a planet or asteroid to mine it, a star to collect it, or a base to send this ship there (Esc to deselect)";
+    if (game.starsGot !== ui.starsSeen) claim();
+    if (game.won && !ui.winShown && !game.over) showWin();
+    if (game.over && !ui.endShown) showEnd();
+    if ($("topbar").offsetHeight !== topH) resize();   // the top bar wrapped or unwrapped
   }
 
   function showWin() {
-    ui.winShown = true;
-    const m = game.stats, mins = Math.floor(game.time / 60), secs = Math.floor(game.time % 60);
-    $("win-text").textContent = `You built ${G.GOAL_BASES} bases in ${mins}m ${secs}s with ${game.ships.length} ships. ` +
-      `Mined ${Math.floor(m.ore)} ore, ${Math.floor(m.ice)} ice and ${Math.floor(m.crystal)} crystal.`;
-    $("win").hidden = false;
+    ui.winShown = true; ui.winOpen = true;
+    const c = game.clearInfo || { sector: game.sector, sectorPts: 0, timePts: 0, secs: Math.floor(game.sectorTime) };
+    $("win-title").textContent = "Sector " + c.sector + " cleared";
+    $("win-text").textContent = `${G.goalBases(c.sector)} bases built in ${Math.floor(c.secs / 60)}m ${c.secs % 60}s. ` +
+      `+${c.sectorPts} for the sector, +${c.timePts} time bonus. Score so far ${G.scoreTotal(game)}. ` +
+      `Warp to sector ${c.sector + 1}: a bigger map, with less to mine and higher prices.`;
+    $("win").hidden = ui.hangar;
   }
+
+  function showEnd() {
+    ui.endShown = true; ui.endOpen = true;
+    claim();
+    const total = G.scoreTotal(game), isBest = G.recordBest(profile, total);
+    saveProfile();
+    $("end-title").textContent = game.endReason === "stranded" ? "Stranded" : "Run over";
+    $("end-text").textContent = (game.endReason === "stranded"
+      ? "Nothing left to mine and not enough to build with. "
+      : "You retired the fleet. ") + `You reached sector ${game.sector} and cleared ${game.cleared}.`;
+    const s = game.score, row = (a, b, cls) => `<tr${cls ? ` class="${cls}"` : ""}><td>${a}</td><td>${b}</td></tr>`;
+    $("end-score").innerHTML = row("Materials delivered", Math.floor(s.mat)) + row("Bases built", Math.floor(s.bases)) +
+      row("Sectors cleared", Math.floor(s.sectors)) + row("Time bonus", Math.floor(s.time)) + row("Score", total, "sum");
+    $("end-best").textContent = (isBest ? "New best score! " : "") + `Best score ${profile.best}. Stars collected this run ${game.starsGot}; ${profile.stars} in the bank.`;
+    $("end").hidden = ui.hangar;
+  }
+
+  // ---------------------------------------------------------------- hangar
+
+  function swatch(kind, l) {
+    if (kind === "ship") return `<i style="background:${l.miner}"></i><i style="background:${l.hauler}"></i>`;
+    if (kind === "base") return `<i style="background:${l.main}"></i><i style="background:${l.home}"></i>`;
+    if (kind === "bg") return `<i class="wide" style="background:linear-gradient(135deg,${l.top},${l.bottom}),${l.blobs[0][3]};background-blend-mode:screen;border:1px solid rgba(255,255,255,0.25)"></i>`;
+    return `<i class="wide" style="background:linear-gradient(90deg,transparent,${looks.ship.miner});height:6px;margin-top:8px"></i>`;
+  }
+
+  function renderHangar() {
+    $("h-stars").textContent = profile.stars;
+    $("h-body").innerHTML = G.LOOK_KINDS.map(kind => {
+      const items = G.LOOKS[kind].map(l => {
+        const owned = profile.owned[kind].indexOf(l.id) >= 0, picked = profile.pick[kind] === l.id;
+        const status = picked ? "In use" : owned ? "Owned" : `&#9733; ${l.cost}`;
+        const afford = owned || profile.stars >= l.cost;
+        return `<button type="button" class="look${picked ? " picked" : ""}${owned ? "" : " locked"}" data-kind="${kind}" data-id="${l.id}"${afford ? "" : " title=\"Not enough stars yet\""}>
+          <span class="sw">${swatch(kind, l)}</span><b>${l.name}</b><small>${status}</small></button>`;
+      }).join("");
+      return `<h2>${G.LOOK_TITLES[kind]}</h2><div class="look-grid">${items}</div>`;
+    }).join("");
+  }
+
+  function openHangar() {
+    ui.hangar = true;
+    renderHangar();
+    $("hangar").hidden = false;
+    $("win").hidden = true; $("end").hidden = true;
+  }
+
+  function closeHangar() {
+    ui.hangar = false;
+    $("hangar").hidden = true;
+    $("win").hidden = !ui.winOpen; $("end").hidden = !ui.endOpen;
+  }
+
+  $("h-body").addEventListener("click", ev => {
+    const btn = ev.target.closest("[data-kind]");
+    if (!btn) return;
+    const kind = btn.dataset.kind, id = btn.dataset.id;
+    if (profile.owned[kind].indexOf(id) < 0) {
+      const r = G.buyLook(profile, kind, id);
+      if (!r.ok) return toast(r.reason);
+    }
+    G.chooseLook(profile, kind, id);
+    saveProfile();
+    looks = G.currentLooks(profile);
+    if (kind === "bg") buildSky();
+    boardKey = ""; basesHtml = "";
+    renderHangar();
+    if (game) refresh();
+  });
+  $("h-close").addEventListener("click", closeHangar);
+  $("b-hangar").addEventListener("click", () => (ui.hangar ? closeHangar() : openHangar()));
+  $("e-hangar").addEventListener("click", openHangar);
 
   // ---------------------------------------------------------------- input
 
@@ -489,6 +782,7 @@
     };
     for (const b of game.bodies) consider(b, "body", b.r + 8);
     for (const b of game.bases) consider(b, "base", G.BASE_R + 10);
+    for (const s of game.stars) if (!s.taken) consider(s, "star", 18);
     const sr = Math.max(14, 14 / view.sc);
     let ship = null, sd = Infinity;   // ships win over whatever is beneath them
     for (const s of game.ships) {
@@ -506,22 +800,28 @@
   }
 
   function onClick(ev) {
-    if (!game) return;
+    if (!game || ui.hangar) return;
     const p = toWorld(ev);
     if (ui.placing) {
       const r = G.placeBase(game, p.x, p.y);
       if (!r.ok) return toast(r.reason);
       ui.placing = false;
       saveNow();
-      buildHtml = "";
+      buildHtml = ""; basesHtml = "";
       refresh();
       return;
     }
     const h = hit(p);
     if (h && h.kind === "ship") return select(h.o.id === ui.selected ? null : h.o.id);
-    if (ui.selected == null) return;
+    if (ui.selected == null) {
+      if (h && h.kind === "star") toast("Select a ship first, then click the star.");
+      return;
+    }
     if (h && h.kind === "body") {
       const r = G.orderShip(game, ui.selected, h.o.id);
+      if (!r.ok) return toast(r.reason);
+    } else if (h && h.kind === "star") {
+      const r = G.orderShipToStar(game, ui.selected, h.o.id);
       if (!r.ok) return toast(r.reason);
     } else if (h && h.kind === "base") G.returnToBase(game, ui.selected, h.o.id);
     else return select(null);
@@ -547,6 +847,15 @@
     else { select(r.ship.id); saveNow(); }
     refresh();
   });
+  $("bases").addEventListener("click", ev => {
+    const btn = ev.target.closest("[data-up]");
+    if (!btn || !game) return;
+    const r = G.upgradeBase(game, Number(btn.dataset.up));
+    if (!r.ok) return toast(r.reason);
+    saveNow();
+    buildHtml = ""; basesHtml = "";
+    refresh();
+  });
   $("board").addEventListener("click", ev => {
     const li = ev.target.closest("[data-ship]");
     if (li) select(Number(li.dataset.ship) === ui.selected ? null : Number(li.dataset.ship));
@@ -555,12 +864,22 @@
   function setPaused(v) { ui.paused = v; refresh(); }
   $("b-pause").addEventListener("click", () => setPaused(!ui.paused));
   $("b-save").addEventListener("click", () => { if (saveNow(SAVE_KEY)) toast(STRESS ? "Stress mode does not save." : "Saved."); });
-  $("b-load").addEventListener("click", () => { if (loadNow()) toast("Loaded."); });
+  $("b-load").addEventListener("click", () => { loadNow(); });
   $("b-new").addEventListener("click", () => newGame(true));
-  $("w-new").addEventListener("click", () => newGame(false));
-  $("w-keep").addEventListener("click", () => { $("win").hidden = true; });
+  $("b-retire").addEventListener("click", () => {
+    if (!game || game.over || !confirm("Retire this run? Your score is kept as a possible best, and your stars stay banked.")) return;
+    G.retire(game);
+    saveNow();
+    refresh();
+  });
+  $("b-warp").addEventListener("click", warp);
+  $("w-warp").addEventListener("click", warp);
+  $("e-new").addEventListener("click", () => newGame(false));
+  $("w-keep").addEventListener("click", () => { ui.winOpen = false; $("win").hidden = true; });
   window.addEventListener("keydown", ev => {
-    if (ev.key === "Escape") { ui.placing = false; ui.selected = null; boardKey = ""; buildHtml = ""; refresh(); }
+    if (ev.key !== "Escape") return;
+    if (ui.hangar) return closeHangar();
+    ui.placing = false; ui.selected = null; boardKey = ""; buildHtml = ""; refresh();
   });
   // Space toggles pause wherever focus is. It is handled in the capture phase and cancelled, so a
   // focused button does not also "click" (keydown for most browsers, keyup for Firefox).
@@ -587,7 +906,8 @@
       $("fps").textContent = `${Math.round(fps.frames / fps.acc)} fps, worst ${Math.round(fps.worst)} ms, ${game.ships.length} ships`;
       fps.frames = 0; fps.acc = 0; fps.worst = 0;
     }
-    if (!ui.paused) {   // fixed-step simulation; drawing happens once per animation frame
+    const running = !ui.paused && !ui.hangar && !game.over;
+    if (running) {   // fixed-step simulation; drawing happens once per animation frame
       acc += dt;
       let n = 0;
       while (acc >= STEP && n < MAX_STEPS) { G.step(game, STEP); time += STEP; acc -= STEP; n++; }
@@ -595,29 +915,32 @@
       for (const s of game.ships) {
         let tr = trails.get(s.id);
         if (!tr) trails.set(s.id, tr = []);
-        const moving = s.st === G.TO_BODY || s.st === G.TO_BASE;
+        const moving = s.st === G.TO_BODY || s.st === G.TO_BASE || s.st === G.TO_STAR;
         if (moving) tr.push([s.x, s.y]);
         if (tr.length > 14 || (!moving && tr.length)) tr.shift();
       }
       G.checkWin(game);
+      if (game.starsGot !== ui.starsSeen || game.over || (game.won && !ui.winShown)) refresh();
     }
-    frame(ui.paused ? 0 : dt);
+    frame(running ? dt : 0);
     if (t - lastBoard > 250) { lastBoard = t; refresh(); }
     if (t - lastSave > 10000) { lastSave = t; saveNow(); }
   }
 
   // ---------------------------------------------------------------- go
 
+  const profileNotice = loadProfile();
   resize();
-  let first = null, notice = "";
+  let first = null, notice = "", damaged = false;
   if (!STRESS) {
     const r = readSaves([AUTO_KEY, SAVE_KEY]);   // the autosave is the newest; the manual save is the fallback
-    first = r.state; notice = r.notice;
+    first = r.state; notice = r.notice; damaged = r.damaged;
   }
   start(first || freshGame());
-  if (notice) toast(notice + (first ? " Loaded the other save." : " Started a new game; a copy of the damaged save was kept."));
+  const msgs = [profileNotice, notice && (notice.trim() + (first ? (damaged ? " Loaded the other save." : "") : " Started a new game; a copy of the damaged save was kept."))].filter(Boolean);
+  if (msgs.length) toast(msgs.join(" "), true);
   requestAnimationFrame(t => { lastT = t; lastSave = t; requestAnimationFrame(loop); });
 
   // for debugging from the console
-  window.__fleet = { get game() { return game; }, ui };
+  window.__fleet = { get game() { return game; }, get profile() { return profile; }, ui };
 })();

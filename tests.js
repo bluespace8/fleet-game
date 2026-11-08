@@ -374,6 +374,623 @@ test("won state and bases survive a round trip", () => {
   assert.strictEqual(r.bases[0].home, true);
 });
 
+// ---------------------------------------------------------------- follow-ups from the first version
+
+console.log("follow-ups");
+test("an idle ship accepts a base click and flies there", () => {
+  const s = G.newGame(1), home = s.bases[0];
+  let spot = null;
+  for (let x = 100; x < 1500 && !spot; x += 25) for (let y = 100; y < 900 && !spot; y += 25) {
+    if (!G.baseSpotProblem(s, x, y) && Math.hypot(x - home.x, y - home.y) > 300) spot = { x, y };
+  }
+  s.stock.ore = s.stock.ice = s.stock.crystal = 1000;
+  assert.ok(G.placeBase(s, spot.x, spot.y).ok);
+  const ship = s.ships[0];
+  assert.strictEqual(ship.st, G.IDLE);
+  assert.ok(G.returnToBase(s, 0, 1).ok);
+  assert.strictEqual(ship.st, G.TO_BASE);
+  run(s, 60);
+  assert.strictEqual(ship.st, G.IDLE);
+  assert.ok(Math.hypot(ship.x - s.bases[1].x, ship.y - s.bases[1].y) < G.BASE_R + 12);
+});
+test("damaged-save backups keep the newest three, newest first, without repeats", () => {
+  let list = [];
+  for (const t of ["a", "b", "b", "c", "d"]) list = G.addBackup(list, { at: "t", from: "x", text: t });
+  assert.deepStrictEqual(list.map(e => e.text), ["d", "c", "b"]);
+  assert.deepStrictEqual(G.addBackup(null, { text: "z" }).map(e => e.text), ["z"]);
+  assert.strictEqual(G.addBackup([{ text: "1" }, { text: "2" }], { text: "3" }, 2).length, 2);
+});
+
+// ---------------------------------------------------------------- sectors
+
+console.log("sectors and difficulty");
+function legalSpot(s, minFromHome) {
+  const h = s.bases[0];
+  for (let x = 100; x < s.w - 100; x += 25) for (let y = 100; y < s.h - 100; y += 25) {
+    if (!G.baseSpotProblem(s, x, y) && Math.hypot(x - h.x, y - h.y) > (minFromHome || 0)) return { x, y };
+  }
+  return null;
+}
+function buildGoal(s) {   // build the sector's bases for free
+  s.stock.ore = s.stock.ice = s.stock.crystal = 99999;
+  let built = 0;
+  for (let x = 80; x < s.w - 80 && built < G.goalBases(s.sector); x += 40) {
+    for (let y = 80; y < s.h - 80 && built < G.goalBases(s.sector); y += 40) if (G.placeBase(s, x, y).ok) built++;
+  }
+  return built;
+}
+test("a new game is sector 1, sized and costed as before", () => {
+  const s = G.newGame(1);
+  assert.strictEqual(s.sector, 1);
+  assert.strictEqual(s.w, 1600); assert.strictEqual(s.h, 1000);
+  assert.deepStrictEqual(G.baseCost(s), G.BASE_COST);
+  assert.deepStrictEqual(G.shipCost(s, "miner"), G.SHIP_TYPES.miner.cost);
+  assert.strictEqual(G.goalBases(1), 5);
+  assert.strictEqual(G.amountMult(1), 1);
+  assert.strictEqual(G.crystalCount(1), 3);
+  assert.strictEqual(G.stormCount(1), 0);
+  assert.ok(!G.showersOn(1));
+  assert.strictEqual(s.storms.length, 0);
+});
+test("the goal opens the warp, not before", () => {
+  const s = G.newGame(3);
+  assert.ok(!G.warpToNextSector(s).ok);
+  assert.strictEqual(s.sector, 1);
+  assert.strictEqual(buildGoal(s), G.goalBases(1));
+  assert.ok(s.won);
+  const r = G.warpToNextSector(s);
+  assert.ok(r.ok && r.sector === 2);
+  assert.strictEqual(s.sector, 2);
+});
+test("warping makes a new, bigger map and keeps ships, stock and score", () => {
+  const s = G.newGame(3);
+  const oldBodies = JSON.stringify(s.bodies);
+  buildGoal(s);
+  s.stock.ore = 777;
+  s.ships[0].cargo = 5; s.ships[0].res = "ice"; s.ships[0].st = G.TO_BASE;
+  const score0 = G.scoreTotal(s), ice0 = s.stock.ice;
+  assert.ok(G.warpToNextSector(s).ok);
+  assert.strictEqual(s.bases.length, 1);
+  assert.ok(s.w > 1600 && s.h > 1000);
+  assert.notStrictEqual(JSON.stringify(s.bodies), oldBodies);
+  assert.strictEqual(s.ships.length, 2);
+  assert.ok(s.ships.every(sh => sh.st === G.IDLE && sh.cargo === 0));
+  assert.strictEqual(s.stock.ore, 777);
+  assert.strictEqual(s.stock.ice, ice0 + 5, "cargo is handed in");
+  assert.ok(G.scoreTotal(s) >= score0);
+  assert.ok(!s.won);
+  assert.strictEqual(s.sectorTime, 0);
+  for (const sh of s.ships) assert.ok(Math.hypot(sh.x - s.bases[0].x, sh.y - s.bases[0].y) < G.BASE_R + 20);
+  run(s, 5);   // the new map runs
+});
+test("each sector is a deterministic map of its own", () => {
+  const a = G.newGame(8, 3), b = G.newGame(8, 3), c = G.newGame(8, 2);
+  assert.strictEqual(G.serialize(a), G.serialize(b));
+  assert.notStrictEqual(G.serialize(a), G.serialize(c));
+  const s = G.newGame(8); buildGoal(s); G.warpToNextSector(s);
+  assert.strictEqual(JSON.stringify(s.bodies), JSON.stringify(G.newGame(8, 2).bodies), "warp lands on the sector 2 map");
+});
+test("difficulty rises: more bases, less material, rarer crystal, dearer builds, bigger map", () => {
+  for (let n = 2; n <= 8; n++) {
+    assert.ok(G.goalBases(n) >= G.goalBases(n - 1));
+    assert.ok(G.amountMult(n) <= G.amountMult(n - 1));
+    assert.ok(G.crystalCount(n) <= G.crystalCount(n - 1));
+    assert.ok(G.costMult(n) > G.costMult(n - 1));
+    assert.ok(G.mapScale(n) >= G.mapScale(n - 1));
+  }
+  assert.ok(G.goalBases(2) > G.goalBases(1) && G.amountMult(2) < 1 && G.crystalCount(4) < G.crystalCount(1));
+  assert.ok(G.mapScale(3) > 1);
+  const s1 = G.newGame(5, 1), s4 = G.newGame(5, 4);
+  assert.ok(G.baseCost(s4).ore > G.baseCost(s1).ore && G.shipCost(s4, "miner").ore > G.shipCost(s1, "miner").ore);
+  const mean = s => s.bodies.reduce((n, b) => n + b.max, 0) / s.bodies.length;
+  let m1 = 0, m5 = 0;
+  for (let seed = 1; seed <= 12; seed++) { m1 += mean(G.newGame(seed, 1)); m5 += mean(G.newGame(seed, 5)); }
+  assert.ok(m5 < m1 * 0.8, "bodies hold less further out");
+  const crystals = s => s.bodies.filter(b => b.res === "crystal").length;
+  assert.ok(crystals(G.newGame(5, 5)) < crystals(G.newGame(5, 1)));
+});
+test("bodies sit further from home in later sectors", () => {
+  const avg = n => {
+    let t = 0, c = 0;
+    for (let seed = 1; seed <= 12; seed++) { const s = G.newGame(seed, n), h = s.bases[0]; for (const b of s.bodies) { t += Math.hypot(b.x - h.x, b.y - h.y); c++; } }
+    return t / c;
+  };
+  assert.ok(avg(4) > avg(1) * 1.1, avg(1) + " vs " + avg(4));
+});
+test("later sectors still make a full, legal map", () => {
+  for (let n = 2; n <= 7; n++) for (let seed = 1; seed <= 6; seed++) {
+    const s = G.newGame(seed, n);
+    assert.ok(s.bodies.length >= 12, "sector " + n + " seed " + seed + " has " + s.bodies.length);
+    for (const res of G.RES) assert.ok(s.bodies.some(b => b.res === res), "no " + res);
+    s.bodies.forEach((a, i) => {
+      assert.ok(a.x > 0 && a.y > 0 && a.x < s.w && a.y < s.h);
+      for (let j = i + 1; j < s.bodies.length; j++) assert.ok(Math.hypot(a.x - s.bodies[j].x, a.y - s.bodies[j].y) >= a.r + s.bodies[j].r);
+    });
+  }
+});
+test("the goal grows with the sector", () => {
+  const s = G.newGame(3, 2);
+  s.stock.ore = s.stock.ice = s.stock.crystal = 99999;
+  assert.strictEqual(buildGoal(s), G.goalBases(2));
+  assert.strictEqual(G.goalBases(2), 6);
+  assert.ok(s.won);
+});
+
+console.log("hazards");
+test("ion storms appear from sector 2 and not in sector 1", () => {
+  assert.strictEqual(G.newGame(4, 1).storms.length, 0);
+  for (let n = 2; n <= 6; n++) {
+    const s = G.newGame(4, n);
+    assert.ok(s.storms.length >= 1 && s.storms.length === G.stormCount(n));
+    for (const st of s.storms) assert.ok(Math.hypot(st.x - s.bases[0].x, st.y - s.bases[0].y) > st.r, "not on top of home");
+  }
+  assert.ok(G.stormCount(5) > G.stormCount(2));
+});
+test("storms drift and stay inside the map", () => {
+  const s = G.newGame(4, 3), x0 = s.storms.map(t => t.x + "," + t.y).join();
+  run(s, 120);
+  assert.notStrictEqual(s.storms.map(t => t.x + "," + t.y).join(), x0);
+  for (const t of s.storms) assert.ok(t.x >= 0 && t.x <= s.w && t.y >= 0 && t.y <= s.h);
+});
+test("a ship inside an ion storm is slowed", () => {
+  const s = G.newGame(4, 2);
+  const body = nearBody(s);
+  s.storms.forEach(t => { t.vx = t.vy = 0; t.x = -9999; });
+  const free = G.newGame(4, 2); free.storms.forEach(t => { t.vx = t.vy = 0; t.x = -9999; });
+  s.storms[0].x = s.bases[0].x; s.storms[0].y = s.bases[0].y; s.storms[0].r = 4000;   // covers everything
+  assert.ok(G.inStorm(s, s.ships[0].x, s.ships[0].y) && !G.inStorm(free, free.ships[0].x, free.ships[0].y));
+  G.orderShip(s, 0, body.id); G.orderShip(free, 0, nearBody(free).id);
+  const d = (st, sh) => Math.hypot(sh.x - st.bases[0].x, sh.y - st.bases[0].y);
+  for (let i = 0; i < 60; i++) { G.step(s, DT); G.step(free, DT); }
+  const slow = d(s, s.ships[0]), fast = d(free, free.ships[0]);
+  assert.ok(slow < fast * 0.6 && slow > 0, slow + " vs " + fast);
+});
+test("storms do not touch ships in sector 1", () => {
+  const s = G.newGame(1);
+  assert.ok(!G.inStorm(s, s.ships[0].x, s.ships[0].y));
+});
+test("meteor showers start in sector 3, not before", () => {
+  assert.ok(!G.showersOn(2) && G.showersOn(3));
+  const s2 = G.newGame(4, 2); run(s2, 200); assert.strictEqual(s2.showers.length, 0);
+  const s3 = G.newGame(4, 3); let seen = 0;
+  for (let i = 0; i < 60 * 60; i++) { G.step(s3, DT); seen = Math.max(seen, s3.showers.length); }
+  assert.ok(seen >= 1, "a shower appeared");
+  assert.ok(G.showerGap(5) <= G.showerGap(3) && G.showerHit(5) >= G.showerHit(3));
+});
+test("a loaded ship inside a shower can lose cargo, an empty one cannot", () => {
+  const s = G.newGame(4, 3);
+  s.showers.push({ x: 500, y: 500, r: 120, age: T().warn });
+  s.ships[0].x = 500; s.ships[0].y = 500; s.ships[0].cargo = 20; s.ships[0].res = "ore"; s.ships[0].st = G.TO_BASE;
+  s.ships[1].x = 505; s.ships[1].y = 505; s.ships[1].cargo = 0;
+  s.showerIn = 1e9;
+  let guard = 0;
+  while (s.hits === 0 && guard++ < 60 * 60) { s.showers[0].age = T().warn; s.ships[0].x = 500; s.ships[0].y = 500; G.step(s, DT); }
+  assert.ok(s.hits > 0, "hit eventually");
+  assert.ok(s.ships[0].cargo < 20 && s.ships[0].cargo > 0);
+  assert.ok(Math.abs(s.stats.lost - (20 - s.ships[0].cargo)) < 1e-6);
+  assert.ok(s.ships[0].hitCd > 0, "then a short grace period");
+});
+test("a shower is harmless during its warning", () => {
+  const s = G.newGame(4, 3);
+  s.showers.push({ x: 500, y: 500, r: 120, age: 0 });
+  s.showerIn = 1e9;
+  s.ships[0].x = 500; s.ships[0].y = 500; s.ships[0].cargo = 20; s.ships[0].res = "ore"; s.ships[0].st = G.IDLE;
+  for (let i = 0; i < 60; i++) { s.showers[0].age = Math.min(s.showers[0].age, T().warn - 0.5); G.step(s, DT); }
+  assert.strictEqual(s.hits, 0);
+});
+test("mined material is conserved with meteors: stock + cargo + lost", () => {
+  const s = G.newGame(6, 3);
+  const before = total(s, "ore");
+  for (const sh of s.ships) G.orderShip(s, sh.id, nearBody(s).id);
+  s.showers.push({ x: s.bases[0].x, y: s.bases[0].y, r: 5000, age: T().warn });
+  s.showerIn = 1e9;
+  for (let i = 0; i < 60 * 80; i++) { if (s.showers[0]) s.showers[0].age = Math.max(s.showers[0].age, T().warn); G.step(s, DT); }
+  assert.ok(s.stats.lost > 0);
+  assert.ok(Math.abs(total(s, "ore") + s.stats.lost - before - s.stats.ore) < 1e-6);
+});
+test("hazards are deterministic and survive save and load", () => {
+  const a = G.newGame(11, 3);
+  for (const sh of a.ships) G.orderShip(a, sh.id, nearBody(a).id);
+  run(a, 40);
+  const b = G.deserialize(G.serialize(a)).state;
+  run(a, 60); run(b, 60);
+  assert.strictEqual(G.serialize(a), G.serialize(b));
+});
+function T() { return G.TUNING.showers; }
+
+console.log("base upgrades");
+test("a base can be upgraded twice, for materials, then no more", () => {
+  const s = G.newGame(2);
+  s.stock.ore = s.stock.ice = s.stock.crystal = 0;
+  assert.ok(!G.upgradeBase(s, 0).ok, "no materials");
+  s.stock.ore = s.stock.ice = s.stock.crystal = 1000;
+  const c1 = G.upgradeCost(s, 0);
+  assert.ok(G.upgradeBase(s, 0).ok);
+  assert.strictEqual(s.bases[0].tier, 1);
+  assert.strictEqual(s.stock.ore, 1000 - c1.ore);
+  const c2 = G.upgradeCost(s, 0);
+  assert.ok(c2.ore > c1.ore, "tier 2 costs more");
+  assert.ok(G.upgradeBase(s, 0).ok);
+  assert.strictEqual(s.bases[0].tier, G.MAX_TIER);
+  assert.strictEqual(G.MAX_TIER, 2);
+  const left = s.stock.ore;
+  const r = G.upgradeBase(s, 0);
+  assert.ok(!r.ok && r.reason);
+  assert.strictEqual(s.stock.ore, left, "a refused upgrade is free");
+  assert.strictEqual(G.upgradeCost(s, 0), null);
+  assert.ok(!G.upgradeBase(s, 9).ok);
+});
+test("upgrade costs rise with the sector", () => {
+  assert.ok(G.upgradeCost(G.newGame(2, 4), 0).ore > G.upgradeCost(G.newGame(2, 1), 0).ore);
+});
+test("upgrading one base does not change another", () => {
+  const s = G.newGame(2); s.stock.ore = s.stock.ice = s.stock.crystal = 5000;
+  const spot = legalSpot(s, 300);
+  assert.ok(G.placeBase(s, spot.x, spot.y).ok);
+  G.upgradeBase(s, 1);
+  assert.strictEqual(s.bases[0].tier, 0); assert.strictEqual(s.bases[1].tier, 1);
+});
+function deliverTime(tier) {   // seconds from arriving with a hauler load to being free again
+  const s = G.newGame(1); s.stock.ore = s.stock.ice = s.stock.crystal = 5000;
+  s.bases[0].tier = tier;
+  const sh = G.buildShip(s, "hauler").ship;
+  sh.cargo = 60; sh.res = "ore"; sh.st = G.TO_BASE;
+  let t = 0, arrived = -1;
+  while (t < 60) {
+    G.step(s, DT); t += DT;
+    if (arrived < 0 && s.stock.ore > 5000 - 90) arrived = t;
+    if (arrived >= 0 && sh.st === G.IDLE) return { total: t, wait: t - arrived, dock: Math.hypot(sh.x - s.bases[0].x, sh.y - s.bases[0].y) };
+  }
+  return null;
+}
+test("upgraded bases unload faster", () => {
+  const a = deliverTime(0), b = deliverTime(1), c = deliverTime(2);
+  assert.ok(a.wait > b.wait + 0.2 && b.wait > c.wait + 0.2, [a.wait, b.wait, c.wait].join(" "));
+});
+test("upgraded bases accept ships from further out", () => {
+  const a = deliverTime(0), c = deliverTime(2);
+  assert.ok(c.dock > a.dock + 15, a.dock + " vs " + c.dock);
+});
+test("unloading takes time but the delivery counts at once, so sector 1 timing is close to before", () => {
+  const a = deliverTime(0);
+  assert.ok(a.wait > 0.5 && a.wait < 4);
+});
+test("an order given while unloading is obeyed", () => {
+  const s = G.newGame(1), sh = s.ships[0];
+  sh.cargo = 20; sh.res = "ore"; sh.st = G.TO_BASE;
+  for (let i = 0; i < 60 * 60 && sh.st !== G.UNLOADING; i++) G.step(s, DT);
+  assert.strictEqual(sh.st, G.UNLOADING);
+  assert.ok(G.orderShip(s, 0, nearBody(s).id).ok);
+  assert.strictEqual(sh.st, G.TO_BODY);
+});
+
+console.log("score");
+test("score counts materials delivered, bases built, sectors cleared and a time bonus", () => {
+  const s = G.newGame(1);
+  assert.strictEqual(G.scoreTotal(s), 0);
+  const ore = nearBody(s);
+  G.orderShip(s, 0, ore.id);
+  for (let i = 0; i < 60 * 120 && s.stock.ore === G.START_STOCK.ore; i++) G.step(s, DT);
+  assert.strictEqual(G.scoreTotal(s), 20 * G.TUNING.score.value.ore, "20 ore delivered");
+  const before = G.scoreTotal(s);
+  s.stock.ore = s.stock.ice = s.stock.crystal = 9999;
+  const spot = legalSpot(s, 0);
+  G.placeBase(s, spot.x, spot.y);
+  assert.strictEqual(G.scoreTotal(s), before + G.TUNING.score.base);
+  assert.strictEqual(s.score.sectors, 0);
+});
+test("clearing a sector scores once, with a bigger bonus later, and a time bonus for being quick", () => {
+  const s = G.newGame(1);
+  buildGoal(s);
+  assert.strictEqual(s.score.sectors, G.TUNING.score.sector);
+  assert.strictEqual(s.score.time, Math.floor(G.parTime(1) * G.TUNING.score.timePerSec), "instant clear gets the whole bonus");
+  assert.strictEqual(s.cleared, 1);
+  const total0 = G.scoreTotal(s);
+  G.checkWin(s); G.checkWin(s);
+  assert.strictEqual(G.scoreTotal(s), total0, "no double award");
+  G.warpToNextSector(s);
+  s.stock.ore = s.stock.ice = s.stock.crystal = 99999;
+  const slow = G.newGame(1); run(slow, 1); slow.sectorTime = 1e6; buildGoal(slow);
+  assert.strictEqual(slow.score.time, 0, "slow clear gets no time bonus");
+  buildGoal(s);
+  assert.strictEqual(s.score.sectors, G.TUNING.score.sector * 3, "sector 2 pays twice as much as sector 1: 400 + 800");
+});
+test("the score total is a whole number", () => {
+  const s = G.newGame(1); s.score.mat = 12.7; s.score.bases = 100;
+  assert.strictEqual(G.scoreTotal(s), 112);
+});
+
+console.log("run end");
+test("retiring ends the run and freezes the game", () => {
+  const s = G.newGame(1);
+  G.orderShip(s, 0, nearBody(s).id);
+  assert.ok(G.retire(s).ok);
+  assert.ok(s.over && s.endReason === "retired");
+  const t = s.time, x = s.ships[0].x;
+  run(s, 5);
+  assert.strictEqual(s.time, t); assert.strictEqual(s.ships[0].x, x);
+  assert.ok(!G.retire(s).ok);
+  assert.ok(!G.buildShip(s, "miner").ok);
+});
+test("stranded: nothing left to mine, nothing aboard, cannot afford a base", () => {
+  const s = G.newGame(1);
+  assert.ok(!G.isStranded(s));
+  for (const b of s.bodies) b.amount = 0;
+  s.stock.ore = 10;
+  assert.ok(G.isStranded(s));
+  s.stock.ore = s.stock.ice = s.stock.crystal = 500;
+  assert.ok(!G.isStranded(s), "can still afford a base");
+  s.stock.ore = 10;
+  s.ships[0].cargo = 5; s.ships[0].res = "ore";
+  assert.ok(!G.isStranded(s), "a ship still carries cargo");
+  s.ships[0].cargo = 0;
+  s.bodies[0].amount = 3;
+  assert.ok(!G.isStranded(s), "a ship can still mine");
+});
+test("the run ends by itself when stranded, and a cleared sector is never stranded", () => {
+  const s = G.newGame(1);
+  for (const b of s.bodies) b.amount = 0;
+  s.stock.ore = s.stock.ice = s.stock.crystal = 0;
+  run(s, 3);
+  assert.ok(s.over && s.endReason === "stranded");
+  const w = G.newGame(1); buildGoal(w);
+  for (const b of w.bodies) b.amount = 0;
+  w.stock.ore = w.stock.ice = w.stock.crystal = 0;
+  run(w, 3);
+  assert.ok(!w.over, "can warp instead");
+});
+test("a normal game is not stranded while ships mine", () => {
+  const s = G.newGame(2);
+  for (const sh of s.ships) G.orderShip(s, sh.id, nearBody(s).id);
+  run(s, 120);
+  assert.ok(!s.over);
+});
+
+console.log("stars");
+test("each sector has 3 to 6 stars, away from home and clear of bodies", () => {
+  for (let n = 1; n <= 6; n++) for (let seed = 1; seed <= 15; seed++) {
+    const s = G.newGame(seed, n), h = s.bases[0];
+    assert.ok(s.stars.length >= 3 && s.stars.length <= 6, "n=" + n + " seed=" + seed + " has " + s.stars.length);
+    for (const st of s.stars) {
+      assert.ok(Math.hypot(st.x - h.x, st.y - h.y) >= 250, "star too near home");
+      assert.ok(st.x > 0 && st.y > 0 && st.x < s.w && st.y < s.h && !st.taken);
+      for (const b of s.bodies) assert.ok(Math.hypot(st.x - b.x, st.y - b.y) > b.r + 10);
+    }
+  }
+});
+test("stars are the same for the same seed, and do not move the bodies", () => {
+  assert.deepStrictEqual(G.newGame(5).stars, G.newGame(5).stars);
+  assert.notDeepStrictEqual(G.newGame(5).stars, G.newGame(6).stars);
+});
+test("a ship sent to a star picks it up and heads home", () => {
+  const s = G.newGame(2), star = s.stars[0], sh = s.ships[0];
+  const r = G.orderShipToStar(s, 0, star.id);
+  assert.ok(r.ok);
+  assert.strictEqual(sh.st, G.TO_STAR);
+  assert.ok(/star/.test(G.jobText(s, sh)));
+  for (let i = 0; i < 60 * 120 && !star.taken; i++) G.step(s, DT);
+  assert.ok(star.taken);
+  assert.strictEqual(s.starsGot, 1);
+  assert.strictEqual(sh.st, G.TO_BASE);
+  run(s, 120);
+  assert.strictEqual(sh.st, G.IDLE);
+  assert.ok(!G.orderShipToStar(s, 0, star.id).ok, "already taken");
+  assert.ok(!G.orderShipToStar(s, 0, 99).ok);
+  assert.ok(!G.orderShipToStar(s, 99, 0).ok);
+});
+test("two ships after one star: the second turns back, and the star counts once", () => {
+  const s = G.newGame(2), star = s.stars[0];
+  G.orderShipToStar(s, 0, star.id); G.orderShipToStar(s, 1, star.id);
+  run(s, 200);
+  assert.strictEqual(s.starsGot, 1);
+  assert.ok(s.ships.every(sh => sh.st === G.IDLE));
+});
+test("a ship carrying cargo keeps it on the way to a star", () => {
+  const s = G.newGame(2), sh = s.ships[0];
+  sh.cargo = 10; sh.res = "ore"; sh.st = G.MINING; sh.target = nearBody(s).id;
+  G.orderShipToStar(s, 0, s.stars[0].id);
+  assert.strictEqual(sh.cargo, 10);
+  const ore0 = s.stock.ore;
+  run(s, 240);
+  assert.strictEqual(s.stock.ore, ore0 + 10, "delivered after the star");
+});
+test("a recall or a new order cancels the trip to a star", () => {
+  const s = G.newGame(2);
+  G.orderShipToStar(s, 0, 0);
+  G.recallShip(s, 0);
+  assert.strictEqual(s.ships[0].star, -1);
+  G.orderShipToStar(s, 1, 0);
+  G.orderShip(s, 1, nearBody(s).id);
+  assert.strictEqual(s.ships[1].st, G.TO_BODY); assert.strictEqual(s.ships[1].star, -1);
+});
+test("stars survive a save and load, with taken ones still taken", () => {
+  const s = G.newGame(2);
+  G.orderShipToStar(s, 0, 1);
+  run(s, 200);
+  assert.ok(s.stars[1].taken);
+  const r = G.deserialize(G.serialize(s)).state;
+  assert.deepStrictEqual(r.stars, s.stars);
+  assert.strictEqual(r.starsGot, 1);
+});
+
+console.log("star bank and hangar");
+test("a new profile has the free looks and no stars", () => {
+  const p = G.newProfile();
+  assert.strictEqual(p.stars, 0); assert.strictEqual(p.best, 0);
+  for (const k of G.LOOK_KINDS) { assert.strictEqual(p.owned[k].length, 1); assert.strictEqual(G.lookById(k, p.pick[k]).cost, 0); }
+});
+test("the hangar offers enough: 4 ship colours, 4 base colours, 3 backgrounds, 2 trail styles to buy", () => {
+  assert.ok(G.LOOKS.ship.length >= 4 && G.LOOKS.base.length >= 4 && G.LOOKS.bg.length >= 3 && G.LOOKS.trail.length >= 2);
+  for (const k of G.LOOK_KINDS) {
+    const ids = G.LOOKS[k].map(l => l.id);
+    assert.strictEqual(new Set(ids).size, ids.length, "unique ids in " + k);
+    assert.strictEqual(G.LOOKS[k][0].cost, 0, "first is free");
+    for (const l of G.LOOKS[k]) assert.ok(l.name && l.cost >= 0);
+  }
+});
+test("collecting stars fills the bank once each", () => {
+  const p = G.newProfile(), s = G.newGame(2);
+  s.stars[0].taken = true; s.stars[1].taken = true;
+  assert.strictEqual(G.claimStars(p, s), 2);
+  assert.strictEqual(p.stars, 2);
+  assert.strictEqual(G.claimStars(p, s), 0, "not twice");
+  s.stars[2].taken = true;
+  assert.strictEqual(G.claimStars(p, s), 1);
+  assert.strictEqual(p.stars, 3);
+});
+test("the bank survives new games and an old save cannot pay a star twice", () => {
+  const p = G.newProfile();
+  const a = G.newGame(2), saved = G.serialize(a);     // saved before the star was taken
+  G.orderShipToStar(a, 0, 0); run(a, 200);
+  assert.strictEqual(G.claimStars(p, a), 1);
+  const b = G.deserialize(saved).state;               // load the old save: the star is back on the map
+  assert.ok(!b.stars[0].taken);
+  G.syncClaimed(b, p);
+  assert.ok(b.stars[0].taken, "paid already, so it stays gone");
+  assert.strictEqual(G.claimStars(p, b), 0);
+  assert.strictEqual(G.claimStars(p, G.newGame(3)), 0, "a new game starts with nothing to claim");
+  assert.strictEqual(p.stars, 1);
+});
+test("stars from different sectors of one run are different stars", () => {
+  const p = G.newProfile(), s = G.newGame(2);
+  s.stars[0].taken = true; G.claimStars(p, s);
+  buildGoal(s); G.warpToNextSector(s);
+  s.stars[0].taken = true;
+  assert.strictEqual(G.claimStars(p, s), 1);
+  assert.strictEqual(p.stars, 2);
+});
+test("buying needs stars, charges once, and unlocks the item", () => {
+  const p = G.newProfile();
+  const item = G.LOOKS.ship[1];
+  const poor = G.buyLook(p, "ship", item.id);
+  assert.ok(!poor.ok && /stars/.test(poor.reason));
+  p.stars = item.cost + 1;
+  assert.ok(G.buyLook(p, "ship", item.id).ok);
+  assert.strictEqual(p.stars, 1);
+  assert.ok(p.owned.ship.indexOf(item.id) >= 0);
+  assert.ok(!G.buyLook(p, "ship", item.id).ok, "no second charge");
+  assert.strictEqual(p.stars, 1);
+  assert.ok(!G.buyLook(p, "ship", "nope").ok);
+  assert.ok(!G.buyLook(p, "wings", "x").ok);
+});
+test("a look can only be chosen once owned, and the choice is kept", () => {
+  const p = G.newProfile(), item = G.LOOKS.bg[1];
+  assert.ok(!G.chooseLook(p, "bg", item.id).ok);
+  assert.strictEqual(p.pick.bg, G.LOOKS.bg[0].id);
+  p.stars = 99; G.buyLook(p, "bg", item.id);
+  assert.ok(G.chooseLook(p, "bg", item.id).ok);
+  assert.strictEqual(G.currentLooks(p).bg.id, item.id);
+  assert.ok(G.chooseLook(p, "bg", G.LOOKS.bg[0].id).ok, "can go back");
+});
+test("a few runs of stars unlock most of the hangar", () => {
+  let all = 0;
+  for (const k of G.LOOK_KINDS) for (const l of G.LOOKS[k]) all += l.cost;
+  assert.ok(all <= 80, "everything costs " + all + " stars");
+});
+test("the profile round-trips, and damage is repaired or reported", () => {
+  const p = G.newProfile();
+  p.stars = 7; p.best = 1234; p.stars = 50;
+  G.buyLook(p, "trail", "spark"); G.chooseLook(p, "trail", "spark"); G.buyLook(p, "ship", "crimson"); G.chooseLook(p, "ship", "crimson");
+  const r = G.parseProfile(G.serializeProfile(p));
+  assert.ok(r.ok);
+  assert.deepStrictEqual(r.profile, p);
+  assert.ok(G.parseProfile("").ok && G.parseProfile(null).ok, "nothing stored yet is fine");
+  assert.ok(!G.parseProfile("{{").ok);
+  assert.ok(!G.parseProfile("[1]").ok);
+  assert.strictEqual(G.parseProfile("{{").profile.stars, 0);
+  const bad = G.parseProfile(JSON.stringify({ stars: -4, best: "x", owned: { ship: ["classic", "ghost"] }, pick: { ship: "violet", bg: 5 }, claimed: [1, "a:1:0"] })).profile;
+  assert.strictEqual(bad.stars, 0); assert.strictEqual(bad.best, 0);
+  assert.deepStrictEqual(bad.owned.ship, ["classic"]);
+  assert.strictEqual(bad.pick.ship, "classic", "cannot pick what is not owned");
+  assert.strictEqual(bad.pick.bg, G.LOOKS.bg[0].id);
+  assert.deepStrictEqual(bad.claimed, ["a:1:0"]);
+});
+test("the best score only goes up", () => {
+  const p = G.newProfile();
+  assert.ok(G.recordBest(p, 500) && p.best === 500);
+  assert.ok(!G.recordBest(p, 400) && p.best === 500);
+  assert.ok(!G.recordBest(p, 500));
+  assert.ok(G.recordBest(p, 900.7) && p.best === 900);
+});
+test("stars buy looks only: no look carries any gameplay number", () => {
+  for (const k of G.LOOK_KINDS) for (const l of G.LOOKS[k]) {
+    for (const key of Object.keys(l)) assert.ok(["id", "name", "cost", "miner", "hauler", "main", "home", "top", "bottom", "blobs", "note"].indexOf(key) >= 0, key);
+  }
+});
+
+console.log("old saves");
+function oldSave() {   // what the first-playable version wrote
+  const s = G.newGame(21);
+  const raw = JSON.parse(G.serialize(s));
+  raw.ver = 1;
+  for (const k of ["sector", "sectorTime", "stars", "storms", "showers", "showerIn", "hz", "clearInfo", "over", "endReason", "endTimer", "score", "cleared", "starsGot", "hits"]) delete raw[k];
+  delete raw.stats.lost;
+  for (const b of raw.bases) delete b.tier;
+  for (const sh of raw.ships) { delete sh.star; delete sh.wait; delete sh.hitCd; }
+  return raw;
+}
+test("a save from first-playable loads as sector 1 with a notice, and plays on", () => {
+  const raw = oldSave();
+  raw.time = 55;
+  const r = G.deserialize(JSON.stringify(raw));
+  assert.ok(r.ok, r.error);
+  assert.ok(/first version/.test(r.notice));
+  const s = r.state;
+  assert.strictEqual(s.sector, 1);
+  assert.strictEqual(s.w, 1600);
+  assert.ok(s.stars.length >= 3 && s.stars.length <= 6, "stars are made up");
+  assert.deepStrictEqual(s.stars, G.newGame(21).stars);
+  assert.strictEqual(s.bases[0].tier, 0);
+  assert.strictEqual(s.storms.length, 0);
+  assert.ok(!s.over);
+  G.orderShip(s, 0, nearBody(s).id);
+  G.orderShipToStar(s, 1, 0);
+  run(s, 60);
+  for (const sh of s.ships) assert.ok(isFinite(sh.x) && isFinite(sh.y));
+  assert.ok(G.deserialize(G.serialize(s)).ok);
+  assert.strictEqual(G.deserialize(G.serialize(s)).notice, undefined, "a current save has no notice");
+});
+test("an old save that had already won stays won and can warp", () => {
+  const raw = oldSave();
+  raw.won = true; raw.wonAt = 100;
+  const s = G.deserialize(JSON.stringify(raw)).state;
+  assert.ok(s.won);
+  assert.ok(G.warpToNextSector(s).ok);
+  assert.strictEqual(s.sector, 2);
+});
+test("a damaged new-format save never throws", () => {
+  const good = JSON.parse(G.serialize(G.newGame(3, 3)));
+  const junk = [null, 5, "x", [], {}, NaN];
+  for (const key of ["stars", "storms", "showers", "score", "clearInfo", "sector", "hz", "showerIn", "over", "cleared"]) {
+    for (const v of junk) {
+      const c = JSON.parse(JSON.stringify(good));
+      c[key] = v;
+      const r = G.deserialize(JSON.stringify(c));
+      assert.ok(typeof r.ok === "boolean");
+      if (r.ok) { run(r.state, 2); for (const sh of r.state.ships) assert.ok(isFinite(sh.x)); }
+    }
+  }
+  const c = JSON.parse(JSON.stringify(good));
+  c.sector = 1e9; c.bases[0].tier = 77; c.ships[0].star = 400; c.ships[0].st = 5; c.stars = [null, { x: "a" }];
+  const r = G.deserialize(JSON.stringify(c));
+  assert.ok(r.ok);
+  assert.strictEqual(r.state.sector, 999);
+  assert.strictEqual(r.state.bases[0].tier, G.MAX_TIER);
+  assert.strictEqual(r.state.ships[0].st, G.TO_BASE, "a star trip to nowhere sends the ship home");
+  run(r.state, 3);
+});
+test("sector, score and run state survive a round trip", () => {
+  const s = G.newGame(14);
+  buildGoal(s); G.warpToNextSector(s);
+  s.stock.ore = s.stock.ice = s.stock.crystal = 5000; G.upgradeBase(s, 0);
+  G.orderShipToStar(s, 0, 0);
+  run(s, 30);
+  G.retire(s);
+  const r = G.deserialize(G.serialize(s)).state;
+  assert.strictEqual(G.serialize(r), G.serialize(s));
+  assert.ok(r.over && r.sector === 2 && r.cleared === 1 && r.bases[0].tier === 1);
+});
+
 console.log("stress");
 test("spawnStress makes 30 ships, all busy, and the sim stays finite", () => {
   const s = G.spawnStress(G.newGame(7), 30);
@@ -389,6 +1006,16 @@ test("stepping 30 ships is cheap (well under a frame)", () => {
   for (let i = 0; i < 60 * 30; i++) G.step(s, DT);
   const ms = Date.now() - t0;
   assert.ok(ms < 1000, "30 simulated seconds took " + ms + " ms");
+});
+
+test("stepping 30 ships through storms and showers is cheap too", () => {
+  const s = G.spawnStress(G.newGame(7, 5), 30);
+  assert.ok(s.storms.length >= 4 && G.showersOn(s.sector));
+  const t0 = Date.now();
+  for (let i = 0; i < 60 * 60; i++) G.step(s, DT);
+  const ms = Date.now() - t0;
+  assert.ok(ms < 1500, "60 simulated seconds took " + ms + " ms");
+  for (const sh of s.ships) assert.ok(isFinite(sh.x) && isFinite(sh.y) && sh.cargo <= G.SHIP_TYPES[sh.type].cap + 1e-9);
 });
 
 console.log("\n" + passed + " passed, " + failed + " failed");
