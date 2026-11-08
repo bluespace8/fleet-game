@@ -940,8 +940,12 @@
     if (!top) { $("dlg-body").textContent = ""; showCards(); return; }
     $("win").hidden = true; $("end").hidden = true;
     renderDlg();
-    const first = $("dlg-body").querySelector("button:not([disabled])");   // keep focus off the opener under the overlay
-    if (first) first.focus();
+    // keep focus off the opener under the overlay, and off any player's Play button: name box in Players,
+    // else the Close button, else (fallback) the first enabled button
+    const bodyEl = $("dlg-body");
+    let target = top.view === "players" ? bodyEl.querySelector("input.name-in") : null;
+    if (!target) target = Array.from(bodyEl.querySelectorAll("button:not([disabled])")).find(b => b.textContent === "Close") || bodyEl.querySelector("button:not([disabled])");
+    if (target) target.focus();
   }
   function renderDlg() {
     const top = ui.dlg[ui.dlg.length - 1];
