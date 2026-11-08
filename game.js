@@ -33,9 +33,12 @@
     // difficulty by sector (n = 1 is the original game)
     difficulty: {
       goalFirst: 5, goalPerSector: 1, goalMax: 10,   // bases to build to clear the sector
-      amountPerSector: 0.12, amountMin: 0.4,         // multiplier on material per body: 1 - per*(n-1), floored
+      amountPerSector: 0.12, amountMin: 0.6,         // multiplier on material per body: 1 - per*(n-1), floored
+      // Ore and ice bodies grow in number with the map's area, so a bigger map holds enough to pay for its
+      // own goal. Crystal bodies stay few (rare) but richer: richness tracks goal x cost per crystal body,
+      // relative to sector 1 (see crystalRich).
       crystalFirst: 3, crystalDropEvery: 2, crystalMin: 1,   // rare planets: first - floor(n / dropEvery)
-      costPerSector: 0.15,                           // build and upgrade costs: x (1 + per*(n-1))
+      costPerSector: 0.08,                         // build and upgrade costs: x (1 + per*(n-1))
       spreadPerSector: 0.15,                         // minimum distance of bodies from home grows with the map
     },
     // base upgrades, by tier reached. unload = units per second a ship unloads, dock = extra drop-off range
@@ -112,6 +115,9 @@
   function goalBases(n) { const d = T.difficulty; return Math.min(d.goalMax, d.goalFirst + d.goalPerSector * (n - 1)); }
   function amountMult(n) { const d = T.difficulty; return Math.max(d.amountMin, 1 - d.amountPerSector * (n - 1)); }
   function crystalCount(n) { const d = T.difficulty; return Math.max(d.crystalMin, d.crystalFirst - Math.floor(n / d.crystalDropEvery)); }
+  function areaMult(n) { const k = mapScale(n); return k * k; }
+  function bodyCount(spec, n) { return spec.res === "crystal" ? crystalCount(n) : Math.max(1, Math.round(spec.n * areaMult(n))); }
+  function crystalRich(n) { return (goalBases(n) * costMult(n) / crystalCount(n)) / (goalBases(1) * costMult(1) / crystalCount(1)); }
   function costMult(n) { return 1 + T.difficulty.costPerSector * (n - 1); }
   function stormCount(n) { const S = T.storms; return n < S.firstSector ? 0 : Math.min(S.max, S.base + (n - S.firstSector)); }
   function showersOn(n) { return n >= T.showers.firstSector; }
@@ -163,7 +169,7 @@
   function generateBodies(state, r, n) {
     const spread = 1 + T.difficulty.spreadPerSector * (n - 1), mult = amountMult(n);
     for (const spec of BODY_SPECS) {
-      const count = spec.res === "crystal" ? crystalCount(n) : spec.n;
+      const count = bodyCount(spec, n);
       for (let i = 0; i < count; i++) {
         const rad = spec.r[0] + r() * (spec.r[1] - spec.r[0]);
         const minHome = spec.minHome * spread, maxHome = spec.maxHome ? spec.maxHome * spread : 0;
@@ -171,7 +177,7 @@
         for (let sep = 46; sep >= 6 && !spot; sep -= 20) spot = pickSpot(r, state, rad, minHome, maxHome, sep);
         if (!spot) spot = pickSpot(r, state, rad, 60, 0, 4);   // very unlikely; keep the count
         if (!spot) continue;
-        const amount = Math.round((spec.amt[0] + r() * (spec.amt[1] - spec.amt[0])) * mult);
+        const amount = Math.round((spec.amt[0] + r() * (spec.amt[1] - spec.amt[0])) * mult * (spec.res === "crystal" ? crystalRich(n) : 1));
         state.bodies.push({ id: state.bodies.length, kind: spec.kind, res: spec.res, name: makeName(r, spec.kind),
           x: spot.x, y: spot.y, r: rad, amount, max: amount });
       }
@@ -716,11 +722,11 @@
       state.showerIn = 0;
       state.hz = (mapSeed(state.seed, 1) ^ 0xA5A5A5A5) >>> 0;
       state.score.bases = Math.max(0, raw.bases.length - 1) * T.score.base;
-      if (state.won) state.cleared = 1;
+      if (state.won) { state.cleared = 1; state.score.sectors = T.score.sector; }   // a cleared sector 1 earns its points
     }
     for (let i = 0; i < raw.ships.length; i++) {
       const s = raw.ships[i];
-      if (!s || !SHIP_TYPES[s.type]) return { ok: false, error: "Save has a bad ship." };
+      if (!s || typeof s.type !== "string" || !Object.prototype.hasOwnProperty.call(SHIP_TYPES, s.type)) return { ok: false, error: "Save has a bad ship." };
       const st = intIn(s.st, 0, 5, 0);
       const target = intIn(s.target, -1, 1e9, -1);
       const dest = intIn(s.dest, -1, 1e9, -1);
@@ -890,7 +896,7 @@
     IDLE, TO_BODY, MINING, TO_BASE, UNLOADING, TO_STAR,
     LOOKS, LOOK_KINDS, LOOK_TITLES,
     rng, newGame, canAfford, buildShip, addShip, baseSpotProblem, placeBase, checkWin,
-    clampSector, mapScale, worldSize, mapSeed, goalBases, amountMult, crystalCount, costMult, stormCount, showersOn,
+    clampSector, mapScale, worldSize, mapSeed, goalBases, amountMult, crystalCount, bodyCount, crystalRich, BODY_SPECS, costMult, stormCount, showersOn,
     showerGap, showerHit, parTime, baseCost, shipCost, upgradeCost, upgradeBase, warpToNextSector,
     orderShip, orderShipToStar, recallShip, returnToBase, nearestBase, inStorm, step, isStranded, retire, scoreTotal,
     jobText, spawnStress, serialize, deserialize, addBackup,

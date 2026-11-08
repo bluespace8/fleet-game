@@ -126,6 +126,7 @@
 
   // Keep the last few damaged saves (newest first) so nothing is lost silently.
   function addBackup(from, text) {
+    if (STRESS) return;   // stress mode writes nothing
     let list = [];
     try {
       const raw = localStorage.getItem(BACKUPS_KEY);

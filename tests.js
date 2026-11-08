@@ -489,6 +489,24 @@ test("difficulty rises: more bases, less material, rarer crystal, dearer builds,
   const crystals = s => s.bodies.filter(b => b.res === "crystal").length;
   assert.ok(crystals(G.newGame(5, 5)) < crystals(G.newGame(5, 1)));
 });
+test("every sector's own map holds enough to pay for its goal, with a margin, and the margin tightens", () => {
+  const MARGIN = 1.3, prev = {};
+  for (let n = 1; n <= 10; n++) {
+    const low = { ore: Infinity, ice: Infinity, crystal: Infinity };
+    for (let seed = 1; seed <= 40; seed++) {
+      const s = G.newGame(seed, n), cost = G.baseCost(s), goal = G.goalBases(n);
+      const supply = { ore: 0, ice: 0, crystal: 0 };
+      for (const b of s.bodies) supply[b.res] += b.max;
+      for (const r of G.RES) {
+        const need = goal * cost[r];   // the fleet is carried over from earlier sectors, so only the bases count
+        assert.ok(supply[r] >= need * MARGIN, "sector " + n + " seed " + seed + ": " + supply[r] + " " + r + " for " + need + " needed");
+        low[r] = Math.min(low[r], supply[r] / need);
+      }
+    }
+    if (n > 1) assert.ok(low.ore <= prev.ore + 1e-9, "ore margin does not loosen at sector " + n);
+    Object.assign(prev, low);
+  }
+});
 test("bodies sit further from home in later sectors", () => {
   const avg = n => {
     let t = 0, c = 0;
@@ -957,6 +975,16 @@ test("an old save that had already won stays won and can warp", () => {
   assert.ok(s.won);
   assert.ok(G.warpToNextSector(s).ok);
   assert.strictEqual(s.sector, 2);
+  assert.strictEqual(s.cleared, 1);
+  assert.strictEqual(s.score.sectors, G.TUNING.score.sector, "the cleared sector earns its points");
+});
+test("a save whose ship type is an inherited name is refused", () => {
+  for (const type of ["constructor", "toString", "__proto__", "hasOwnProperty", 5, null]) {
+    const raw = JSON.parse(G.serialize(G.newGame(3)));
+    raw.ships[0].type = type;
+    const r = G.deserialize(JSON.stringify(raw));
+    assert.ok(!r.ok && /bad ship/.test(r.error), String(type));
+  }
 });
 test("a damaged new-format save never throws", () => {
   const good = JSON.parse(G.serialize(G.newGame(3, 3)));
@@ -1016,6 +1044,11 @@ test("stepping 30 ships through storms and showers is cheap too", () => {
   const ms = Date.now() - t0;
   assert.ok(ms < 1500, "60 simulated seconds took " + ms + " ms");
   for (const sh of s.ships) assert.ok(isFinite(sh.x) && isFinite(sh.y) && sh.cargo <= G.SHIP_TYPES[sh.type].cap + 1e-9);
+});
+
+test("main.js writes no damaged-save backup in stress mode", () => {
+  const src = require("fs").readFileSync(__dirname + "/main.js", "utf8");
+  assert.ok(/function addBackup\(from, text\) \{\s*if \(STRESS\) return;/.test(src));
 });
 
 console.log("\n" + passed + " passed, " + failed + " failed");
