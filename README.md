@@ -45,7 +45,7 @@ The mouse always works. These keys add to it.
   stops it); **E** within reach of a base unloads; **E** again while mining or unloading stops. **F** or **Esc** hands
   the ship back, idle, with its cargo still aboard. Turning keyboard mode off hands every ship back.
 - **Repair and warship keys:** **R** repairs the selected ship (it must be at a base); if the ship is fine it repairs the
-  base it is at. **R** works with keyboard mode off. With a warship selected: **X** attacks the nearest alien,
+  base it is at (a ship at a downed base repairs that base first). **R** works with keyboard mode off. With a warship selected: **X** attacks the nearest alien,
   **P** patrols where the ship is now, **G** escorts the nearest miner or hauler. These work in keyboard mode, or
   whenever a warship is selected. Like every game key they do nothing while a dialog or card is open, or while you
   type in a text box. Tab, the number keys and flying by hand skip lost ships.
@@ -94,7 +94,7 @@ Sector 1 is calm. Every warning shows in the top-left with a 10 second countdown
   Turret 6 damage every 0.6 s, range 190, blocks 70 percent of meteor hits. Warship 9 damage every 0.7 s, range 170.
   Shield range 170. Repair costs 0.5 ore per HP of ship (bases also 0.15 ice), scaled by the sector's cost factor.
   Raiders: sector 3 brings 2 with 40 HP and 4 damage per shot; sector 6, 3 with 76 HP and 7 damage; sector 10 and later,
-  5 with 120 HP and 10 damage (capped). An alien kill scores 25 and sometimes drops a star.
+  5 with 120 HP and 10 damage (all capped at sector 10, so later sectors bring the same raid). An alien kill scores 25 and sometimes drops a star.
 - Saves from before this update load with full health, no add-ons and no hazards running. In a theme the new
   units keep the space look; their words follow the theme where the rules provide them.
 - **Score:** points for materials delivered (ore 1, ice 2, crystal 5 each), bases built (100), sectors

@@ -30,7 +30,7 @@
                 blurb: "Fast and large. Carries 60." },
       // A warship carries nothing and mines nothing. It flies orders (patrol, escort, attack) and fires at aliens in range.
       warship: { label: "Warship", speed: 110, cap: 0, rate: 0, cost: { ore: 110, ice: 40, crystal: 0 }, hp: 90, war: true,
-                 range: 170, dmg: 9, cd: 0.7, shotSpeed: 420, follow: 46,
+                 range: 170, dmg: 9, cd: 0.7, shotSpeed: 420, follow: 46, standoff: 0.7,
                  blurb: "Guards, escorts and hunts aliens. Carries nothing." },
     },
     baseCost: { ore: 120, ice: 40, crystal: 15 },
@@ -66,11 +66,11 @@
               raidFirst: 0.25, raidPerSector: 0.05, raidMax: 0.55,          // chance that a roll (aliens unlocked) is a raid
               powerPerSector: 0.15, powerMax: 2 },                          // event strength: 1 + per*(n - firstSector), capped
     // fog (from events.firstSector): ships mine slower inside; the UI hides the map under it
-    fog: { rMin: 130, rMax: 210, rPerSector: 8, rCap: 300, dur: 40, mine: 0.5, max: 2 },
+    fog: { margin: 60, rMin: 130, rMax: 210, rPerSector: 8, rCap: 300, dur: 40, mine: 0.5, max: 2 },
     // solar flare (from events.firstSector): map-wide; ships outside a shield generator's range are stunned
     flare: { durFirst: 10, durPerSector: 1, durMax: 20, linger: 1, max: 1 },
     // meteor showers (from firstSector): appear with a warning, then hurt ships and bases inside (and may knock cargo off ships)
-    showers: { firstSector: 3, radius: 120, radiusPerSector: 4, radiusMax: 170, warn: 10, dur: 14, firstDelay: 20,
+    showers: { margin: 80, gapJitter: 0.4, firstSector: 3, radius: 120, radiusPerSector: 4, radiusMax: 170, warn: 10, dur: 14, firstDelay: 20,
                gapFirst: 40, gapPerSector: 4, gapMin: 16,          // seconds between showers (their own timer)
                hitFirst: 0.5, hitPerSector: 0.05, hitMax: 0.9,      // chance per second for a ship inside
                loss: 0.5, cooldown: 4,                              // share of cargo lost, seconds before the next hit
@@ -80,12 +80,13 @@
     aliens: { firstSector: 3, r: 11, sense: 330, range: 150, edge: 20, cd: 1.6, shotSpeed: 300,
               stay: 90,                                                    // seconds a raider stays; then it flies to the nearest map edge and is gone
               speedFirst: 55, speedPerSector: 3, speedMax: 85,
-              countFirst: 2, countEvery: 2, countMax: 6,                   // count: first + floor((n - firstSector) / every), capped
+              countFirst: 2, countEvery: 2, countMax: 6, capSector: 10,     // count: first + floor((min(n, capSector) - firstSector) / every), capped
+              holdFrac: 0.8, offMap: 50, markR: 40,                                   // hold distance as a share of range; shots vanish this far off the map
               hpFirst: 40, hpPerSector: 12, hpMax: 120,
               dmgFirst: 4, dmgPerSector: 1, dmgMax: 10,
               max: 24, score: 25, starChance: 0.12, maxStars: 12 },
     // shots, damage and health
-    combat: { maxShots: 90, shotLife: 1.2, shipR: 9, fxMax: 16, fxLife: 0.4,
+    combat: { maxShots: 90, shotLife: 1.2, shotReach: 1.25, shipR: 9, fxMax: 16, fxLife: 0.4,
               baseHp: 160, homeHp: 300 },
     // base add-ons, bought per base (costs scale with the sector like other costs)
     addons: {
@@ -202,7 +203,7 @@
   function flareDur(n) { const F = T.flare; return Math.min(F.durMax, F.durFirst + F.durPerSector * Math.max(0, n - T.events.firstSector)); }
   function showerRadius(n) { const S = T.showers; return Math.min(S.radiusMax, S.radius + S.radiusPerSector * Math.max(0, n - S.firstSector)); }
   function showerDmg(n) { const S = T.showers; return Math.min(S.dmgMax, S.dmgFirst + S.dmgPerSector * Math.max(0, n - S.firstSector)); }
-  function alienCount(n) { const A = T.aliens; return Math.min(A.countMax, A.countFirst + Math.floor(Math.max(0, n - A.firstSector) / A.countEvery)); }
+  function alienCount(n) { const A = T.aliens; return Math.min(A.countMax, A.countFirst + Math.floor(Math.max(0, Math.min(n, A.capSector) - A.firstSector) / A.countEvery)); }
   function alienHp(n) { const A = T.aliens; return Math.min(A.hpMax, A.hpFirst + A.hpPerSector * Math.max(0, n - A.firstSector)); }
   function alienDmg(n) { const A = T.aliens; return Math.min(A.dmgMax, A.dmgFirst + A.dmgPerSector * Math.max(0, n - A.firstSector)); }
   function alienSpeed(n) { const A = T.aliens; return Math.min(A.speedMax, A.speedFirst + A.speedPerSector * Math.max(0, n - A.firstSector)); }
@@ -977,10 +978,10 @@
       if (state.showerIn <= 0) {
         if (sh.length + ev.length >= T.events.maxActive || sh.length >= S.max) state.showerIn = T.events.retry;
         else {
-          const m = 80, n = state.sector;
+          const m = S.margin, n = state.sector;
           sh.push({ kind: "shower", x: m + hrand(state) * (w - 2 * m), y: m + hrand(state) * (h - 2 * m), r: showerRadius(n), age: 0,
             warn: S.warn, dur: S.dur, power: showerDmg(n), tick: 0 });
-          state.showerIn = showerGap(n) * (0.8 + 0.4 * hrand(state));
+          state.showerIn = showerGap(n) * (1 - S.gapJitter / 2 + S.gapJitter * hrand(state));
         }
       }
     }
@@ -1014,7 +1015,7 @@
     if ((kind === "fog" && have("fog") >= T.fog.max) || (kind === "raid" && have("raid") >= E.maxRaids)) { state.eventIn = E.retry; return; }
     const power = eventPower(n), e = { kind, x: 0, y: 0, r: 0, age: 0, warn: E.warn, dur: 0, power };
     if (kind === "fog") {
-      const F = T.fog, m = 60;
+      const F = T.fog, m = F.margin;
       e.r = F.rMin + hrand(state) * (fogRadius(n) - F.rMin);
       e.x = m + hrand(state) * (w - 2 * m); e.y = m + hrand(state) * (h - 2 * m);
       e.dur = F.dur;
@@ -1024,7 +1025,7 @@
       const edge = T.aliens.edge, side = Math.floor(hrand(state) * 4), u = hrand(state);
       e.x = side === 0 ? edge : side === 1 ? w - edge : edge + u * (w - 2 * edge);
       e.y = side === 2 ? edge : side === 3 ? h - edge : edge + u * (h - 2 * edge);
-      e.r = 40; e.dur = 0; e.power = alienCount(n);
+      e.r = T.aliens.markR; e.dur = 0; e.power = alienCount(n);
     }
     ev.push(e);
     state.eventIn = eventGap(n) * (1 - E.jitter / 2 + E.jitter * hrand(state));
@@ -1074,7 +1075,7 @@
     if (state.shots.length >= T.combat.maxShots) return false;
     const dx = tx - x, dy = ty - y, d = Math.sqrt(dx * dx + dy * dy);
     if (!(d > 1e-6)) return false;
-    state.shots.push({ x, y, vx: dx / d * speed, vy: dy / d * speed, life: Math.min(T.combat.shotLife, range * 1.25 / speed), dmg, side });
+    state.shots.push({ x, y, vx: dx / d * speed, vy: dy / d * speed, life: Math.min(T.combat.shotLife, range * T.combat.shotReach / speed), dmg, side });
     return true;
   }
 
@@ -1131,7 +1132,7 @@
       a.tgtKind = kind; a.tgt = tgt;
       a.vx = 0; a.vy = 0;
       if (tgt < 0) continue;
-      const d = Math.sqrt(bd), hold = A.range * 0.8 + (kind === "base" ? BASE_R : 0);
+      const d = Math.sqrt(bd), hold = A.range * A.holdFrac + (kind === "base" ? BASE_R : 0);
       if (d > hold) {
         const k = Math.min(sp, d - hold) / d;
         a.vx = (tx - a.x) * k / dt; a.vy = (ty - a.y) * k / dt;
@@ -1192,7 +1193,7 @@
         }
       }
       s.x = nx; s.y = ny; s.life -= dt;
-      if (hit || s.life <= 0 || nx < -50 || ny < -50 || nx > state.w + 50 || ny > state.h + 50) {
+      if (hit || s.life <= 0 || nx < -T.aliens.offMap || ny < -T.aliens.offMap || nx > state.w + T.aliens.offMap || ny > state.h + T.aliens.offMap) {
         const last = shots.pop();
         if (i < shots.length) shots[i] = last;
       }
@@ -1225,7 +1226,7 @@
     } else if (ship.wo === "attack") {
       const a = alienById(state, ship.wt);
       if (!a) { ship.wo = "patrol"; ship.wx = ship.x; ship.wy = ship.y; ship.wt = -1; ship.mv = 0; }
-      else moveNear(ship, a.x, a.y, def.range * 0.7, dt, mult);
+      else moveNear(ship, a.x, a.y, def.range * def.standoff, dt, mult);
     } else ship.mv = 0;
     warFire(state, ship, def);
   }

@@ -1577,10 +1577,20 @@
   }
 
   const alienAng = new Map();   // last facing per alien id, for a raider that is standing still
+  let alienAngPruned = 0;
+  // Drop facings of aliens that are gone (about once a second), so the map cannot grow over a long run.
+  function pruneAlienAng() {
+    if (alienAng.size === 0 || Math.abs(time - alienAngPruned) < 1) return;
+    alienAngPruned = time;
+    const live = new Set();
+    for (const a of game.aliens) live.add(a.id);
+    for (const id of alienAng.keys()) if (!live.has(id)) alienAng.delete(id);
+  }
   function drawAlien(a) {
     let dx = a.vx, dy = a.vy;
     const t = a.tgtKind === "ship" ? game.ships[a.tgt] : a.tgtKind === "base" ? game.bases[a.tgt] : null;
     if (t) { dx = t.x - a.x; dy = t.y - a.y; }
+    pruneAlienAng();
     let ang = alienAng.get(a.id) || 0;
     if (dx * dx + dy * dy > 0.01) { ang = Math.atan2(dy, dx); alienAng.set(a.id, ang); }
     ctx.save();
@@ -1884,8 +1894,17 @@
   }
 
   // The base a ship is docked at (close enough to unload or be repaired, as game.js measures it), else -1.
-  function atBase(ship) {
-    const i = G.nearestBase(game, ship.x, ship.y), b = game.bases[i];
+  // With any true, bases that are down count too (a down base is where R repairs the base itself).
+  function atBase(ship, any) {
+    let i = G.nearestBase(game, ship.x, ship.y);
+    if (any) {
+      let bd = Infinity;
+      for (let j = 0; j < game.bases.length; j++) {
+        const d = Math.hypot(ship.x - game.bases[j].x, ship.y - game.bases[j].y);
+        if (d < bd) { bd = d; i = j; }
+      }
+    }
+    const b = game.bases[i];
     if (!b) return -1;
     return Math.hypot(ship.x - b.x, ship.y - b.y) <= G.BASE_R + 10 + G.TUNING.upgrades[b.tier | 0].dock + G.MANUAL_SLACK ? i : -1;
   }
@@ -2770,7 +2789,7 @@
     if (fix) {   // the Repair button on a row
       const r = G.repairShip(game, Number(fix.dataset.fix), labelArg());
       if (!r.ok) toast(r.reason); else saveNow();
-      boardKey = ""; refresh();
+      refresh();
       return;
     }
     const li = ev.target.closest("[data-ship]");
@@ -2853,9 +2872,10 @@
     const s = needShip();
     if (!s) return;
     let r;
-    if (s.hp < s.maxHp) r = G.repairShip(game, s.id, labelArg());
+    const downAt = atBase(s, true);
+    if (s.hp < s.maxHp && !(downAt >= 0 && game.bases[downAt].down)) r = G.repairShip(game, s.id, labelArg());
     else {
-      const at = atBase(s);
+      const at = downAt;
       if (at < 0) return toast(`${shipName(s)} is not damaged. Fly it to a ${themed() ? LB().base : "base"} to repair the ${themed() ? LB().base : "base"}.`);
       if (!(game.bases[at].hp < game.bases[at].maxHp)) return toast(`${shipName(s)} and this ${themed() ? LB().base : "base"} are not damaged.`);
       r = G.repairBase(game, at, labelArg());

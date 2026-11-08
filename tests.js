@@ -2475,6 +2475,9 @@ test("the gap between events falls with the sector and is floored; strength rise
   assert.strictEqual(G.raidOdds(1), 0); assert.strictEqual(G.raidOdds(2), 0); assert.ok(G.raidOdds(3) > 0);
   assert.ok(G.alienHp(6) > G.alienHp(3) && G.alienDmg(6) > G.alienDmg(3), "tougher each sector");
   assert.ok(G.alienCount(10) > G.alienCount(3));
+  assert.strictEqual(G.alienCount(11), G.alienCount(10), "raiders plateau at sector 10");
+  assert.strictEqual(G.alienCount(50), G.alienCount(10));
+  assert.strictEqual(G.alienCount(10), 5);
 });
 test("events are deterministic from the seed, with the same warnings and effects", () => {
   const a = G.newGame(12, 3), b = G.newGame(12, 3);
