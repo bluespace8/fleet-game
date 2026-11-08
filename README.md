@@ -23,8 +23,8 @@ Plain HTML, Canvas and JavaScript. No installs, no build step. The only network 
    page. Load uses your own save first, then the autosave. If a save is damaged, the notice stays up
    with the "Loaded" message, and a copy of the damaged save is kept (the last 3, newest first, in
    localStorage under `fleet-game-damaged-saves-v2`). Esc cancels a selection or placement. Keys: see Keyboard controls.
-7. Frame-rate test: open `index.html?stress` for 30 ships mining at once. The corner shows fps.
-   `?stress&sector=4` starts in sector 4 so storms (and, from sector 3, meteor showers) are on screen.
+7. Frame-rate test: open `index.html?stress` for 30 ships mining at once plus 15 alien raiders. The corner shows fps.
+   `?stress&sector=4` starts in sector 4 so storms, fog, flares, meteor showers and raids are on screen.
    Stress mode never writes to the save, the players, or the logs.
 
 ## Keyboard controls
@@ -44,6 +44,11 @@ The mouse always works. These keys add to it.
   auto ship, slowed by ion storms, hit by meteors). **E** near a planet mines it at the normal rate (any steering
   stops it); **E** within reach of a base unloads; **E** again while mining or unloading stops. **F** or **Esc** hands
   the ship back, idle, with its cargo still aboard. Turning keyboard mode off hands every ship back.
+- **Repair and warship keys:** **R** repairs the selected ship (it must be at a base); if the ship is fine it repairs the
+  base it is at (a ship at a downed base repairs that base first). **R** works with keyboard mode off. With a warship selected: **X** attacks the nearest alien,
+  **P** patrols where the ship is now, **G** escorts the nearest miner or hauler. These work in keyboard mode, or
+  whenever a warship is selected. Like every game key they do nothing while a dialog or card is open, or while you
+  type in a text box. Tab, the number keys and flying by hand skip lost ships.
 - **Esc** closes things in this order: feedback form, dialog, Hangar, hand-flown ship, base placement or selection.
 - **Base placement:** click the New base button, then the arrow keys move a cursor from the middle of the map
   (Shift moves faster), **Enter** places the base and **Esc** cancels. Moving the mouse takes the ghost back.
@@ -61,12 +66,42 @@ The mouse always works. These keys add to it.
   crystal bodies are fewer (but richer; every map still holds at least 1.3 times what its goal costs), and ships, bases and upgrades cost more.
   Difficulty plateaus after sector 10: from there the goal (10 bases), costs and map are the same every sector, so a run can go on as long as you can. Sector 1 plays as the original game.
 - **Ion storms (from sector 2):** drifting clouds that slow ships passing through.
-- **Meteor showers (from sector 3):** a dashed warning ring for 3 seconds, then streaks. A loaded ship
-  inside can lose half its cargo (with a short grace period after a hit).
+- **Meteor showers (from sector 3):** a dashed warning ring for 10 seconds, then streaks. A ship
+  inside can be hit (with a short grace period after a hit): it takes damage, and a loaded one loses half its cargo.
+  Bases inside are hit too.
+
+## Hazards and defences
+
+Sector 1 is calm. Every warning shows in the top-left with a 10 second countdown, and on the map.
+
+- **Fog (from sector 2):** a grey cloud that hides everything under it (planets, labels, number badges, ships show
+  as a small dot) and halves mining speed inside.
+- **Solar flare (from sector 2):** map-wide. While it runs (a tinted screen and a banner) every ship that is not
+  within range of a **Shield** is stunned: it neither moves nor mines. Stun ends about a second after the flare.
+- **Alien raids (from sector 3):** an arrow and countdown mark the edge point first, then raiders arrive. They go for
+  the nearest loaded ship within their sense range, else the nearest working base, shoot at range, and leave on their own
+  after 90 seconds. They get tougher each sector (see numbers below).
+- **Health:** every ship and base has HP; a bar shows only when it is hurt. A ship at 0 HP is lost for good, with its
+  cargo. A base at 0 HP (not home) goes **down**: greyed out, no drop-off, shield or turret, but it still counts
+  towards the sector goal; repair brings it back. If the **home base** falls the run ends ("Your home base was destroyed.").
+- **Defences (Bases panel, per base):** **Shield** (flares do not stun ships within its range), **Turret** (shoots
+  aliens in range and blocks meteor hits nearby; a blocked hit draws a short tracer). **Repair** restores a damaged
+  base for materials. Ships are repaired from the Mission board button or **R** while at a base.
+- **Warships (Build panel):** carry nothing and mine nothing, fire at aliens in range on their own, and take orders:
+  click an alien to attack, click empty space to patrol there, **Shift+click** another ship to escort it, or click
+  a base to guard it. They can also be flown by hand (F). Mining orders are refused with a message.
+- **Combat numbers** (all in `TUNING`): ships have 30 (miner), 45 (hauler) or 90 (warship) HP; bases 160, home 300.
+  Turret 6 damage every 0.6 s, range 190, blocks 70 percent of meteor hits. Warship 9 damage every 0.7 s, range 170.
+  Shield range 170. Repair costs 0.5 ore per HP of ship (bases also 0.15 ice), scaled by the sector's cost factor.
+  Raiders: sector 3 brings 2 with 40 HP and 4 damage per shot; sector 6, 3 with 76 HP and 7 damage; sector 10 and later,
+  5 with 120 HP and 10 damage (all capped at sector 10, so later sectors bring the same raid). An alien kill scores 25 and sometimes drops a star.
+- Saves from before this update load with full health, no add-ons and no hazards running. In a theme the new
+  units keep the space look; their words follow the theme where the rules provide them.
 - **Score:** points for materials delivered (ore 1, ice 2, crystal 5 each), bases built (100), sectors
   cleared (400 x sector number) and a time bonus for clearing a sector under par. Shown live, with your best.
-- **A run ends** when you retire, or when you are stranded: nothing left to mine anywhere, nothing in any
-  hold, and not enough materials for another base. The run-end screen shows the score breakdown and the
+- **A run ends** when you retire, when your home base is destroyed, or when you are stranded: nothing left to mine anywhere,
+  nothing in any hold, and not enough materials for another base (or every miner and hauler is lost and you cannot afford
+  another). Alien kills add to the score. The run-end screen shows the score breakdown and the
   best score so far.
 
 ## Stars and the Hangar

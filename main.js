@@ -47,7 +47,9 @@
   let time = 0, acc = 0, lastT = 0, lastBoard = 0, lastSave = 0, boardKey = "", buildHtml = "", basesHtml = "", toastTimer = 0, topH = 0;
   const fps = { frames: 0, acc: 0, worst: 0 };
 
-  const shipColor = ship => looks.ship[ship.type];
+  const WAR_COLOR = "#cfd9ff";   // warships keep one silver hull in every look; the hangar colours are for miners and haulers
+  const shipColor = ship => looks.ship[ship.type] || WAR_COLOR;
+  const isWar = ship => !!(ship && G.SHIP_TYPES[ship.type] && G.SHIP_TYPES[ship.type].war);
 
   // ---------------------------------------------------------------- theme wording
   // With the Space theme (or an old game.js without labelsFor) every word below is the original wording.
@@ -169,7 +171,7 @@
 
   function freshGame() {
     const g = G.newGame((Math.random() * 4294967296) >>> 0, STRESS ? STRESS_SECTOR : 1);
-    if (STRESS) G.spawnStress(g, 30);
+    if (STRESS) G.spawnStress(g, 30, 15);   // 30 ships and 15 aliens
     return g;
   }
 
@@ -177,7 +179,7 @@
   function resetView() {
     clearDigits();
     ui.selected = null; ui.placing = false; ui.cursor = null; acc = 0;
-    trails.clear(); shapes.clear();
+    trails.clear(); shapes.clear(); alienAng.clear();
     boardKey = ""; buildHtml = ""; basesHtml = "";
     resize();
   }
@@ -210,16 +212,15 @@
     toast(LB().sector + " " + game.sector + ": further out, harder" + hazardNote(game.sector), true);
   }
 
+  // What is new in a sector, for the warp toast: storms, then fog and flares, then showers and the first raiders.
   function hazardNote(n) {
-    const L = LB();
-    if (themed()) {
-      if (n === G.TUNING.storms.firstSector) return ". " + L.storm + " slows " + lc(L.ships) + ".";
-      if (n === G.TUNING.showers.firstSector) return ". " + L.shower + " can knock cargo off.";
-      return ".";
-    }
-    if (n === G.TUNING.storms.firstSector) return ". Ion storms slow ships.";
-    if (n === G.TUNING.showers.firstSector) return ". Meteor showers can knock cargo off.";
-    return ".";
+    const T = G.TUNING, L = LB(), th = themed();
+    const notes = [];
+    if (n === T.storms.firstSector) notes.push(th ? L.storm + " slows " + lc(L.ships) + "." : "Ion storms slow ships.");
+    if (n === T.events.firstSector) notes.push("Fog slows mining, and solar flares stun ships unless a Shield covers them.");
+    if (n === T.showers.firstSector) notes.push(th ? L.shower + " can knock cargo off." : "Meteor showers can hurt ships and knock cargo off.");
+    if (n === T.aliens.firstSector) notes.push("Alien raiders can arrive from now on: build a Turret or a Warship before they do.");
+    return notes.length ? ". " + notes.join(" ") : ".";
   }
 
   function saveNow(key) {
@@ -829,6 +830,33 @@
     });
   }
 
+  // Warship and alien raider: code-drawn, one cached sprite each (nose along +x), the same in every theme.
+  function warSprite() {
+    return cached("war|" + WAR_COLOR, 40, 40, 1, g => {
+      g.beginPath();
+      g.moveTo(14, 0); g.lineTo(-1, -5); g.lineTo(-10, -11); g.lineTo(-6, -2.6); g.lineTo(-9, 0);
+      g.lineTo(-6, 2.6); g.lineTo(-10, 11); g.lineTo(-1, 5); g.closePath();
+      g.fillStyle = WAR_COLOR; g.fill();
+      g.lineJoin = "round"; g.strokeStyle = "rgba(8,10,28,0.9)"; g.lineWidth = 2.6; g.stroke();
+      g.strokeStyle = "rgba(255,255,255,0.8)"; g.lineWidth = 0.9; g.stroke();
+      g.fillStyle = "#ffb36b";   // twin guns
+      g.fillRect(2, -7.4, 10, 1.8); g.fillRect(2, 5.6, 10, 1.8);
+      g.fillStyle = "#3a4a9a"; g.fillRect(-4, -1.2, 9, 2.4);   // spine
+      circ(g, 4, 0, 2.2, "#ff6a4a");
+    });
+  }
+  function alienSprite() {
+    return cached("alien", 40, 40, 1, g => {
+      g.fillStyle = "#b02a6a";
+      for (const s of [-1, 1]) { g.beginPath(); g.moveTo(-2, s * 5); g.lineTo(-13, s * 12); g.lineTo(-8, s * 3); g.closePath(); g.fill(); }
+      ell(g, 0, 0, 12, 7.5, 0, "#4a1038");
+      g.lineWidth = 1.6; g.strokeStyle = "#ff5fa8"; g.beginPath(); g.ellipse(0, 0, 12, 7.5, 0, 0, Math.PI * 2); g.stroke();
+      ell(g, 3, 0, 5.5, 4, 0, "#ffc4e2");
+      circ(g, 4, 0, 2.3, "#ff3030");
+      circ(g, -6, 0, 1.6, "#ff9ad0");
+    });
+  }
+
   // Base sprites. Hamster: a static stand (and a little house at home) plus a wheel that turns. Dwarven: one
   // stone forge / great hall with its hearth glow. Tiers differ by shape, not just brightness.
   const BASE_BOX = 130;
@@ -1159,7 +1187,7 @@
     for (const i of on) baseSpin[i] = ((baseSpin[i] || 0) + dt * 1.4) % (Math.PI * 2);
   }
 
-  function drawBase(b, i) {
+  function drawBaseBody(b, i) {
     if (themed()) return drawBaseThemed(b, i);
     const color = i === 0 ? looks.base.home : looks.base.main;
     const tier = b.tier | 0;
@@ -1218,6 +1246,49 @@
     ctx.font = "700 11px system-ui, sans-serif";
     ctx.fillStyle = "rgba(235,232,255,0.95)";
     ctx.fillText((i === 0 ? "HOME" : "BASE " + (i + 1)) + (tier ? " " + TIER_NAME[tier] : ""), b.x, b.y + sr * (tier >= 2 ? 2.3 : 1.5) + 16);
+  }
+
+  // A small health bar centred at (x, y): only called for damaged things.
+  function drawBar(x, y, w, frac) {
+    frac = Math.max(0, Math.min(1, frac));
+    ctx.fillStyle = "rgba(8,10,28,0.8)"; ctx.fillRect(x - w / 2 - 1, y - 1, w + 2, 5);
+    ctx.fillStyle = frac > 0.5 ? "#5fd08a" : frac > 0.25 ? "#f0c040" : "#ee5b5b";
+    ctx.fillRect(x - w / 2, y, w * frac, 3);
+  }
+
+  // A base with its add-ons: a down base is greyed with a label; a shield shows its range as a faint ring;
+  // a turret is a small gun on the rim (aimed at the nearest alien in range); health bar only when hurt.
+  function drawBase(b, i) {
+    const T = G.TUNING, sr = G.BASE_R;
+    ctx.globalAlpha = b.down ? 0.3 : 1;
+    drawBaseBody(b, i);
+    ctx.globalAlpha = 1;
+    if (b.shield && !b.down) {
+      const R = T.addons.shield.range;
+      ctx.fillStyle = "rgba(90,200,255,0.045)";
+      ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "rgba(120,215,255,0.32)"; ctx.lineWidth = 1.5; ctx.setLineDash([10, 8]);
+      ctx.beginPath(); ctx.arc(b.x, b.y, R, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    if (b.turret && !b.down) {
+      const tx = b.x + sr * 1.15, ty = b.y - sr * 1.15, a = game.aliens.length ? G.nearestAlien(game, tx, ty) : -1;
+      let ax = 0.7071, ay = -0.7071;   // resting aim: up and right
+      if (a >= 0) {
+        const al = game.aliens.find(o => o.id === a), dx = al.x - tx, dy = al.y - ty, d = Math.hypot(dx, dy);
+        if (d > 1e-6 && d <= T.addons.turret.range) { ax = dx / d; ay = dy / d; }
+      }
+      circ(ctx, tx, ty, 6.5, "#1a1d44");
+      ctx.strokeStyle = "#ffb36b"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(tx, ty, 6.5, 0, Math.PI * 2); ctx.stroke();
+      ctx.lineWidth = 3; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(tx + ax * 13, ty + ay * 13); ctx.stroke();
+      ctx.lineCap = "butt";
+    }
+    if (b.down) {
+      ctx.textAlign = "center"; ctx.font = "700 12px system-ui, sans-serif"; ctx.fillStyle = "#ff8a8a";
+      labelText("DOWN - repair it", b.x, b.y + 5);
+    }
+    if (b.hp < b.maxHp) drawBar(b.x, b.y - sr * 1.7 - 8, 54, b.hp / b.maxHp);
   }
 
   // A five-point collectible star with a soft pulse.
@@ -1284,7 +1355,7 @@
 
   // Meteor showers: a dashed warning ring first, then streaks falling through the circle.
   function drawShower(s) {
-    const W = G.TUNING.showers, live = s.age >= W.warn;
+    const W = G.TUNING.showers, warn = typeof s.warn === "number" ? s.warn : W.warn, live = s.age >= warn;
     if (!live) {
       const k = 0.5 + 0.5 * Math.sin(time * 8);
       ctx.save();
@@ -1292,7 +1363,7 @@
       ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
       ctx.textAlign = "center"; ctx.font = "700 11px system-ui, sans-serif"; ctx.fillStyle = "rgba(255,190,120,0.95)";
-      ctx.fillText(themed() ? LB().shower.toUpperCase() + " IN " + Math.ceil(W.warn - s.age) : "METEORS IN " + Math.ceil(W.warn - s.age), s.x, s.y + 4);
+      ctx.fillText(themed() ? LB().shower.toUpperCase() + " IN " + Math.ceil(warn - s.age) : "METEORS IN " + Math.ceil(warn - s.age), s.x, s.y + 4);
       return;
     }
     if (themed()) {   // paw swipes / falling rocks inside the same circle
@@ -1340,7 +1411,7 @@
     for (const s of game.ships) {
       let tr = trails.get(s.id);
       if (!tr) trails.set(s.id, tr = []);
-      const moving = s.st === G.TO_BODY || s.st === G.TO_BASE || s.st === G.TO_STAR || (s.st === G.MANUAL && s.mv === 1);
+      const moving = !s.dead && (s.st === G.TO_BODY || s.st === G.TO_BASE || s.st === G.TO_STAR || (s.st === G.MANUAL && s.mv === 1) || (isWar(s) && s.mv === 1));
       if (moving) tr.push([s.x, s.y]);
       if (tr.length > TRAIL_POINTS || (!moving && tr.length)) tr.shift();
     }
@@ -1398,12 +1469,23 @@
     const moving = ship.st === G.TO_BODY || ship.st === G.TO_BASE || ship.st === G.TO_STAR || (ship.st === G.MANUAL && ship.mv === 1);
     const mining = ship.st === G.MINING || (ship.st === G.MANUAL && ship.mm === 1);
     const k = ship.type === "hauler" ? 1.3 : 1;
-    const spec = G.SHIP_TYPES[ship.type];
+    const spec = G.SHIP_TYPES[ship.type], war = !!spec.war;
     ctx.save();
     ctx.translate(ship.x, ship.y);
     ctx.rotate(ship.ang);
     ctx.scale(k, k);
-    if (themed()) {   // one cached sprite; idle ships are dimmed like the space hull
+    if (war) {   // warship: one cached sprite, with a plain two-tone flame while it moves
+      if (ship.mv === 1) {
+        const len = 9 + (reduceMotion ? 0 : Math.random() * 4);
+        ctx.fillStyle = "rgba(255,170,90,0.9)";
+        ctx.beginPath(); ctx.moveTo(-9, -3); ctx.lineTo(-9 - len, 0); ctx.lineTo(-9, 3); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = "rgba(255,255,255,0.9)";
+        ctx.beginPath(); ctx.moveTo(-9, -1.4); ctx.lineTo(-9 - len * 0.5, 0); ctx.lineTo(-9, 1.4); ctx.closePath(); ctx.fill();
+      }
+      ctx.globalAlpha = ship.stun > 0 ? 0.6 : 1;
+      ctx.drawImage(warSprite(), -20, -20, 40, 40);
+      ctx.globalAlpha = 1;
+    } else if (themed()) {   // one cached sprite; idle ships are dimmed like the space hull
       ctx.globalAlpha = busy ? 1 : 0.85;
       ctx.drawImage(shipSprite(ship), -20, -20, 40, 40);
       ctx.globalAlpha = 1;
@@ -1428,7 +1510,7 @@
     ctx.beginPath(); ctx.arc(3, 0, 1.6, 0, Math.PI * 2); ctx.fill();
     }
     ctx.restore();
-    if (busy) {   // status ring: cargo load, in the colour of what's aboard
+    if (busy && !war) {   // status ring: cargo load, in the colour of what's aboard
       const rr = 15 * k;
       if (themed()) { ctx.lineWidth = 5; ctx.strokeStyle = "rgba(18,9,3,0.6)"; ctx.beginPath(); ctx.arc(ship.x, ship.y, rr, 0, Math.PI * 2); ctx.stroke(); }
       ctx.lineWidth = 2;
@@ -1456,7 +1538,18 @@
       ctx.strokeStyle = "rgba(255,216,74,0.85)"; ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.arc(ship.x, ship.y, 27, 0, Math.PI * 2); ctx.stroke();
     }
+    if (ship.stun > 0) {   // held by a solar flare
+      ctx.strokeStyle = "rgba(255,214,90," + (reduceMotion ? 0.8 : 0.5 + 0.4 * Math.sin(time * 10 + ship.id)) + ")"; ctx.lineWidth = 2; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.arc(ship.x, ship.y, 18 * k, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    if (ship.rep > 0) {   // being repaired
+      ctx.strokeStyle = "rgba(110,235,150,0.85)"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(ship.x, ship.y, 20 * k, 0, Math.PI * 2); ctx.stroke();
+    }
+    if (ship.hp < ship.maxHp) drawBar(ship.x, ship.y + 17 * k, 24, ship.hp / ship.maxHp);
     if (ship.id === ui.selected) {
+      if (war) drawOrders(ship);
       ctx.strokeStyle = "#8fd8ff"; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]);
       ctx.beginPath(); ctx.arc(ship.x, ship.y, 22, 0, Math.PI * 2); ctx.stroke();
       ctx.setLineDash([]);
@@ -1465,6 +1558,187 @@
       ctx.fillStyle = "rgba(240,244,255,0.95)";
       labelText(shipName(ship).toUpperCase(), ship.x + 16, ship.y - 12);
     }
+  }
+
+  // ---- hazards and combat. All cheap: cached sprites, a few path ops, and shots/tracers batched into one stroke each.
+
+  // The selected warship's order: a dashed line to its patrol point, the ship it escorts or the alien it hunts.
+  function drawOrders(ship) {
+    let tx = 0, ty = 0, col = "rgba(143,216,255,0.7)", ring = 0;
+    if (ship.wo === "patrol") { tx = ship.wx; ty = ship.wy; ring = 11; }
+    else if (ship.wo === "escort") { const t = game.ships[ship.wt]; if (!t || t.dead) return; tx = t.x; ty = t.y; ring = 24; }
+    else if (ship.wo === "attack") { const a = game.aliens.find(o => o.id === ship.wt); if (!a) return; tx = a.x; ty = a.y; ring = 18; col = "rgba(255,120,120,0.8)"; }
+    else return;
+    ctx.strokeStyle = col; ctx.lineWidth = 1.2; ctx.setLineDash([4, 5]);
+    ctx.beginPath(); ctx.moveTo(ship.x, ship.y); ctx.lineTo(tx, ty); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(tx, ty, ring, 0, Math.PI * 2); ctx.stroke();
+    if (ship.wo === "patrol") { ctx.beginPath(); ctx.arc(tx, ty, 3, 0, Math.PI * 2); ctx.stroke(); }
+  }
+
+  const alienAng = new Map();   // last facing per alien id, for a raider that is standing still
+  let alienAngPruned = 0;
+  // Drop facings of aliens that are gone (about once a second), so the map cannot grow over a long run.
+  function pruneAlienAng() {
+    if (alienAng.size === 0 || Math.abs(time - alienAngPruned) < 1) return;
+    alienAngPruned = time;
+    const live = new Set();
+    for (const a of game.aliens) live.add(a.id);
+    for (const id of alienAng.keys()) if (!live.has(id)) alienAng.delete(id);
+  }
+  function drawAlien(a) {
+    let dx = a.vx, dy = a.vy;
+    const t = a.tgtKind === "ship" ? game.ships[a.tgt] : a.tgtKind === "base" ? game.bases[a.tgt] : null;
+    if (t) { dx = t.x - a.x; dy = t.y - a.y; }
+    pruneAlienAng();
+    let ang = alienAng.get(a.id) || 0;
+    if (dx * dx + dy * dy > 0.01) { ang = Math.atan2(dy, dx); alienAng.set(a.id, ang); }
+    ctx.save();
+    ctx.translate(a.x, a.y); ctx.rotate(ang);
+    if (!t) ctx.globalAlpha = 0.6;   // leaving the map
+    ctx.drawImage(alienSprite(), -20, -20, 40, 40);
+    ctx.restore();
+    if (a.hp < a.maxHp) drawBar(a.x, a.y - 22, 26, a.hp / a.maxHp);
+    if (ui.selected != null && isWar(game.ships[ui.selected]) && game.ships[ui.selected].wo === "attack" && game.ships[ui.selected].wt === a.id) {
+      ctx.strokeStyle = "rgba(255,120,120,0.9)"; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(a.x, a.y, 17, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+
+  function drawShots() {
+    const sh = game.shots;
+    if (!sh.length) return;
+    ctx.lineCap = "round"; ctx.lineWidth = 2.4;
+    for (let pass = 0; pass < 2; pass++) {   // one stroke for ours, one for theirs
+      const side = pass ? "them" : "us";
+      ctx.strokeStyle = pass ? "#ff7a6a" : "#9fe8ff";
+      ctx.beginPath();
+      for (let i = 0; i < sh.length; i++) {
+        const s = sh[i];
+        if (s.side !== side) continue;
+        ctx.moveTo(s.x, s.y); ctx.lineTo(s.x - s.vx * 0.035, s.y - s.vy * 0.035);
+      }
+      ctx.stroke();
+    }
+    ctx.lineCap = "butt";
+  }
+
+  const DIRS8 = [[1, 0], [0.7071, 0.7071], [0, 1], [-0.7071, 0.7071], [-1, 0], [-0.7071, -0.7071], [0, -1], [0.7071, -0.7071]];
+  function drawFx() {
+    const list = game.fx;
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i], t = Math.min(1, f.age / (f.life || 0.4)), a = 1 - t;
+      if (f.kind === "block") {   // a turret stops a meteor: a tracer, then a spark
+        ctx.strokeStyle = "rgba(140,235,255," + a + ")"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(f.x, f.y); ctx.lineTo(f.x2, f.y2); ctx.stroke();
+        ctx.beginPath(); ctx.arc(f.x2, f.y2, 4 + 12 * t, 0, Math.PI * 2); ctx.stroke();
+      } else if (f.kind === "kill") {   // an alien died
+        ctx.strokeStyle = "rgba(255,170,225," + a + ")"; ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (const d of DIRS8) { ctx.moveTo(f.x + d[0] * (5 + 8 * t), f.y + d[1] * (5 + 8 * t)); ctx.lineTo(f.x + d[0] * (10 + 24 * t), f.y + d[1] * (10 + 24 * t)); }
+        ctx.stroke();
+        ctx.beginPath(); ctx.arc(f.x, f.y, 4 + 22 * t, 0, Math.PI * 2); ctx.stroke();
+      } else {   // boom: a ship or base was lost
+        ctx.fillStyle = "rgba(255,160,64," + 0.55 * a + ")";
+        ctx.beginPath(); ctx.arc(f.x, f.y, 6 + 34 * t, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = "rgba(255,240,190," + a + ")"; ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.arc(f.x, f.y, 4 + 44 * t, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+  }
+
+  // A fog bank: a soft cloud painted once per radius, opaque enough in the middle to hide what is under it.
+  function fogSprite(r) {
+    const box = r * 2.5;
+    return cached("fog|" + r, box, box, view.sc, g => {
+      const grad = g.createRadialGradient(0, 0, r * 0.2, 0, 0, r * 1.05);
+      grad.addColorStop(0, "rgba(116,128,160,0.95)"); grad.addColorStop(0.6, "rgba(104,118,152,0.9)"); grad.addColorStop(1, "rgba(96,110,146,0)");
+      g.fillStyle = grad; g.beginPath(); g.arc(0, 0, r * 1.05, 0, Math.PI * 2); g.fill();
+      const rnd = G.rng(r * 31 + 7);
+      for (let i = 0; i < 9; i++) {   // lumpy puffs, so it reads as cloud and not as a disc
+        const a = rnd() * Math.PI * 2, d = r * (0.45 + rnd() * 0.45), pr = r * (0.22 + rnd() * 0.18);
+        const pg = g.createRadialGradient(Math.cos(a) * d, Math.sin(a) * d, 0, Math.cos(a) * d, Math.sin(a) * d, pr);
+        pg.addColorStop(0, "rgba(150,164,198,0.5)"); pg.addColorStop(1, "rgba(150,164,198,0)");
+        g.fillStyle = pg; g.beginPath(); g.arc(Math.cos(a) * d, Math.sin(a) * d, pr, 0, Math.PI * 2); g.fill();
+      }
+    });
+  }
+
+  // Live fog banks cover everything under them; a ship inside shows as a small dot so you can still find it.
+  function drawFog() {
+    const ev = game.events, W = G.TUNING.events.warn;
+    let any = false;
+    for (let i = 0; i < ev.length; i++) {
+      const e = ev[i];
+      if (e.kind !== "fog") continue;
+      const warn = typeof e.warn === "number" ? e.warn : W;
+      if (e.age < warn) continue;
+      any = true;
+      const left = (typeof e.dur === "number" ? e.dur : 40) - (e.age - warn);
+      const r = Math.max(20, Math.round(e.r / 10) * 10), half = r * 1.25;
+      ctx.globalAlpha = Math.max(0, Math.min(1, (e.age - warn) / 1.5, left / 1.5));
+      ctx.drawImage(fogSprite(r), e.x - half, e.y - half, half * 2, half * 2);
+      ctx.globalAlpha = 1;
+      ctx.textAlign = "center"; ctx.font = "700 11px system-ui, sans-serif"; ctx.fillStyle = "rgba(230,238,255,0.8)";
+      ctx.fillText("FOG: mining slowed", e.x, e.y + 4);
+    }
+    if (!any) return;
+    for (const s of game.ships) {
+      if (s.dead || !G.fogAt(game, s.x, s.y)) continue;
+      circ(ctx, s.x, s.y, 3, "rgba(220,230,255,0.7)");
+      if (s.id === ui.selected) {
+        ctx.strokeStyle = "#8fd8ff"; ctx.lineWidth = 1.5; ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.arc(s.x, s.y, 12, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+  }
+
+  // Map markers for events still in their warning phase (fog ring, raid arrow at the edge). Showers draw their own ring;
+  // a flare is map-wide, so it only gets the banner.
+  function drawWarnings() {
+    if (!game.events.length) return;
+    const list = G.eventWarnings(game), cx = game.w / 2, cy = game.h / 2;
+    for (let i = 0; i < list.length; i++) {
+      const w = list[i];
+      if (w.kind === "fog") {
+        ctx.strokeStyle = "rgba(180,195,230," + (reduceMotion ? 0.7 : 0.45 + 0.3 * Math.sin(time * 6)) + ")"; ctx.lineWidth = 2; ctx.setLineDash([8, 6]);
+        ctx.beginPath(); ctx.arc(w.x, w.y, w.r, 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.textAlign = "center"; ctx.font = "700 11px system-ui, sans-serif"; ctx.fillStyle = "rgba(205,215,240,0.95)";
+        ctx.fillText("FOG IN " + w.secs, w.x, w.y + 4);
+      } else if (w.kind === "raid") {
+        const dx = cx - w.x, dy = cy - w.y, d = Math.hypot(dx, dy) || 1, ux = dx / d, uy = dy / d, px = -uy, py = ux;
+        const pulse = reduceMotion ? 0.8 : 0.55 + 0.4 * Math.sin(time * 8);
+        ctx.strokeStyle = "rgba(255,90,90," + pulse + ")"; ctx.fillStyle = "rgba(255,90,90," + pulse * 0.5 + ")"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(w.x, w.y, 16, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(w.x + ux * 50, w.y + uy * 50);
+        ctx.lineTo(w.x + ux * 26 + px * 12, w.y + uy * 26 + py * 12);
+        ctx.lineTo(w.x + ux * 26 - px * 12, w.y + uy * 26 - py * 12);
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.textAlign = "center"; ctx.font = "700 11px system-ui, sans-serif"; ctx.fillStyle = "rgba(255,170,170,0.95)";
+        ctx.fillText("RAID IN " + w.secs, w.x + ux * 72, w.y + uy * 72 + 4);
+      }
+    }
+  }
+
+  // Seconds a flare still has to run (0 when none is live), and the screen tint for it.
+  function flareLeft() {
+    const ev = game.events, W = G.TUNING.events.warn;
+    let left = 0;
+    for (let i = 0; i < ev.length; i++) {
+      const e = ev[i];
+      if (e.kind !== "flare") continue;
+      const warn = typeof e.warn === "number" ? e.warn : W;
+      if (e.age >= warn) left = Math.max(left, (typeof e.dur === "number" ? e.dur : 10) - (e.age - warn));
+    }
+    return left;
+  }
+  function drawFlareTint() {
+    if (!game.events.length || !(flareLeft() > 0)) return;
+    ctx.fillStyle = "rgba(255,206,90," + (reduceMotion ? 0.12 : 0.10 + 0.06 * Math.sin(time * 5)) + ")";
+    ctx.fillRect(0, 0, view.W, view.H);
   }
 
   function drawGhost() {
@@ -1489,12 +1763,18 @@
     for (const b of game.bodies) drawBody(b);
     for (const s of game.stars) if (!s.taken) drawStar(s);
     game.bases.forEach(drawBase);
-    for (const s of game.ships) drawTrail(s, shipColor(s));
-    for (const s of game.ships) if (s.st === G.MINING || (s.st === G.MANUAL && s.mm === 1)) drawBeam(s);
-    for (const s of game.ships) drawShip(s);
+    for (const s of game.ships) if (!s.dead) drawTrail(s, shipColor(s));
+    for (const s of game.ships) if (!s.dead && (s.st === G.MINING || (s.st === G.MANUAL && s.mm === 1))) drawBeam(s);
+    for (const s of game.ships) if (!s.dead) drawShip(s);
+    game.aliens.forEach(drawAlien);
+    drawShots();
+    drawFog();
     game.showers.forEach(drawShower);
+    drawWarnings();
+    drawFx();
     drawGhost();
     ctx.restore();
+    drawFlareTint();
   }
 
   // ---------------------------------------------------------------- panels
@@ -1521,6 +1801,7 @@
     const L = LB();
     const items = [["miner", L.ship.miner, G.SHIP_TYPES.miner.blurb, G.shipCost(game, "miner")],
       ["hauler", L.ship.hauler, G.SHIP_TYPES.hauler.blurb, G.shipCost(game, "hauler")],
+      ["warship", G.TUNING.ships.warship.label, G.SHIP_TYPES.warship.blurb, G.shipCost(game, "warship")],
       ["base", L.newBase, themed() ? "Click an empty spot to place it" : "Click empty space to place it", G.baseCost(game)]];
     const html = items.map(([key, label, note, cost]) => {
       const ok = !game.over && G.canAfford(game, cost);
@@ -1536,12 +1817,25 @@
       const label = baseName(i) + (tier ? " " + TIER_NAME[tier] : "");
       const next = G.TUNING.upgrades[tier + 1];
       const btn = cost
-        ? `<button type="button" data-up="${i}"${!game.over && G.canAfford(game, cost) ? "" : " disabled"} title="Unloads faster and takes ${shipsWord()} from further away">Upgrade<small>${costText(cost)}</small></button>`
+        ? `<button type="button" data-act="up:${i}"${!game.over && !b.down && G.canAfford(game, cost) ? "" : " disabled"} title="Unloads faster and takes ${shipsWord()} from further away">Upgrade<small>${costText(cost)}</small></button>`
         : `<small>Fully upgraded</small>`;
-      const note = `unloads ${G.TUNING.upgrades[tier].unload}/s` + (next ? `, next ${next.unload}/s` : "");
-      return `<div class="base-row"><span class="lbl"><b>${label}</b><small>${note}</small></span>${btn}</div>`;
+      let note = `unloads ${G.TUNING.upgrades[tier].unload}/s` + (next ? `, next ${next.unload}/s` : "");
+      if (b.down) note = "DOWN: out of action until repaired";
+      else if (b.hp < b.maxHp) note = `HP ${Math.ceil(b.hp)}/${b.maxHp}, ` + note;
+      // add-ons and repair: a button while it can be bought, plain text once built
+      const extra = ["shield", "turret"].map(kind => {
+        const def = G.TUNING.addons[kind];
+        if (b[kind]) return `<small class="done">${def.label} built</small>`;
+        const c = G.addonCost(game, kind);
+        return `<button type="button" data-act="add:${i}:${kind}"${!game.over && !b.down && G.canAfford(game, c) ? "" : " disabled"} title="${def.blurb}">${def.label}<small>${costText(c)}</small></button>`;
+      });
+      if (b.hp < b.maxHp) {
+        const c = G.repairCost(game, "base", i);
+        extra.push(`<button type="button" class="fix" data-act="fix:${i}"${!game.over && G.canAfford(game, c) ? "" : " disabled"} title="Restore full health${b.down ? " and bring the base back" : ""}">Repair<small>${costText(c) || "free"}</small></button>`);
+      }
+      return `<div class="base-row"><span class="lbl"><b>${label}</b><small>${note}</small></span>${btn}</div><div class="base-extra">${extra.join("")}</div>`;
     }).join("");
-    if (html !== basesHtml) { basesHtml = html; setHtml($("bases"), html, "data-up"); }
+    if (html !== basesHtml) { basesHtml = html; setHtml($("bases"), html, "data-act"); }
   }
 
   // Rows are built once per ship set. Every refresh only updates text, widths and classes in place,
@@ -1561,32 +1855,73 @@
         const txt = document.createElement("span"); txt.className = "txt";
         const name = document.createElement("span"); name.className = "name";
         const job = document.createElement("span"); job.className = "job";
+        const hp = document.createElement("small"); hp.className = "hp";
+        const fix = document.createElement("button"); fix.type = "button"; fix.className = "fix"; fix.hidden = true;
+        fix.dataset.fix = s.id;
         const bar = document.createElement("div"); bar.className = "bar";
         const fill = document.createElement("i");
         bar.appendChild(fill);
-        txt.append(name, document.createElement("br"), job, bar);
-        li.append(dot, txt);
+        txt.append(name, hp, document.createElement("br"), job, bar);
+        li.append(dot, txt, fix);
         list.appendChild(li);
-        return { li, dot, name, job, fill, last: "" };
+        return { li, dot, name, hp, job, fill, fix, last: "" };
       });
     }
+    let live = 0, busy = 0;
     for (let i = 0; i < game.ships.length; i++) {
       const s = game.ships[i], row = boardRows[i];
       const pct = s.cargo > 0 ? Math.round((s.cargo / G.SHIP_TYPES[s.type].cap) * 100) : 0;
       const job = G.jobText(game, s, labelArg()), nm = shipName(s);
-      const sig = nm + "|" + s.type + "|" + s.st + "|" + s.res + "|" + pct + "|" + job + "|" + (s.id === ui.selected) + "|" + looks.ship.id;
+      const hurt = !s.dead && s.hp < s.maxHp, at = hurt && !game.over ? atBase(s) : -1;
+      const cost = at >= 0 ? G.repairCost(game, "ship", s.id) : null, fixOk = cost && G.canAfford(game, cost);
+      if (!s.dead) { live++; if (s.st !== G.IDLE || s.wo) busy++; }
+      const sig = nm + "|" + s.type + "|" + s.st + "|" + s.res + "|" + pct + "|" + job + "|" + (s.id === ui.selected) + "|" + looks.ship.id +
+        "|" + s.dead + "|" + Math.ceil(s.hp) + "|" + at + "|" + (cost ? costText(cost) : "") + "|" + fixOk;
       if (sig === row.last) continue;
       row.last = sig;
-      row.li.className = s.id === ui.selected ? "sel" : "";
+      row.li.className = (s.id === ui.selected ? "sel" : "") + (s.dead ? " dead" : "");
       row.dot.style.background = shipColor(s);
-      row.dot.style.opacity = s.st === G.IDLE ? 0.45 : 1;
+      row.dot.style.opacity = s.st === G.IDLE || s.dead ? 0.45 : 1;
       row.name.textContent = nm;
+      row.hp.textContent = hurt ? " HP " + Math.ceil(s.hp) + "/" + s.maxHp : "";
       row.job.textContent = job;
       row.fill.style.width = pct + "%";
       row.fill.style.background = s.res ? RES_COLOR[s.res] : "#fff";
+      row.fix.hidden = !cost;
+      if (cost) { row.fix.textContent = "Repair " + costText(cost); row.fix.disabled = !fixOk; }
     }
-    const busy = game.ships.filter(s => s.st !== G.IDLE).length;
-    $("board-count").textContent = `${busy}/${game.ships.length} working`;
+    $("board-count").textContent = `${busy}/${live} working`;
+  }
+
+  // The base a ship is docked at (close enough to unload or be repaired, as game.js measures it), else -1.
+  // With any true, bases that are down count too (a down base is where R repairs the base itself).
+  function atBase(ship, any) {
+    let i = G.nearestBase(game, ship.x, ship.y);
+    if (any) {
+      let bd = Infinity;
+      for (let j = 0; j < game.bases.length; j++) {
+        const d = Math.hypot(ship.x - game.bases[j].x, ship.y - game.bases[j].y);
+        if (d < bd) { bd = d; i = j; }
+      }
+    }
+    const b = game.bases[i];
+    if (!b) return -1;
+    return Math.hypot(ship.x - b.x, ship.y - b.y) <= G.BASE_R + 10 + G.TUNING.upgrades[b.tier | 0].dock + G.MANUAL_SLACK ? i : -1;
+  }
+
+  // Event warnings (kind and whole seconds left), the solar-flare banner while one runs, and the alien count.
+  let alertsHtml = "";
+  function renderAlerts() {
+    const L = LB(), box = $("alerts"), chips = [];
+    const NAME = { fog: "Fog", flare: "Solar flare", raid: "Alien raid", shower: themed() ? L.shower : "Meteor shower" };
+    const list = game.events.length || game.showers.length ? G.eventWarnings(game) : [];
+    for (const w of list) chips.push(`<div class="chip warn ${w.kind}">${NAME[w.kind] || w.kind} in <b>${w.secs}</b> s</div>`);
+    const fl = game.events.length ? Math.ceil(flareLeft()) : 0;
+    if (fl > 0) chips.push(`<div class="chip flare">Solar flare: ships outside a Shield are stunned (<b>${fl}</b> s)</div>`);
+    if (game.aliens.length) chips.push(`<div class="chip raid">Aliens: <b>${game.aliens.length}</b></div>`);
+    const html = chips.join("");
+    if (html !== alertsHtml) { alertsHtml = html; box.innerHTML = html; }
+    box.style.top = (topH + 6) + "px";
   }
 
   // Static page text that names things. Space keeps the HTML as written (saved on first use); a theme rewrites it.
@@ -1602,7 +1937,7 @@
     els.warp.textContent = L.warp; els.wwarp.textContent = L.warp;
     els.bases.firstChild.nodeValue = L.bases + " ";
     els.help.textContent = `Click ${an(shipWord())}, then ${an(lc(L.body.asteroid))} or ${an(lc(L.body.iceplanet))} to mine it, a star to collect it, or ${an(L.base)} to send it there. ` +
-      `Build ${lc(L.bases)} to clear the ${lc(L.sector)}, then ${lc(L.warp)}. Pause: Space. Esc cancels. Add ?stress to the address for a 30-${shipWord()} test (?stress&sector=3 for hazards).`;
+      `Build ${lc(L.bases)} to clear the ${lc(L.sector)}, then ${lc(L.warp)}. Pause: Space. Esc cancels. R repairs. Add ?stress to the address for a 30-${shipWord()}, 15-alien test (?stress&sector=3 for hazards).`;
   }
 
   function refresh() {
@@ -1611,13 +1946,16 @@
     $("res").innerHTML = resLine();
     const left = game.stars.filter(s => !s.taken).length;
     $("goal").innerHTML = `${L.sector} <b>${game.sector}</b> &middot; ${L.bases} built <b>${game.bases.length - 1} / ${G.goalBases(game.sector)}</b> &middot; Stars <b>${game.stars.length - left} / ${game.stars.length}</b>`;
-    $("score").innerHTML = `Score <b>${G.scoreTotal(game)}</b> &middot; Best <b>${Math.max(profile.best, G.scoreTotal(game))}</b> &middot; <span class="bankstar">&#9733; <b>${profile.stars}</b></span>`;
+    const kills = ((game.stats && game.stats.kills) | 0);
+    $("score").innerHTML = `Score <b>${G.scoreTotal(game)}</b>${kills || game.sector >= G.TUNING.aliens.firstSector ? ` &middot; Kills <b>${kills}</b>` : ""} &middot; Best <b>${Math.max(profile.best, G.scoreTotal(game))}</b> &middot; <span class="bankstar">&#9733; <b>${profile.stars}</b></span>`;
     updatePlayerButton();
     $("b-warp").hidden = !(game.won && !game.over);
     $("b-retire").disabled = game.over;
     renderBuild();
     renderBases();
+    if (ui.selected != null && (!game.ships[ui.selected] || game.ships[ui.selected].dead)) { ui.selected = null; boardKey = ""; buildHtml = ""; }   // the selected ship was lost
     renderBoard();
+    renderAlerts();
     $("b-pause").textContent = ui.paused ? "Resume" : "Pause";
     $("paused").style.display = ui.paused ? "block" : "none";
     const hint = $("hint");
@@ -1627,6 +1965,7 @@
         : `Click ${an(lc(L.body.asteroid))} or ${an(lc(L.body.iceplanet))} to mine it, a star to collect it, or ${an(L.base)} to send it there (Esc to deselect)`)
       : ui.placing ? "Click empty space to place the base (Esc to cancel)"
       : "Click a planet or asteroid to mine it, a star to collect it, or a base to send this ship there (Esc to deselect)";
+    if (!ui.placing && isWar(chosenShip())) hint.textContent = "Warship: click an alien to attack, empty space to patrol there, Shift+click a ship to escort it (Esc to deselect)";
     if (ui.keyboard && ui.placing) hint.textContent = `Arrow keys move the cursor (Shift: faster), Enter places the ${themed() ? L.base : "base"}, Esc cancels`;
     renderLegend();
     syncInert();
@@ -1654,13 +1993,16 @@
     const total = G.scoreTotal(game), isBest = G.recordBest(profile, total);
     saveProfile();
     logRun(game.endReason);
-    $("end-title").textContent = game.endReason === "stranded" ? "Stranded" : "Run over";
-    $("end-text").textContent = (game.endReason === "stranded"
-      ? "Nothing left to mine and not enough to build with. "
-      : "You retired the fleet. ") + `You reached ${lc(LB().sector)} ${game.sector} and cleared ${game.cleared}.`;
-    const s = game.score, L = LB(), row = (a, b, cls) => `<tr${cls ? ` class="${cls}"` : ""}><td>${a}</td><td>${b}</td></tr>`;
+    const why = game.endReason, s = game.score, L = LB(), row = (a, b, cls) => `<tr${cls ? ` class="${cls}"` : ""}><td>${a}</td><td>${b}</td></tr>`;
+    const crew = game.ships.some(sh => !sh.dead && !isWar(sh));   // a miner or hauler still afloat
+    $("end-title").textContent = why === "stranded" ? "Stranded" : why === "destroyed" ? (themed() ? L.home : "Home base") + " destroyed" : "Run over";
+    $("end-text").textContent = (why === "stranded"
+      ? (crew ? "Nothing left to mine and not enough to build with. " : `Every ${shipWord()} was lost and there is not enough left to build another. `)
+      : why === "destroyed" ? `Your ${lc(L.home)} was destroyed. `
+      : "You retired the fleet. ") + `You reached ${lc(L.sector)} ${game.sector} and cleared ${game.cleared}.`;
     $("end-score").innerHTML = row("Materials delivered", Math.floor(s.mat)) + row(L.bases + " built", Math.floor(s.bases)) +
-      row(L.sector + "s cleared", Math.floor(s.sectors)) + row("Time bonus", Math.floor(s.time)) + row("Score", total, "sum");
+      row(L.sector + "s cleared", Math.floor(s.sectors)) + row("Time bonus", Math.floor(s.time)) +
+      (s.kills > 0 ? row("Aliens destroyed (" + ((game.stats && game.stats.kills) | 0) + ")", Math.floor(s.kills)) : "") + row("Score", total, "sum");
     $("end-best").textContent = (isBest ? "New best score! " : "") + `Best score ${profile.best}. Stars collected this run ${game.starsGot}; ${profile.stars} in the bank.`;
     $("end").hidden = modal();
     focusCard();
@@ -2333,8 +2675,18 @@
     for (const b of game.bases) consider(b, "base", G.BASE_R + 10);
     for (const s of game.stars) if (!s.taken) consider(s, "star", 18);
     const sr = Math.max(14, 14 / view.sc);
+    const sel = chosenShip();
+    if (sel && !sel.dead && isWar(sel)) {   // with a warship selected, an alien under the pointer is the target
+      let ad = Infinity, al = null;
+      for (const a of game.aliens) {
+        const d = Math.hypot(a.x - p.x, a.y - p.y);
+        if (d <= Math.max(G.TUNING.aliens.r + 8, 14 / view.sc) && d < ad) { ad = d; al = a; }
+      }
+      if (al) return { kind: "alien", o: al };
+    }
     let ship = null, sd = Infinity;   // ships win over whatever is beneath them
     for (const s of game.ships) {
+      if (s.dead) continue;
       const d = Math.hypot(s.x - p.x, s.y - p.y);
       if (d <= sr && d < sd) { sd = d; ship = s; }
     }
@@ -2362,11 +2714,26 @@
     if (!game || modal()) return;
     const p = toWorld(ev);
     if (ui.placing) return tryPlace(p);
-    const h = hit(p);
+    const h = hit(p), sel = chosenShip(), war = !!sel && !sel.dead && isWar(sel);
+    if (war && ev.shiftKey && h && h.kind === "ship" && h.o.id !== sel.id) {   // Shift+click one of our ships: escort it
+      const r = G.orderEscort(game, sel.id, h.o.id);
+      if (!r.ok) return toast(r.reason);
+      return refresh();
+    }
     if (h && h.kind === "ship") return select(h.o.id === ui.selected ? null : h.o.id);
     if (ui.selected == null) {
       if (h && h.kind === "star") toast(`Select ${an(shipWord())} first, then click the star.`);
       return;
+    }
+    if (war) {   // a warship: attack an alien, patrol at an empty spot, go home to a base; it cannot mine
+      if (h && h.kind === "alien") { const r = G.orderAttack(game, sel.id, h.o.id); if (!r.ok) return toast(r.reason); }
+      else if (h && h.kind === "base") G.returnToBase(game, sel.id, game.bases.indexOf(h.o), labelArg());
+      else if (h) {   // a body or star: the rules say why a warship cannot take it
+        const r = h.kind === "star" ? G.orderShipToStar(game, sel.id, h.o.id) : G.orderShip(game, sel.id, h.o.id, labelArg());
+        return toast(r.ok ? "Warships do not mine." : r.reason);
+      }
+      else { const r = G.orderPatrol(game, sel.id, p.x, p.y); if (!r.ok) return toast(r.reason); }
+      return refresh();
     }
     if (h && h.kind === "body") {
       const r = G.orderShip(game, ui.selected, h.o.id, labelArg());
@@ -2405,17 +2772,31 @@
     refresh();
   });
   $("bases").addEventListener("click", ev => {
-    const btn = ev.target.closest("[data-up]");
+    const btn = ev.target.closest("[data-act]");
     if (!btn || !game) return;
-    const r = G.upgradeBase(game, Number(btn.dataset.up), labelArg());
+    const [act, id, kind] = btn.dataset.act.split(":"), i = Number(id);
+    const r = act === "add" ? G.buildAddon(game, i, kind, labelArg())
+      : act === "fix" ? G.repairBase(game, i, labelArg())
+      : G.upgradeBase(game, i, labelArg());
     if (!r.ok) return toast(r.reason);
     saveNow();
     buildHtml = ""; basesHtml = "";
     refresh();
   });
   $("board").addEventListener("click", ev => {
+    if (!game) return;
+    const fix = ev.target.closest("[data-fix]");
+    if (fix) {   // the Repair button on a row
+      const r = G.repairShip(game, Number(fix.dataset.fix), labelArg());
+      if (!r.ok) toast(r.reason); else saveNow();
+      refresh();
+      return;
+    }
     const li = ev.target.closest("[data-ship]");
-    if (li) select(Number(li.dataset.ship) === ui.selected ? null : Number(li.dataset.ship));
+    if (!li) return;
+    const id = Number(li.dataset.ship);
+    if (game.ships[id] && game.ships[id].dead) return toast(game.ships[id].name + " was lost.");
+    select(id === ui.selected ? null : id);
   });
 
   function setPaused(v) { ui.paused = v; refresh(); }
@@ -2475,7 +2856,65 @@
   function needShip() {
     const s = chosenShip();
     if (!s) toast(`Select ${an(shipWord())} first (Tab).`);
+    else if (s.dead) { toast(`${shipName(s)} was lost. Press Tab to pick another.`); return null; }
     return s;
+  }
+
+  // The selected ship when it is a live warship, else a toast.
+  function needWar() {
+    const s = needShip();
+    if (s && !isWar(s)) { toast("Select a warship first (Tab). Warships come from the Build panel."); return null; }
+    return s;
+  }
+
+  // R: repair the selected ship; if it is not damaged, the base it is docked at. Works with keyboard mode off too.
+  function repairKey() {
+    const s = needShip();
+    if (!s) return;
+    let r;
+    const downAt = atBase(s, true);
+    if (s.hp < s.maxHp && !(downAt >= 0 && game.bases[downAt].down)) r = G.repairShip(game, s.id, labelArg());
+    else {
+      const at = downAt;
+      if (at < 0) return toast(`${shipName(s)} is not damaged. Fly it to a ${themed() ? LB().base : "base"} to repair the ${themed() ? LB().base : "base"}.`);
+      if (!(game.bases[at].hp < game.bases[at].maxHp)) return toast(`${shipName(s)} and this ${themed() ? LB().base : "base"} are not damaged.`);
+      r = G.repairBase(game, at, labelArg());
+    }
+    if (!r.ok) toast(r.reason); else { saveNow(); basesHtml = ""; }
+    refresh();
+  }
+
+  function attackKey() {
+    const s = needWar();
+    if (!s) return;
+    const id = G.nearestAlien(game, s.x, s.y);
+    if (id < 0) return toast("No aliens on the map.");
+    const r = G.orderAttack(game, s.id, id);
+    if (!r.ok) toast(r.reason);
+    refresh();
+  }
+
+  function patrolKey() {
+    const s = needWar();
+    if (!s) return;
+    const r = G.orderPatrol(game, s.id, s.x, s.y);
+    if (!r.ok) toast(r.reason);
+    refresh();
+  }
+
+  function escortKey() {
+    const s = needWar();
+    if (!s) return;
+    let best = null, bd = Infinity;
+    for (const o of game.ships) {
+      if (o.dead || isWar(o)) continue;
+      const d = Math.hypot(o.x - s.x, o.y - s.y);
+      if (d < bd) { bd = d; best = o; }
+    }
+    if (!best) return toast(`No ${shipWord()} left to escort.`);
+    const r = G.orderEscort(game, s.id, best.id);
+    if (!r.ok) toast(r.reason);
+    refresh();
   }
 
   function mouseFocused(a) {   // a button the mouse clicked: Tab should still cycle ships, not walk the page
@@ -2485,8 +2924,9 @@
   function cycleShip(dir) {
     const n = game.ships.length;
     if (!n) return;
-    const cur = ui.selected == null ? (dir > 0 ? -1 : 0) : ui.selected;
-    const id = (((cur + dir) % n) + n) % n;
+    let id = ui.selected == null ? (dir > 0 ? -1 : 0) : ui.selected, tries = 0;
+    do { id = (((id + dir) % n) + n) % n; tries++; } while (game.ships[id].dead && tries <= n);   // lost ships are skipped
+    if (game.ships[id].dead) return;                                                              // every ship is lost
     select(id);
     const row = boardRows[id];
     if (row && row.li.scrollIntoView) row.li.scrollIntoView({ block: "nearest" });
@@ -2588,6 +3028,13 @@
     if (!keyActive(ev)) return;
     const lk = ev.key.toLowerCase();
     if (lk === "k") { if (!ev.repeat) setKeyboard(!ui.keyboard); return; }
+    if (!ui.placing && !ev.repeat) {
+      if (lk === "r") { repairKey(); return; }   // repair works with keyboard mode off
+      if ((lk === "x" || lk === "p" || lk === "g") && (ui.keyboard || isWar(chosenShip()))) {   // warship orders: with a warship selected, or in keyboard mode
+        if (lk === "x") attackKey(); else if (lk === "p") patrolKey(); else escortKey();
+        return;
+      }
+    }
     if (!ui.keyboard) return;
     if (ui.placing) return placementKey(ev, lk);
     if (ev.key >= "0" && ev.key <= "9" && ev.key.length === 1) { if (!ev.repeat && !ev.shiftKey) typeDigit(ev.key); return; }
@@ -2629,6 +3076,8 @@
     const L = LB(), sh = shipWord(), base = themed() ? L.base : "base";
     const rows = [["Tab / Shift+Tab", "next / previous " + sh], ["1-9, 0", "send it to that target (two digits: type fast)"],
       ["H", "nearest " + base], ["F", "fly it by hand / hand back"], ["WASD, arrows", "steer"], ["E", "mine or unload nearby, again to stop"],
+      ["R", "repair it, or the " + base + " it is at (works with keyboard mode off)"],
+      ["X", "warship: attack the nearest alien"], ["P", "warship: patrol where it is"], ["G", "warship: escort the nearest " + sh + " (not a warship)"],
       ["B", "focus the build panel"], ["Esc", "hand back, then cancel"], ["K", "keyboard mode off"]];
     box.textContent = "";
     box.appendChild(el("b", "", "Keys"));

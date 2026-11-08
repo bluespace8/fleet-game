@@ -24,10 +24,14 @@
     startStock: { ore: 70, ice: 0, crystal: 0 },
     // speed in world units per second, cap in units, rate in units mined per second.
     ships: {
-      miner:  { label: "Miner",  speed: 85,  cap: 20, rate: 5, cost: { ore: 40, ice: 0, crystal: 0 },
+      miner:  { label: "Miner",  speed: 85,  cap: 20, rate: 5, cost: { ore: 40, ice: 0, crystal: 0 }, hp: 30,
                 blurb: "Small and cheap. Carries 20." },
-      hauler: { label: "Hauler", speed: 135, cap: 60, rate: 4, cost: { ore: 90, ice: 30, crystal: 0 },
+      hauler: { label: "Hauler", speed: 135, cap: 60, rate: 4, cost: { ore: 90, ice: 30, crystal: 0 }, hp: 45,
                 blurb: "Fast and large. Carries 60." },
+      // A warship carries nothing and mines nothing. It flies orders (patrol, escort, attack) and fires at aliens in range.
+      warship: { label: "Warship", speed: 110, cap: 0, rate: 0, cost: { ore: 110, ice: 40, crystal: 0 }, hp: 90, war: true,
+                 range: 170, dmg: 9, cd: 0.7, shotSpeed: 420, follow: 46, standoff: 0.7,
+                 blurb: "Guards, escorts and hunts aliens. Carries nothing." },
     },
     baseCost: { ore: 120, ice: 40, crystal: 15 },
     // difficulty by sector (n = 1 is the original game)
@@ -51,11 +55,47 @@
     ],
     // ion storms (from firstSector): drift around the map and slow ships inside them
     storms: { firstSector: 2, base: 2, max: 5, rMin: 70, rMax: 120, speedMin: 6, speedMax: 16, slow: 0.45, homeClear: 120 },
-    // meteor showers (from firstSector): appear with a short warning, then may knock cargo off ships inside
-    showers: { firstSector: 3, radius: 120, warn: 3, dur: 14, firstDelay: 20,
-               gapFirst: 40, gapPerSector: 4, gapMin: 16,          // seconds between showers
-               hitFirst: 0.5, hitPerSector: 0.05, hitMax: 0.9,      // chance per second for a loaded ship inside
-               loss: 0.5, cooldown: 4 },                            // share of cargo lost, seconds before the next hit
+    // Event system. Sector 1 is calm. From firstSector one event is rolled every eventGap(n) seconds; each shows a
+    // warning (warn seconds) before it takes effect. Kinds unlock by sector (fog and flare here, raid from
+    // aliens.firstSector; meteor showers, below, keep their own timer but share the warning, strength and cap rules).
+    // Strength rises with the sector and is capped.
+    events: { firstSector: 2, warn: 10, firstDelay: 25,
+              gapFirst: 42, gapPerSector: 3, gapMin: 18, jitter: 0.4,     // seconds between rolls: falls with the sector, floored
+              maxActive: 6, maxRaids: 2, retry: 6,                          // events at once (incl. showers), raids at once; seconds before a retry when full
+              weight: { fog: 3, flare: 2 },                                 // share of the non-raid rolls
+              raidFirst: 0.25, raidPerSector: 0.05, raidMax: 0.55,          // chance that a roll (aliens unlocked) is a raid
+              powerPerSector: 0.15, powerMax: 2 },                          // event strength: 1 + per*(n - firstSector), capped
+    // fog (from events.firstSector): ships mine slower inside; the UI hides the map under it
+    fog: { margin: 60, rMin: 130, rMax: 210, rPerSector: 8, rCap: 300, dur: 40, mine: 0.5, max: 2 },
+    // solar flare (from events.firstSector): map-wide; ships outside a shield generator's range are stunned
+    flare: { durFirst: 10, durPerSector: 1, durMax: 20, linger: 1, max: 1 },
+    // meteor showers (from firstSector): appear with a warning, then hurt ships and bases inside (and may knock cargo off ships)
+    showers: { margin: 80, gapJitter: 0.4, firstSector: 3, radius: 120, radiusPerSector: 4, radiusMax: 170, warn: 10, dur: 14, firstDelay: 20,
+               gapFirst: 40, gapPerSector: 4, gapMin: 16,          // seconds between showers (their own timer)
+               hitFirst: 0.5, hitPerSector: 0.05, hitMax: 0.9,      // chance per second for a ship inside
+               loss: 0.5, cooldown: 4,                              // share of cargo lost, seconds before the next hit
+               dmgFirst: 4, dmgPerSector: 1, dmgMax: 12,            // damage per hit to a ship (power)
+               baseTick: 2, baseHit: 0.6, baseMult: 1.5, max: 3 },  // seconds between strikes on bases, chance per base, base damage factor, at once
+    // aliens (from firstSector): spawn at a warned point on the map edge, chase loaded ships else bases, and shoot
+    aliens: { firstSector: 3, r: 11, sense: 330, range: 150, edge: 20, cd: 1.6, shotSpeed: 300,
+              stay: 90,                                                    // seconds a raider stays; then it flies to the nearest map edge and is gone
+              speedFirst: 55, speedPerSector: 3, speedMax: 85,
+              countFirst: 2, countEvery: 2, countMax: 6, capSector: 10,     // count: first + floor((min(n, capSector) - firstSector) / every), capped
+              holdFrac: 0.8, offMap: 50, markR: 40,                                   // hold distance as a share of range; shots vanish this far off the map
+              hpFirst: 40, hpPerSector: 12, hpMax: 120,
+              dmgFirst: 4, dmgPerSector: 1, dmgMax: 10,
+              max: 24, score: 25, starChance: 0.12, maxStars: 12 },
+    // shots, damage and health
+    combat: { maxShots: 90, shotLife: 1.2, shotReach: 1.25, shipR: 9, fxMax: 16, fxLife: 0.4,
+              baseHp: 160, homeHp: 300 },
+    // base add-ons, bought per base (costs scale with the sector like other costs)
+    addons: {
+      shield: { label: "Shield", range: 170, cost: { ore: 60, ice: 40, crystal: 0 }, blurb: "Ships near it ignore solar flares." },
+      turret: { label: "Turret", range: 190, dmg: 6, cd: 0.6, block: 0.7, shotSpeed: 460,
+                cost: { ore: 90, ice: 20, crystal: 0 }, blurb: "Shoots aliens and blocks meteor hits nearby." },
+    },
+    // repair: cost per HP restored (rounded up per resource), scaled with the sector's cost factor; seconds the ship is held
+    repair: { ship: { ore: 0.5, ice: 0, crystal: 0 }, base: { ore: 0.5, ice: 0.15, crystal: 0 }, time: 1 },
     // stars to collect
     stars: { min: 3, max: 6, minHome: 380, edge: 50, bodyClear: 30, apart: 90 },
     score: { value: { ore: 1, ice: 2, crystal: 5 }, base: 100, sector: 400,
@@ -153,6 +193,20 @@
   function showersOn(n) { return n >= T.showers.firstSector; }
   function showerGap(n) { const S = T.showers; return Math.max(S.gapMin, S.gapFirst - S.gapPerSector * (n - S.firstSector)); }
   function showerHit(n) { const S = T.showers; return Math.min(S.hitMax, S.hitFirst + S.hitPerSector * (n - S.firstSector)); }
+  // events and combat, by sector
+  function eventsOn(n) { return n >= T.events.firstSector; }
+  function aliensOn(n) { return n >= T.aliens.firstSector; }
+  function eventGap(n) { const E = T.events; return Math.max(E.gapMin, E.gapFirst - E.gapPerSector * (n - E.firstSector)); }
+  function eventPower(n) { const E = T.events; return Math.min(E.powerMax, 1 + E.powerPerSector * Math.max(0, n - E.firstSector)); }
+  function raidOdds(n) { const E = T.events; return aliensOn(n) ? Math.min(E.raidMax, E.raidFirst + E.raidPerSector * (n - T.aliens.firstSector)) : 0; }
+  function fogRadius(n) { const F = T.fog; return Math.min(F.rCap, F.rMax + F.rPerSector * Math.max(0, n - T.events.firstSector)); }
+  function flareDur(n) { const F = T.flare; return Math.min(F.durMax, F.durFirst + F.durPerSector * Math.max(0, n - T.events.firstSector)); }
+  function showerRadius(n) { const S = T.showers; return Math.min(S.radiusMax, S.radius + S.radiusPerSector * Math.max(0, n - S.firstSector)); }
+  function showerDmg(n) { const S = T.showers; return Math.min(S.dmgMax, S.dmgFirst + S.dmgPerSector * Math.max(0, n - S.firstSector)); }
+  function alienCount(n) { const A = T.aliens; return Math.min(A.countMax, A.countFirst + Math.floor(Math.max(0, Math.min(n, A.capSector) - A.firstSector) / A.countEvery)); }
+  function alienHp(n) { const A = T.aliens; return Math.min(A.hpMax, A.hpFirst + A.hpPerSector * Math.max(0, n - A.firstSector)); }
+  function alienDmg(n) { const A = T.aliens; return Math.min(A.dmgMax, A.dmgFirst + A.dmgPerSector * Math.max(0, n - A.firstSector)); }
+  function alienSpeed(n) { const A = T.aliens; return Math.min(A.speedMax, A.speedFirst + A.speedPerSector * Math.max(0, n - A.firstSector)); }
   function parTime(n) { return T.score.parFirst + T.score.parPerSector * (n - 1); }
 
   function scaleCost(cost, k) {
@@ -161,6 +215,7 @@
     return out;
   }
   function baseCost(state) { return scaleCost(T.baseCost, costMult(state.sector)); }
+  function addonCost(state, kind) { return T.addons[kind] ? scaleCost(T.addons[kind].cost, costMult(state.sector)) : null; }
   function shipCost(state, type) { return scaleCost(SHIP_TYPES[type].cost, costMult(state.sector)); }
   function upgradeCost(state, baseId) {
     const b = state.bases[baseId];
@@ -260,12 +315,21 @@
     state.w = size.w; state.h = size.h;
     state.sectorTime = 0; state.won = false; state.wonAt = 0;
     state.bodies = []; state.bases = []; state.stars = []; state.storms = []; state.showers = [];
-    state.bases.push({ id: 0, x: state.w / 2 + (r() - 0.5) * 260 * k, y: state.h / 2 + (r() - 0.5) * 160 * k, home: true, tier: 0 });
+    state.events = []; state.aliens = []; state.shots = []; state.fx = [];
+    state.bases.push(makeBase(0, state.w / 2 + (r() - 0.5) * 260 * k, state.h / 2 + (r() - 0.5) * 160 * k, true));
     generateBodies(state, r, n);
     generateStars(state, seed);
     generateStorms(state, seed);
     state.hz = (seed ^ 0xA5A5A5A5) >>> 0;
+    state.eventIn = eventsOn(n) ? T.events.firstDelay : 0;
     state.showerIn = showersOn(n) ? T.showers.firstDelay : 0;
+  }
+
+  // One shape for a base, whoever makes it. hp/maxHp: health; shield, turret: add-ons; down: out of action at 0 HP
+  // (never the home base: losing that ends the run); cd: turret fire cooldown.
+  function makeBase(id, x, y, home) {
+    const hp = home ? T.combat.homeHp : T.combat.baseHp;
+    return { id, x, y, home, tier: 0, hp, maxHp: hp, shield: false, turret: false, down: false, cd: 0 };
   }
 
   // One shape for a fresh state; deserialize fills the same object so key order (and so JSON) matches.
@@ -273,10 +337,14 @@
     return {
       ver: VERSION, seed: seed >>> 0, sector: 1, time: 0, sectorTime: 0, w: T.world.w, h: T.world.h,
       bodies: [], bases: [], ships: [], stars: [], storms: [], showers: [], showerIn: 0, hz: 0,
+      // hazards: events (fog, flare, raid warnings and live ones; showers keep their own list above and their own timer
+      // showerIn, with the same fields), seconds to the next roll, aliens and their ids, shots in flight, and short-lived
+      // effects for the UI
+      events: [], eventIn: 0, alienSeq: 0, aliens: [], shots: [], fx: [],
       stock: { ore: START_STOCK.ore, ice: START_STOCK.ice, crystal: START_STOCK.crystal },
       won: false, wonAt: 0, clearInfo: null, over: false, endReason: "", endTimer: T.endCheckEvery, stress: false,
-      stats: { ore: 0, ice: 0, crystal: 0, lost: 0 },   // total mined, and cargo knocked off by meteors
-      score: { mat: 0, bases: 0, sectors: 0, time: 0 },
+      stats: { ore: 0, ice: 0, crystal: 0, lost: 0, kills: 0 },   // total mined, cargo lost (meteors, lost ships), aliens killed
+      score: { mat: 0, bases: 0, sectors: 0, time: 0, kills: 0 },
       cleared: 0, starsGot: 0, hits: 0,
       delivered: { ore: 0, ice: 0, crystal: 0 },        // units handed in, by type
       starsPaid: [],                                    // star keys already paid to someone; each star pays once per save
@@ -318,13 +386,28 @@
     const id = state.ships.length;
     let count = 1;
     for (let i = 0; i < id; i++) if (state.ships[i].type === type) count++;
-    const ship = { id, type, name: SHIP_TYPES[type].label + " " + count,
-      x: 0, y: 0, ang: 0,
-      st: IDLE, target: -1, dest: -1, star: -1, cargo: 0, res: "", mv: 0, wait: 0, hitCd: 0,
-      ix: 0, iy: 0, mm: 0 };   // ix, iy: manual flight input (runtime only); mm: manual sub-mode 0 flying, 1 mining, 2 unloading
+    const ship = makeShip(id, type, SHIP_TYPES[type].label + " " + count);
     state.ships.push(ship);
     parkShip(state, ship);
     return ship;
+  }
+
+  // One shape for a ship, whoever makes it. ix, iy: manual flight input (runtime only); mm: manual sub-mode 0 flying,
+  // 1 mining, 2 unloading. hp/maxHp: health; dead: lost for good (the entry stays so ids hold); stun: flare seconds left;
+  // rep: seconds left in a repair. Warship orders: wo "patrol" | "escort" | "attack" | "", wx/wy the patrol point,
+  // wt the escort ship id or attack alien id, cd the fire cooldown.
+  function makeShip(id, type, name) {
+    const hp = SHIP_TYPES[type].hp;
+    return { id, type, name,
+      x: 0, y: 0, ang: 0,
+      st: IDLE, target: -1, dest: -1, star: -1, cargo: 0, res: "", mv: 0, wait: 0, hitCd: 0,
+      ix: 0, iy: 0, mm: 0,
+      hp, maxHp: hp, dead: false, stun: 0, rep: 0, wo: "", wx: 0, wy: 0, wt: -1, cd: 0 };
+  }
+
+  function makeAlien(state, x, y, n) {
+    const hp = alienHp(n);
+    return { id: state.alienSeq++, x, y, vx: 0, vy: 0, hp, maxHp: hp, dmg: alienDmg(n), cd: T.aliens.cd, tgtKind: "", tgt: -1, age: 0 };
   }
 
   function buildShip(state, type, labels) {
@@ -359,7 +442,7 @@
     const cost = baseCost(state);
     if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials for " + an(labels ? labels.base : "base") + "." };
     pay(state, cost);
-    const base = { id: state.bases.length, x, y, home: false, tier: 0 };
+    const base = makeBase(state.bases.length, x, y, false);
     state.bases.push(base);
     state.score.bases += T.score.base;
     checkWin(state);
@@ -371,6 +454,7 @@
     const base = state.bases[baseId], bw = labels ? labels.base : "base";
     if (!base) return { ok: false, reason: "No such " + bw + "." };
     if (state.over) return { ok: false, reason: "This run is over." };
+    if (base.down) return { ok: false, reason: "This " + bw + " is down. Repair it first." };
     if ((base.tier | 0) >= MAX_TIER) return { ok: false, reason: "This " + bw + " is fully upgraded." };
     const cost = upgradeCost(state, baseId);
     if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials for the upgrade." };
@@ -400,6 +484,7 @@
     for (const s of state.ships) {            // cargo still aboard is handed in before the jump
       if (s.cargo > 0 && s.res) { deliver(state, s.res, s.cargo); }
       s.cargo = 0; s.res = ""; s.st = IDLE; s.target = -1; s.dest = -1; s.star = -1; s.wait = 0; s.hitCd = 0; s.mv = 0; s.mm = 0; s.ix = 0; s.iy = 0;
+      s.stun = 0; s.rep = 0; s.cd = 0; s.wo = ""; s.wt = -1;   // the new map has no flares, repairs or aliens in progress
     }
     buildSector(state, state.sector + 1);
     state.clearInfo = null;
@@ -409,9 +494,15 @@
 
   // ---------------------------------------------------------------- orders
 
+  // The reason a ship cannot take an order, or "" when it can. A lost ship takes none; a warship takes no mining orders.
+  function lostReason(ship) { return ship.dead ? ship.name + " was lost." : ""; }
+  function warReason(ship) { return SHIP_TYPES[ship.type].war ? ship.name + " is a warship. It cannot mine. Give it a patrol, escort or attack order." : ""; }
+
   function orderShip(state, shipId, bodyId, labels) {
     const ship = state.ships[shipId], body = state.bodies[bodyId];
     if (!ship || !body) return { ok: false, reason: "No such ship or body." };
+    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    if (SHIP_TYPES[ship.type].war) return { ok: false, reason: warReason(ship) };
     if (body.amount <= 1e-6) return { ok: false, reason: bodyLabel(body, labels) + " is empty." };
     clearManual(ship);
     ship.target = bodyId;
@@ -428,6 +519,8 @@
   function orderShipToStar(state, shipId, starId) {
     const ship = state.ships[shipId], star = state.stars[starId];
     if (!ship || !star) return { ok: false, reason: "No such ship or star." };
+    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    if (SHIP_TYPES[ship.type].war) return { ok: false, reason: warReason(ship) };
     if (star.taken) return { ok: false, reason: "That star is already taken." };
     clearManual(ship);
     ship.star = starId;
@@ -440,6 +533,8 @@
   function recallShip(state, shipId) {
     const ship = state.ships[shipId];
     if (!ship) return { ok: false, reason: "No such ship." };
+    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    if (SHIP_TYPES[ship.type].war) return guardBase(state, ship, nearestBase(state, ship.x, ship.y));
     clearManual(ship);
     ship.target = -1;
     ship.dest = -1;
@@ -448,10 +543,21 @@
     return { ok: true };
   }
 
+  // A warship told to go home patrols at the base instead (it has no cargo to unload).
+  function guardBase(state, ship, baseId) {
+    const b = state.bases[baseId], a = ship.id * 2.399;
+    clearManual(ship);
+    ship.st = IDLE; ship.wo = "patrol"; ship.wt = -1;
+    ship.wx = b.x + Math.cos(a) * (BASE_R + 28); ship.wy = b.y + Math.sin(a) * (BASE_R + 28);
+    return { ok: true };
+  }
+
   // Like recallShip, but to one chosen base instead of the nearest. An idle ship goes too.
   function returnToBase(state, shipId, baseId, labels) {
     const ship = state.ships[shipId], base = state.bases[baseId];
     if (!ship || !base) return { ok: false, reason: "No such ship or " + (labels ? labels.base : "base") + "." };
+    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    if (SHIP_TYPES[ship.type].war) return guardBase(state, ship, baseId);
     clearManual(ship);
     ship.target = -1;
     ship.dest = baseId;
@@ -470,9 +576,10 @@
     const ship = state.ships[shipId];
     if (!ship) return { ok: false, reason: "No such ship." };
     if (state.over) return { ok: false, reason: "This run is over." };
+    if (ship.dead) return { ok: false, reason: lostReason(ship) };
     clearManual(ship);
     ship.st = MANUAL;
-    ship.target = -1; ship.dest = -1; ship.star = -1; ship.wait = 0;
+    ship.target = -1; ship.dest = -1; ship.star = -1; ship.wait = 0; ship.wo = ""; ship.wt = -1;
     return { ok: true };
   }
 
@@ -501,6 +608,8 @@
     if (state.over) return { ok: false, reason: "This run is over." };
     if (ship.mm === 1 || ship.mm === 2) { ship.mm = 0; ship.wait = 0; ship.target = -1; return { ok: true, did: "stop" }; }
     const def = SHIP_TYPES[ship.type], L = labels || SPACE_LABELS;
+    if (def.war) return { ok: false, reason: warReason(ship) };
+    if (ship.stun > 0) return { ok: false, reason: ship.name + " is stunned by a solar flare." };
     if (ship.cargo > 0) {
       const base = state.bases[nearestBase(state, ship.x, ship.y)], up = T.upgrades[base.tier | 0];
       if (Math.hypot(ship.x - base.x, ship.y - base.y) <= BASE_R + 10 + up.dock + MANUAL_SLACK) {
@@ -569,6 +678,7 @@
   function nearestBase(state, x, y) {
     let best = 0, bd = Infinity;
     for (let i = 0; i < state.bases.length; i++) {
+      if (state.bases[i].down) continue;      // a base that is down takes no drop-offs (the home base never goes down)
       const dx = state.bases[i].x - x, dy = state.bases[i].y - y, d = dx * dx + dy * dy;
       if (d < bd) { bd = d; best = i; }
     }
@@ -600,6 +710,19 @@
     return false;
   }
 
+  // Like moveTo, but stops `stop` units short of the point. Returns true once within that distance.
+  function moveNear(ship, tx, ty, stop, dt, mult) {
+    const dx = tx - ship.x, dy = ty - ship.y;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d <= stop) { ship.mv = 0; return true; }
+    const k = Math.min(SHIP_TYPES[ship.type].speed * dt * mult, d - stop) / d;
+    ship.x += dx * k;
+    ship.y += dy * k;
+    ship.ang = Math.atan2(dy, dx);
+    ship.mv = 1;
+    return false;
+  }
+
   function deliver(state, res, amount) {
     state.stock[res] += amount;
     state.score.mat += amount * T.score.value[res];
@@ -613,20 +736,106 @@
     else { ship.target = -1; ship.st = IDLE; }
   }
 
-  // A loaded ship inside a live meteor shower may lose part of its cargo.
+  // ---- hazards: health, fog, flares, showers
+
+  // A short-lived effect for the UI: kind "block" (a turret stops a meteor: line from the turret x,y to the target x2,y2),
+  // "kill" (an alien died at x,y) or "boom" (a ship or base was lost at x,y). age counts up to life, then it is dropped.
+  function pushFx(state, kind, x, y, x2, y2) {
+    const fx = state.fx;
+    if (fx.length >= T.combat.fxMax) fx.shift();
+    fx.push({ kind, x, y, x2, y2, age: 0, life: T.combat.fxLife });
+  }
+
+  function damageShip(state, ship, dmg) {
+    if (ship.dead || !(dmg > 0)) return;
+    ship.hp -= dmg;
+    if (ship.hp > 0) return;
+    ship.hp = 0; ship.dead = true;
+    if (ship.cargo > 0) state.stats.lost += ship.cargo;      // the cargo is gone with the ship
+    ship.cargo = 0; ship.res = "";
+    ship.st = IDLE; ship.target = -1; ship.dest = -1; ship.star = -1; ship.mv = 0; ship.wait = 0; ship.mm = 0; ship.ix = 0; ship.iy = 0;
+    ship.stun = 0; ship.rep = 0; ship.wo = ""; ship.wt = -1;
+    pushFx(state, "boom", ship.x, ship.y, ship.x, ship.y);
+  }
+
+  function damageBase(state, base, dmg) {
+    if (base.down || !(dmg > 0)) return;
+    base.hp -= dmg;
+    if (base.hp > 0) return;
+    base.hp = 0;
+    pushFx(state, "boom", base.x, base.y, base.x, base.y);
+    if (base.home) { if (!state.over) { state.over = true; state.endReason = "destroyed"; } }
+    else base.down = true;
+  }
+
+  // Index of a live turret base that stops a hit at (x, y), else -1. Each turret in range tries once (hrand).
+  function turretBlock(state, x, y) {
+    const R = T.addons.turret.range, bs = state.bases;
+    for (let i = 0; i < bs.length; i++) {
+      const b = bs[i];
+      if (!b.turret || b.down) continue;
+      const dx = x - b.x, dy = y - b.y;
+      if (dx * dx + dy * dy > R * R) continue;
+      if (hrand(state) < T.addons.turret.block) { pushFx(state, "block", b.x, b.y, x, y); return i; }
+    }
+    return -1;
+  }
+
+  function evWarn(e, dflt) { return typeof e.warn === "number" ? e.warn : dflt; }
+
+  // True inside a live fog bank (not during its warning).
+  function fogAt(state, x, y) {
+    const ev = state.events;
+    for (let i = 0; i < ev.length; i++) {
+      const e = ev[i];
+      if (e.kind !== "fog" || e.age < evWarn(e, T.events.warn)) continue;
+      const dx = x - e.x, dy = y - e.y;
+      if (dx * dx + dy * dy < e.r * e.r) return true;
+    }
+    return false;
+  }
+
+  // True when a live, shielded base covers (x, y).
+  function shielded(state, x, y) {
+    const R = T.addons.shield.range, bs = state.bases;
+    for (let i = 0; i < bs.length; i++) {
+      const b = bs[i];
+      if (!b.shield || b.down) continue;
+      const dx = x - b.x, dy = y - b.y;
+      if (dx * dx + dy * dy <= R * R) return true;
+    }
+    return false;
+  }
+
+  function flareActive(state) {
+    const ev = state.events;
+    for (let i = 0; i < ev.length; i++) if (ev[i].kind === "flare" && ev[i].age >= evWarn(ev[i], T.events.warn)) return true;
+    return false;
+  }
+
+  // Mining speed factor at (x, y): the fog factor inside live fog, else 1.
+  function mineMult(state, x, y) { return state.events.length && fogAt(state, x, y) ? T.fog.mine : 1; }
+
+  // A ship inside a live meteor shower may be hit: it loses part of its cargo (if loaded) and takes damage, unless a turret
+  // in range blocks the hit. A hit, blocked or not, starts the ship's grace period.
   function meteorCheck(state, ship, dt) {
-    if (ship.cargo <= 0 || ship.hitCd > 0) return;
+    if (ship.hitCd > 0) return;
     const S = T.showers, sh = state.showers;
     for (let i = 0; i < sh.length; i++) {
-      if (sh[i].age < S.warn) continue;
-      const dx = ship.x - sh[i].x, dy = ship.y - sh[i].y;
-      if (dx * dx + dy * dy >= sh[i].r * sh[i].r) continue;
+      const e = sh[i];
+      if (e.age < evWarn(e, S.warn)) continue;
+      const dx = ship.x - e.x, dy = ship.y - e.y;
+      if (dx * dx + dy * dy >= e.r * e.r) continue;
       if (hrand(state) < showerHit(state.sector) * dt) {
-        const lost = ship.cargo * S.loss;
-        ship.cargo -= lost;
-        state.stats.lost += lost;
-        state.hits++;
         ship.hitCd = S.cooldown;
+        if (turretBlock(state, ship.x, ship.y) >= 0) return;
+        if (ship.cargo > 0) {      // `hits` counts the hits that knocked cargo off, as before; an empty ship still takes the damage
+          const lost = ship.cargo * S.loss;
+          ship.cargo -= lost;
+          state.stats.lost += lost;
+          state.hits++;
+        }
+        damageShip(state, ship, typeof e.power === "number" ? e.power : showerDmg(state.sector));
         return;
       }
     }
@@ -646,7 +855,7 @@
         const body = state.bodies[ship.target];
         ship.mv = 0;
         if (!body || body.amount <= 1e-6) { ship.mm = 0; ship.target = -1; return; }
-        const take = Math.min(def.rate * dt, body.amount, def.cap - ship.cargo);
+        const take = Math.min(def.rate * dt * mineMult(state, ship.x, ship.y), body.amount, def.cap - ship.cargo);
         body.amount -= take;
         if (body.amount < 1e-6) body.amount = 0;
         ship.cargo += take;
@@ -665,9 +874,13 @@
   }
 
   function stepShip(state, ship, dt) {
+    if (ship.dead) return;
     const def = SHIP_TYPES[ship.type];
     if (ship.hitCd > 0) ship.hitCd = Math.max(0, ship.hitCd - dt);
-    if (state.showers.length) meteorCheck(state, ship, dt);
+    if (state.showers.length) { meteorCheck(state, ship, dt); if (ship.dead) return; }
+    if (ship.stun > 0) { ship.stun = Math.max(0, ship.stun - dt); ship.mv = 0; return; }   // a flare holds it: no move, no mining
+    if (ship.rep > 0) { ship.rep = Math.max(0, ship.rep - dt); ship.mv = 0; return; }      // being repaired
+    if (def.war) { stepWarship(state, ship, dt, def); return; }
     if (ship.st === IDLE) { ship.mv = 0; return; }
     if (ship.st === UNLOADING) {
       ship.mv = 0;
@@ -701,7 +914,7 @@
         return;
       }
       ship.mv = 0;
-      const take = Math.min(def.rate * dt, body.amount, def.cap - ship.cargo);
+      const take = Math.min(def.rate * dt * mineMult(state, ship.x, ship.y), body.amount, def.cap - ship.cargo);
       body.amount -= take;
       if (body.amount < 1e-6) body.amount = 0;
       ship.cargo += take;
@@ -712,7 +925,8 @@
     }
     // TO_BASE: fly to the chosen base (else the nearest) and get within its drop-off range, unload
     // (an upgraded base takes less time), then repeat the run if the body still has something
-    const base = state.bases[ship.dest >= 0 && ship.dest < state.bases.length ? ship.dest : nearestBase(state, ship.x, ship.y)];
+    let base = ship.dest >= 0 && ship.dest < state.bases.length ? state.bases[ship.dest] : null;
+    if (!base || base.down) base = state.bases[nearestBase(state, ship.x, ship.y)];   // a base that is down takes no drop-offs
     const up = T.upgrades[base.tier | 0];
     const a = ship.id * 2.399, stop = BASE_R + 10 + up.dock;
     if (!moveTo(ship, base.x + Math.cos(a) * stop, base.y + Math.sin(a) * stop, dt, mult)) return;
@@ -732,24 +946,411 @@
       if (s.x < 0) { s.x = 0; s.vx = Math.abs(s.vx); } else if (s.x > w) { s.x = w; s.vx = -Math.abs(s.vx); }
       if (s.y < 0) { s.y = 0; s.vy = Math.abs(s.vy); } else if (s.y > h) { s.y = h; s.vy = -Math.abs(s.vy); }
     }
-    if (!showersOn(state.sector)) return;
-    const S = T.showers, sh = state.showers;
-    for (let i = sh.length - 1; i >= 0; i--) {
-      sh[i].age += dt;
-      if (sh[i].age >= S.warn + S.dur) sh.splice(i, 1);
+    const S = T.showers, sh = state.showers, ev = state.events;
+    for (let i = sh.length - 1; i >= 0; i--) {      // showers: strike bases once live, expire at the end
+      const e = sh[i];
+      e.age += dt;
+      const warn = evWarn(e, S.warn);
+      if (e.age >= warn + (typeof e.dur === "number" ? e.dur : S.dur)) { sh.splice(i, 1); continue; }
+      if (e.age < warn) continue;
+      e.tick = (typeof e.tick === "number" ? e.tick : 0) - dt;
+      if (e.tick > 0) continue;
+      e.tick = S.baseTick;
+      const power = (typeof e.power === "number" ? e.power : showerDmg(state.sector)) * S.baseMult;
+      for (let j = 0; j < state.bases.length; j++) {
+        const b = state.bases[j];
+        if (b.down) continue;
+        const dx = b.x - e.x, dy = b.y - e.y;
+        if (dx * dx + dy * dy >= e.r * e.r || hrand(state) >= S.baseHit) continue;
+        if (turretBlock(state, b.x, b.y) >= 0) continue;
+        damageBase(state, b, power);
+      }
     }
-    state.showerIn -= dt;
-    if (state.showerIn <= 0) {
-      const m = 80;
-      sh.push({ x: m + hrand(state) * (w - 2 * m), y: m + hrand(state) * (h - 2 * m), r: S.radius, age: 0 });
-      state.showerIn = showerGap(state.sector) * (0.8 + 0.4 * hrand(state));
+    for (let i = ev.length - 1; i >= 0; i--) {      // fog, flares and raids
+      const e = ev[i];
+      e.age += dt;
+      const warn = evWarn(e, T.events.warn);
+      if (e.kind === "raid") { if (e.age >= warn) { spawnRaid(state, e); ev.splice(i, 1); } }
+      else if (e.age >= warn + e.dur) ev.splice(i, 1);
     }
+    if (showersOn(state.sector)) {
+      state.showerIn -= dt;
+      if (state.showerIn <= 0) {
+        if (sh.length + ev.length >= T.events.maxActive || sh.length >= S.max) state.showerIn = T.events.retry;
+        else {
+          const m = S.margin, n = state.sector;
+          sh.push({ kind: "shower", x: m + hrand(state) * (w - 2 * m), y: m + hrand(state) * (h - 2 * m), r: showerRadius(n), age: 0,
+            warn: S.warn, dur: S.dur, power: showerDmg(n), tick: 0 });
+          state.showerIn = showerGap(n) * (1 - S.gapJitter / 2 + S.gapJitter * hrand(state));
+        }
+      }
+    }
+    if (eventsOn(state.sector)) {
+      state.eventIn -= dt;
+      if (state.eventIn <= 0) rollEvent(state);
+    }
+    if (ev.length && flareActive(state)) {      // a flare stuns every ship outside a shield's reach
+      const ships = state.ships;
+      for (let i = 0; i < ships.length; i++) {
+        const s = ships[i];
+        if (!s.dead && s.stun < T.flare.linger && !shielded(state, s.x, s.y)) s.stun = T.flare.linger;
+      }
+    }
+    if (state.aliens.length) stepAliens(state, dt);
+    stepTurrets(state, dt);
+    if (state.shots.length) stepShots(state, dt);
+    const fx = state.fx;
+    for (let i = fx.length - 1; i >= 0; i--) { fx[i].age += dt; if (fx[i].age >= fx[i].life) fx.splice(i, 1); }
+  }
+
+  // Roll one event: a raid with chance raidOdds(n), else fog or flare by weight. A full board waits and tries again.
+  function rollEvent(state) {
+    const E = T.events, n = state.sector, w = state.w, h = state.h, ev = state.events;
+    if (ev.length + state.showers.length >= E.maxActive) { state.eventIn = E.retry; return; }
+    let kind;
+    if (hrand(state) < raidOdds(n)) kind = "raid";
+    else kind = hrand(state) * (E.weight.fog + E.weight.flare) < E.weight.fog ? "fog" : "flare";
+    const have = k => { let c = 0; for (let i = 0; i < ev.length; i++) if (ev[i].kind === k) c++; return c; };
+    if (kind === "flare" && have("flare") >= T.flare.max) kind = "fog";   // one flare at a time
+    if ((kind === "fog" && have("fog") >= T.fog.max) || (kind === "raid" && have("raid") >= E.maxRaids)) { state.eventIn = E.retry; return; }
+    const power = eventPower(n), e = { kind, x: 0, y: 0, r: 0, age: 0, warn: E.warn, dur: 0, power };
+    if (kind === "fog") {
+      const F = T.fog, m = F.margin;
+      e.r = F.rMin + hrand(state) * (fogRadius(n) - F.rMin);
+      e.x = m + hrand(state) * (w - 2 * m); e.y = m + hrand(state) * (h - 2 * m);
+      e.dur = F.dur;
+    } else if (kind === "flare") {
+      e.dur = flareDur(n);
+    } else {
+      const edge = T.aliens.edge, side = Math.floor(hrand(state) * 4), u = hrand(state);
+      e.x = side === 0 ? edge : side === 1 ? w - edge : edge + u * (w - 2 * edge);
+      e.y = side === 2 ? edge : side === 3 ? h - edge : edge + u * (h - 2 * edge);
+      e.r = T.aliens.markR; e.dur = 0; e.power = alienCount(n);
+    }
+    ev.push(e);
+    state.eventIn = eventGap(n) * (1 - E.jitter / 2 + E.jitter * hrand(state));
+  }
+
+  // The raid arrives: the aliens appear around the warned point at the edge of the map.
+  function spawnRaid(state, e) {
+    const A = T.aliens, n = state.sector;
+    const count = Math.max(1, Math.floor(typeof e.power === "number" ? e.power : alienCount(n)));
+    for (let i = 0; i < count && state.aliens.length < A.max; i++) {
+      const x = Math.max(0, Math.min(state.w, e.x + (hrand(state) - 0.5) * 2 * e.r));
+      const y = Math.max(0, Math.min(state.h, e.y + (hrand(state) - 0.5) * 2 * e.r));
+      state.aliens.push(makeAlien(state, x, y, n));
+    }
+  }
+
+  function alienById(state, id) {
+    const al = state.aliens;
+    for (let i = 0; i < al.length; i++) if (al[i].id === id) return al[i];
+    return null;
+  }
+
+  // Index of the nearest alien within `range` of (x, y), else -1.
+  function alienIndexNear(state, x, y, range) {
+    const al = state.aliens;
+    let best = -1, bd = range * range;
+    for (let i = 0; i < al.length; i++) {
+      const dx = al[i].x - x, dy = al[i].y - y, d = dx * dx + dy * dy;
+      if (d <= bd) { bd = d; best = i; }
+    }
+    return best;
+  }
+
+  // The nearest alien to (x, y) anywhere on the map: its id, or -1 (for the attack key).
+  function nearestAlien(state, x, y) {
+    const al = state.aliens;
+    let best = -1, bd = Infinity;
+    for (let i = 0; i < al.length; i++) {
+      const dx = al[i].x - x, dy = al[i].y - y, d = dx * dx + dy * dy;
+      if (d < bd) { bd = d; best = al[i].id; }
+    }
+    return best;
+  }
+
+  // Fire a shot from (x, y) at (tx, ty) (already led). No-op when the shot list is full.
+  function fireShot(state, x, y, tx, ty, speed, dmg, side, range) {
+    if (state.shots.length >= T.combat.maxShots) return false;
+    const dx = tx - x, dy = ty - y, d = Math.sqrt(dx * dx + dy * dy);
+    if (!(d > 1e-6)) return false;
+    state.shots.push({ x, y, vx: dx / d * speed, vy: dy / d * speed, life: Math.min(T.combat.shotLife, range * T.combat.shotReach / speed), dmg, side });
+    return true;
+  }
+
+  // Fire at alien a from (x, y), leading it by its velocity.
+  function fireAtAlien(state, x, y, a, speed, dmg, range) {
+    const dx = a.x - x, dy = a.y - y, t = Math.sqrt(dx * dx + dy * dy) / speed;
+    return fireShot(state, x, y, a.x + a.vx * t, a.y + a.vy * t, speed, dmg, "us", range);
+  }
+
+  function killAlien(state, index) {
+    const A = T.aliens, a = state.aliens[index];
+    state.score.kills += A.score;
+    state.stats.kills++;
+    pushFx(state, "kill", a.x, a.y, a.x, a.y);
+    if (hrand(state) < A.starChance && state.stars.length < A.maxStars) {      // a star where it fell (ordinary star rules)
+      const m = T.stars.edge;
+      state.stars.push({ id: state.stars.length, x: Math.max(m, Math.min(state.w - m, a.x)), y: Math.max(m, Math.min(state.h - m, a.y)), taken: false });
+    }
+    state.aliens.splice(index, 1);
+  }
+
+  function stepAliens(state, dt) {
+    const A = T.aliens, al = state.aliens, ships = state.ships, bases = state.bases, sp = alienSpeed(state.sector) * dt;
+    const sense2 = A.sense * A.sense;
+    for (let i = 0; i < al.length; i++) {
+      const a = al[i];
+      a.age = (a.age || 0) + dt;
+      if (a.age > A.stay) {      // time to go: fly to the nearest map edge and leave (no score)
+        const ex = a.x < state.w - a.x ? 0 : state.w, ey = a.y < state.h - a.y ? 0 : state.h;
+        const alongX = Math.abs(a.x - ex) <= Math.abs(a.y - ey);
+        const gx = alongX ? ex : a.x, gy = alongX ? a.y : ey, dx = gx - a.x, dy = gy - a.y, d = Math.sqrt(dx * dx + dy * dy);
+        a.tgtKind = ""; a.tgt = -1;
+        if (d <= sp) { al.splice(i, 1); i--; continue; }
+        a.vx = dx / d * sp / dt; a.vy = dy / d * sp / dt;
+        a.x += dx / d * sp; a.y += dy / d * sp;
+        continue;
+      }
+      // target: the nearest loaded ship within sense, else the nearest live base
+      let kind = "", tgt = -1, bd = sense2, tx = 0, ty = 0;
+      for (let j = 0; j < ships.length; j++) {
+        const s = ships[j];
+        if (s.dead || !(s.cargo > 0)) continue;
+        const dx = s.x - a.x, dy = s.y - a.y, d = dx * dx + dy * dy;
+        if (d < bd) { bd = d; tgt = j; kind = "ship"; tx = s.x; ty = s.y; }
+      }
+      if (tgt < 0) {
+        bd = Infinity;
+        for (let j = 0; j < bases.length; j++) {
+          if (bases[j].down) continue;
+          const dx = bases[j].x - a.x, dy = bases[j].y - a.y, d = dx * dx + dy * dy;
+          if (d < bd) { bd = d; tgt = j; kind = "base"; tx = bases[j].x; ty = bases[j].y; }
+        }
+      }
+      a.tgtKind = kind; a.tgt = tgt;
+      a.vx = 0; a.vy = 0;
+      if (tgt < 0) continue;
+      const d = Math.sqrt(bd), hold = A.range * A.holdFrac + (kind === "base" ? BASE_R : 0);
+      if (d > hold) {
+        const k = Math.min(sp, d - hold) / d;
+        a.vx = (tx - a.x) * k / dt; a.vy = (ty - a.y) * k / dt;
+        a.x += (tx - a.x) * k; a.y += (ty - a.y) * k;
+      }
+      if (a.cd > 0) a.cd = Math.max(0, a.cd - dt);
+      if (a.cd <= 0 && d <= A.range + (kind === "base" ? BASE_R : 0)) {
+        if (fireShot(state, a.x, a.y, tx, ty, A.shotSpeed, a.dmg, "them", A.range + BASE_R)) a.cd = A.cd;
+      }
+    }
+  }
+
+  function stepTurrets(state, dt) {
+    const U = T.addons.turret, bases = state.bases;
+    for (let i = 0; i < bases.length; i++) {
+      const b = bases[i];
+      if (!b.turret || b.down) continue;
+      if (b.cd > 0) b.cd = Math.max(0, b.cd - dt);
+      if (b.cd > 0 || !state.aliens.length) continue;
+      const k = alienIndexNear(state, b.x, b.y, U.range);
+      if (k >= 0 && fireAtAlien(state, b.x, b.y, state.aliens[k], U.shotSpeed, U.dmg, U.range)) b.cd = U.cd;
+    }
+  }
+
+  // Squared distance from point (cx, cy) to the segment (px, py)-(qx, qy).
+  function segDist2(px, py, qx, qy, cx, cy) {
+    const dx = qx - px, dy = qy - py, len2 = dx * dx + dy * dy;
+    let t = len2 > 0 ? ((cx - px) * dx + (cy - py) * dy) / len2 : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const ex = px + dx * t - cx, ey = py + dy * t - cy;
+    return ex * ex + ey * ey;
+  }
+
+  // Shots fly in a line; a hit is checked along the whole step so a fast shot or a long step cannot skip a target.
+  function stepShots(state, dt) {
+    const shots = state.shots, A = T.aliens, al = state.aliens, ships = state.ships, bases = state.bases;
+    const ar2 = A.r * A.r, sr2 = T.combat.shipR * T.combat.shipR, br2 = BASE_R * BASE_R;
+    for (let i = shots.length - 1; i >= 0; i--) {
+      const s = shots[i], nx = s.x + s.vx * dt, ny = s.y + s.vy * dt;
+      let hit = false;
+      if (s.side === "us") {
+        for (let j = 0; j < al.length; j++) {
+          if (segDist2(s.x, s.y, nx, ny, al[j].x, al[j].y) > ar2) continue;
+          al[j].hp -= s.dmg;
+          if (al[j].hp <= 0) killAlien(state, j);
+          hit = true; break;
+        }
+      } else {
+        for (let j = 0; j < ships.length && !hit; j++) {
+          if (ships[j].dead || segDist2(s.x, s.y, nx, ny, ships[j].x, ships[j].y) > sr2) continue;
+          damageShip(state, ships[j], s.dmg);
+          hit = true;
+        }
+        for (let j = 0; j < bases.length && !hit; j++) {
+          if (bases[j].down || segDist2(s.x, s.y, nx, ny, bases[j].x, bases[j].y) > br2) continue;
+          damageBase(state, bases[j], s.dmg);
+          hit = true;
+        }
+      }
+      s.x = nx; s.y = ny; s.life -= dt;
+      if (hit || s.life <= 0 || nx < -T.aliens.offMap || ny < -T.aliens.offMap || nx > state.w + T.aliens.offMap || ny > state.h + T.aliens.offMap) {
+        const last = shots.pop();
+        if (i < shots.length) shots[i] = last;
+      }
+    }
+  }
+
+  // ---- warships
+
+  function warFire(state, ship, def) {
+    if (ship.cd > 0 || !state.aliens.length) return;
+    let k = -1;
+    if (ship.wo === "attack") {      // the ordered alien first, when it is in range
+      const a = alienById(state, ship.wt);
+      if (a) { const dx = a.x - ship.x, dy = a.y - ship.y; if (dx * dx + dy * dy <= def.range * def.range) k = state.aliens.indexOf(a); }
+    }
+    if (k < 0) k = alienIndexNear(state, ship.x, ship.y, def.range);
+    if (k >= 0 && fireAtAlien(state, ship.x, ship.y, state.aliens[k], def.shotSpeed, def.dmg, def.range)) ship.cd = def.cd;
+  }
+
+  function stepWarship(state, ship, dt, def) {
+    const mult = state.storms.length ? speedMult(state, ship.x, ship.y) : 1;
+    if (ship.cd > 0) ship.cd = Math.max(0, ship.cd - dt);
+    if (ship.st === MANUAL) { stepManual(state, ship, dt, mult, def); warFire(state, ship, def); return; }
+    ship.st = IDLE;
+    if (ship.wo === "patrol") moveTo(ship, ship.wx, ship.wy, dt, mult);
+    else if (ship.wo === "escort") {
+      const t = ship.wt !== ship.id ? state.ships[ship.wt] : null;
+      if (!t || t.dead) { ship.wo = "patrol"; ship.wx = ship.x; ship.wy = ship.y; ship.wt = -1; ship.mv = 0; }
+      else moveNear(ship, t.x, t.y, def.follow, dt, mult);
+    } else if (ship.wo === "attack") {
+      const a = alienById(state, ship.wt);
+      if (!a) { ship.wo = "patrol"; ship.wx = ship.x; ship.wy = ship.y; ship.wt = -1; ship.mv = 0; }
+      else moveNear(ship, a.x, a.y, def.range * def.standoff, dt, mult);
+    } else ship.mv = 0;
+    warFire(state, ship, def);
+  }
+
+  function inMap(state, x, y) { return typeof x === "number" && typeof y === "number" && isFinite(x) && isFinite(y) && x >= 0 && y >= 0 && x <= state.w && y <= state.h; }
+
+  function warOrderGuard(state, shipId) {
+    const ship = state.ships[shipId];
+    if (!ship) return { ok: false, reason: "No such ship." };
+    if (state.over) return { ok: false, reason: "This run is over." };
+    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    if (!SHIP_TYPES[ship.type].war) return { ok: false, reason: ship.name + " is not a warship." };
+    return { ok: true, ship };
+  }
+
+  function orderPatrol(state, shipId, x, y) {
+    const g = warOrderGuard(state, shipId);
+    if (!g.ok) return g;
+    if (!inMap(state, x, y)) return { ok: false, reason: "That point is off the map." };
+    const ship = g.ship;
+    clearManual(ship);
+    ship.st = IDLE; ship.wo = "patrol"; ship.wx = x; ship.wy = y; ship.wt = -1;
+    return { ok: true };
+  }
+
+  function orderEscort(state, shipId, targetShipId) {
+    const g = warOrderGuard(state, shipId);
+    if (!g.ok) return g;
+    const t = state.ships[targetShipId];
+    if (!t) return { ok: false, reason: "No such ship to escort." };
+    if (t.dead) return { ok: false, reason: lostReason(t) };
+    if (targetShipId === shipId) return { ok: false, reason: "A ship cannot escort itself." };
+    const ship = g.ship;
+    clearManual(ship);
+    ship.st = IDLE; ship.wo = "escort"; ship.wt = targetShipId;
+    return { ok: true };
+  }
+
+  function orderAttack(state, shipId, alienId) {
+    const g = warOrderGuard(state, shipId);
+    if (!g.ok) return g;
+    if (!alienById(state, alienId)) return { ok: false, reason: "No such alien." };
+    const ship = g.ship;
+    clearManual(ship);
+    ship.st = IDLE; ship.wo = "attack"; ship.wt = alienId;
+    return { ok: true };
+  }
+
+  // ---- add-ons and repair
+
+  function buildAddon(state, baseId, kind, labels) {
+    const base = state.bases[baseId], bw = labels ? labels.base : "base", def = T.addons[kind];
+    if (!base) return { ok: false, reason: "No such " + bw + "." };
+    if (!def || !Object.prototype.hasOwnProperty.call(T.addons, kind)) return { ok: false, reason: "Unknown add-on." };
+    if (state.over) return { ok: false, reason: "This run is over." };
+    if (base.down) return { ok: false, reason: "This " + bw + " is down. Repair it first." };
+    if (base[kind]) return { ok: false, reason: "This " + bw + " already has " + an(lc(def.label)) + "." };
+    const cost = addonCost(state, kind);
+    if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials for " + an(lc(def.label)) + "." };
+    pay(state, cost);
+    base[kind] = true;
+    return { ok: true };
+  }
+
+  function repairCost(state, kind, id) {
+    const k = costMult(state.sector);
+    const thing = kind === "ship" ? state.ships[id] : kind === "base" ? state.bases[id] : null;
+    const per = kind === "ship" ? T.repair.ship : T.repair.base;
+    const out = { ore: 0, ice: 0, crystal: 0 };
+    if (!thing || thing.dead) return out;
+    const missing = Math.max(0, thing.maxHp - thing.hp);
+    if (missing <= 1e-9) return out;
+    for (const r of RES) out[r] = per[r] ? Math.ceil(per[r] * missing * k - 1e-9) : 0;
+    return out;
+  }
+
+  function repairShip(state, shipId, labels) {
+    const ship = state.ships[shipId], bw = labels ? labels.base : "base";
+    if (!ship) return { ok: false, reason: "No such ship." };
+    if (state.over) return { ok: false, reason: "This run is over." };
+    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    if (ship.hp >= ship.maxHp - 1e-9) return { ok: false, reason: ship.name + " is not damaged." };
+    const base = state.bases[nearestBase(state, ship.x, ship.y)], up = T.upgrades[base.tier | 0];
+    if (Math.hypot(ship.x - base.x, ship.y - base.y) > BASE_R + 10 + up.dock + MANUAL_SLACK) return { ok: false, reason: "Fly " + ship.name + " to a " + bw + " first." };
+    const cost = repairCost(state, "ship", shipId);
+    if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials to repair " + ship.name + "." };
+    pay(state, cost);
+    ship.hp = ship.maxHp; ship.rep = T.repair.time;
+    return { ok: true };
+  }
+
+  function repairBase(state, baseId, labels) {
+    const base = state.bases[baseId], bw = labels ? labels.base : "base";
+    if (!base) return { ok: false, reason: "No such " + bw + "." };
+    if (state.over) return { ok: false, reason: "This run is over." };
+    if (base.hp >= base.maxHp - 1e-9) return { ok: false, reason: "This " + bw + " is not damaged." };
+    const cost = repairCost(state, "base", baseId);
+    if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials to repair this " + bw + "." };
+    pay(state, cost);
+    base.hp = base.maxHp; base.down = false;
+    return { ok: true };
+  }
+
+  // The warnings to show: every event (and shower) still in its warning phase, with the seconds left (whole, rounded up).
+  function eventWarnings(state) {
+    const out = [];
+    const add = (list, dflt) => {
+      for (let i = 0; i < list.length; i++) {
+        const e = list[i], warn = evWarn(e, dflt);
+        if (e.age < warn) out.push({ kind: e.kind || "shower", secs: Math.max(1, Math.ceil(warn - e.age - 1e-9)), x: e.x, y: e.y, r: e.r });
+      }
+    };
+    add(state.events, T.events.warn);
+    add(state.showers, T.showers.warn);
+    return out;
   }
 
   // Stranded: no material left anywhere to mine, nothing in a hold, and not enough for another base.
   // (A new ship would have nothing to mine, so being able to afford one does not count.)
   function isStranded(state) {
     if (state.over || state.won) return false;
+    let crew = false;      // every miner and hauler lost and no stock for a new miner: nothing can ever be mined again
+    for (let i = 0; i < state.ships.length && !crew; i++) crew = !state.ships[i].dead && !SHIP_TYPES[state.ships[i].type].war;
+    if (!crew && !canAfford(state, shipCost(state, "miner"))) return true;
     for (let i = 0; i < state.bodies.length; i++) if (state.bodies[i].amount > 1e-6) return false;
     for (let i = 0; i < state.ships.length; i++) if (state.ships[i].cargo > 1e-9) return false;
     return !canAfford(state, baseCost(state));
@@ -762,10 +1363,10 @@
   }
 
   function step(state, dt) {
-    if (state.over) return;
+    if (state.over || !(dt > 0)) return;
     state.time += dt;
     state.sectorTime += dt;
-    if (state.storms.length || state.sector >= T.showers.firstSector) stepHazards(state, dt);
+    stepHazards(state, dt);
     const ships = state.ships;
     for (let i = 0; i < ships.length; i++) stepShip(state, ships[i], dt);
     state.endTimer -= dt;
@@ -779,7 +1380,7 @@
 
   function scoreTotal(state) {
     const s = state.score;
-    return Math.floor(s.mat + s.bases + s.sectors + s.time + 1e-6);
+    return Math.floor(s.mat + s.bases + s.sectors + s.time + (s.kills || 0) + 1e-6);
   }
 
   // ---------------------------------------------------------------- text for the mission board
@@ -802,6 +1403,15 @@
     const L = labels || SPACE_LABELS;
     const body = ship.target >= 0 ? state.bodies[ship.target] : null;
     const def = SHIP_TYPES[ship.type];
+    if (ship.dead) return "Lost";
+    if (ship.stun > 0) return "Stunned by a solar flare";
+    if (ship.rep > 0) return "Repairing";
+    if (def.war && ship.st !== MANUAL) {
+      if (ship.wo === "patrol") return "Patrolling";
+      if (ship.wo === "escort") { const t = state.ships[ship.wt]; return "Escorting " + (t ? shipLabel(t, labels) : "a ship"); }
+      if (ship.wo === "attack") return "Attacking an alien";
+      return "On guard. Select it, then give an order.";
+    }
     switch (ship.st) {
       case TO_BODY: return "Flying to " + (body ? bodyLabel(body, L) : "target");
       case MINING: return "Mining " + (body ? bodyLabel(body, L) : "") + " " + r0(ship.cargo) + "/" + def.cap;
@@ -832,7 +1442,7 @@
 
   // Top the fleet up to `total` ships for free and send them all mining. Bodies get 8x the stuff so
   // the ships stay busy for the whole test. Deterministic for a given state.
-  function spawnStress(state, total) {
+  function spawnStress(state, total, aliens) {
     if (!state.stress) {
       state.stress = true;
       for (const b of state.bodies) { b.amount *= 8; b.max *= 8; }
@@ -841,7 +1451,15 @@
     while (state.ships.length < total) addShip(state, state.ships.length % 3 === 2 ? "hauler" : "miner");
     for (const ship of state.ships) {
       const b = state.bodies[Math.floor(r() * state.bodies.length)];
-      if (b) orderShip(state, ship.id, b.id);
+      if (b && !ship.dead && !SHIP_TYPES[ship.type].war) orderShip(state, ship.id, b.id);
+    }
+    // `aliens` more aliens from the edges, as in a raid (even in sector 1, where none come by themselves)
+    const want = Math.min(T.aliens.max, Math.max(0, Math.floor(num(aliens, 0))));
+    while (state.aliens.length < want) {
+      const side = Math.floor(hrand(state) * 4), u = hrand(state), e = T.aliens.edge;
+      const x = side === 0 ? e : side === 1 ? state.w - e : e + u * (state.w - 2 * e);
+      const y = side === 2 ? e : side === 3 ? state.h - e : e + u * (state.h - 2 * e);
+      state.aliens.push(makeAlien(state, x, y, Math.max(state.sector, T.aliens.firstSector)));
     }
     return state;
   }
@@ -881,6 +1499,7 @@
       state.stats[k] = Math.max(0, num(raw.stats && raw.stats[k], 0));
     }
     state.stats.lost = Math.max(0, num(raw.stats && raw.stats.lost, 0));
+    state.stats.kills = intIn(raw.stats && raw.stats.kills, 0, 1e9, 0);
     for (let i = 0; i < raw.bodies.length; i++) {
       const b = raw.bodies[i];
       if (!b || RES.indexOf(b.res) < 0) return { ok: false, error: "Save has a bad planet." };
@@ -891,7 +1510,15 @@
     for (let i = 0; i < raw.bases.length; i++) {
       const b = raw.bases[i];
       if (!b) return { ok: false, error: "Save has a bad base." };
-      state.bases.push({ id: i, x: num(b.x, 0), y: num(b.y, 0), home: i === 0, tier: intIn(b.tier, 0, MAX_TIER, 0) });
+      const base = makeBase(i, num(b.x, 0), num(b.y, 0), i === 0);
+      base.tier = intIn(b.tier, 0, MAX_TIER, 0);
+      base.maxHp = base.hp;      // a missing hp (older save) means a full one
+      base.hp = Math.min(base.maxHp, Math.max(0, num(b.hp, base.maxHp)));
+      base.shield = b.shield === true; base.turret = b.turret === true;
+      base.cd = Math.min(60, Math.max(0, num(b.cd, 0)));
+      if (base.home) base.hp = Math.max(1, base.hp);           // the home base at 0 HP would have ended the run
+      else if (base.hp <= 0 || b.down === true) { base.hp = 0; base.down = true; }
+      state.bases.push(base);
     }
     const rawStars = !old && Array.isArray(raw.stars) ? raw.stars.slice(0, 12) : null;
     if (rawStars) {
@@ -904,13 +1531,47 @@
       }
       for (const s of (Array.isArray(raw.showers) ? raw.showers.slice(0, 12) : [])) {
         if (!s) continue;
-        state.showers.push({ x: num(s.x, 0), y: num(s.y, 0), r: T.showers.radius, age: Math.max(0, num(s.age, 0)) });
+        state.showers.push({ kind: "shower", x: num(s.x, 0), y: num(s.y, 0), r: Math.min(600, Math.max(10, num(s.r, T.showers.radius))),
+          age: Math.max(0, num(s.age, 0)), warn: Math.min(60, Math.max(0, num(s.warn, T.showers.warn))),
+          dur: Math.min(300, Math.max(0, num(s.dur, T.showers.dur))), power: Math.min(99, Math.max(0, num(s.power, showerDmg(sector)))),
+          tick: Math.min(30, Math.max(0, num(s.tick, 0))) });
       }
-      state.showerIn = num(raw.showerIn, 0);
+      state.showerIn = Math.min(3600, num(raw.showerIn, 0));
       state.hz = num(raw.hz, 0) >>> 0;
+      for (const e of (Array.isArray(raw.events) ? raw.events.slice(0, T.events.maxActive * 2) : [])) {
+        if (!e || (e.kind !== "fog" && e.kind !== "flare" && e.kind !== "raid")) continue;
+        state.events.push({ kind: e.kind, x: Math.min(state.w, Math.max(0, num(e.x, 0))), y: Math.min(state.h, Math.max(0, num(e.y, 0))),
+          r: Math.min(600, Math.max(0, num(e.r, 0))), age: Math.max(0, num(e.age, 0)), warn: Math.min(60, Math.max(0, num(e.warn, T.events.warn))),
+          dur: Math.min(300, Math.max(0, num(e.dur, 0))), power: Math.min(99, Math.max(0, num(e.power, 1))) });
+      }
+      state.eventIn = typeof raw.eventIn === "number" ? Math.min(3600, Math.max(0, num(raw.eventIn, 0))) : eventsOn(sector) ? T.events.firstDelay : 0;
+      for (const a of (Array.isArray(raw.aliens) ? raw.aliens.slice(0, T.aliens.max) : [])) {
+        if (!a) continue;
+        const maxHp = Math.min(9999, Math.max(1, num(a.maxHp, alienHp(sector)))), hp = Math.min(maxHp, num(a.hp, maxHp));
+        if (!(hp > 0)) continue;
+        const kind = a.tgtKind === "ship" || a.tgtKind === "base" ? a.tgtKind : "";
+        state.aliens.push({ id: intIn(a.id, 0, 1e9, 0), x: Math.min(state.w, Math.max(0, num(a.x, 0))), y: Math.min(state.h, Math.max(0, num(a.y, 0))),
+          vx: Math.min(500, Math.max(-500, num(a.vx, 0))), vy: Math.min(500, Math.max(-500, num(a.vy, 0))), hp, maxHp,
+          dmg: Math.min(999, Math.max(0, num(a.dmg, alienDmg(sector)))), cd: Math.min(60, Math.max(0, num(a.cd, 0))),
+          tgtKind: kind, tgt: kind ? intIn(a.tgt, -1, 1e9, -1) : -1, age: Math.min(3600, Math.max(0, num(a.age, 0))) });
+      }
+      const seen = Object.create(null);
+      let topId = -1;
+      for (const a of state.aliens) { while (seen[a.id]) a.id++; seen[a.id] = true; topId = Math.max(topId, a.id); }   // ids stay unique
+      state.alienSeq = Math.max(topId + 1, intIn(raw.alienSeq, 0, 1e9, 0));
+      for (const s of (Array.isArray(raw.shots) ? raw.shots.slice(0, T.combat.maxShots) : [])) {
+        if (!s || (s.side !== "us" && s.side !== "them")) continue;
+        state.shots.push({ x: num(s.x, 0), y: num(s.y, 0), vx: Math.min(2000, Math.max(-2000, num(s.vx, 0))), vy: Math.min(2000, Math.max(-2000, num(s.vy, 0))),
+          life: Math.min(10, Math.max(0, num(s.life, 0))), dmg: Math.min(999, Math.max(0, num(s.dmg, 0))), side: s.side });
+      }
+      for (const f of (Array.isArray(raw.fx) ? raw.fx.slice(0, T.combat.fxMax) : [])) {
+        if (!f || (f.kind !== "block" && f.kind !== "kill" && f.kind !== "boom")) continue;
+        state.fx.push({ kind: f.kind, x: num(f.x, 0), y: num(f.y, 0), x2: num(f.x2, 0), y2: num(f.y2, 0),
+          age: Math.max(0, num(f.age, 0)), life: Math.min(5, Math.max(0.05, num(f.life, T.combat.fxLife))) });
+      }
       const sc = raw.score || {};
       state.score = { mat: Math.max(0, num(sc.mat, 0)), bases: Math.max(0, num(sc.bases, 0)),
-        sectors: Math.max(0, num(sc.sectors, 0)), time: Math.max(0, num(sc.time, 0)) };
+        sectors: Math.max(0, num(sc.sectors, 0)), time: Math.max(0, num(sc.time, 0)), kills: Math.max(0, num(sc.kills, 0)) };
       state.cleared = intIn(raw.cleared, 0, 999, 0);
       state.starsGot = intIn(raw.starsGot, 0, 99999, 0);
       state.hits = intIn(raw.hits, 0, 99999, 0);
@@ -918,7 +1579,8 @@
       state.clearInfo = ci && typeof ci === "object" ? { sector: intIn(ci.sector, 1, 999, sector),
         sectorPts: Math.max(0, num(ci.sectorPts, 0)), timePts: Math.max(0, num(ci.timePts, 0)), secs: Math.max(0, num(ci.secs, 0)) } : null;
       state.over = !!raw.over;
-      state.endReason = state.over ? (raw.endReason === "stranded" ? "stranded" : "retired") : "";
+      state.endReason = state.over ? (raw.endReason === "stranded" ? "stranded" : raw.endReason === "destroyed" ? "destroyed" : "retired") : "";
+      if (state.endReason === "destroyed") state.bases[0].hp = 0;
       state.endTimer = Math.max(0, num(raw.endTimer, T.endCheckEvery));
     } else {
       // an old save has no hazards or score; sector 1 has no hazards, and the score starts from what is built
@@ -945,11 +1607,31 @@
       const star = intIn(s.star, -1, 1e9, -1);
       const res = RES.indexOf(s.res) >= 0 ? s.res : "";
       const cargo = res ? Math.min(SHIP_TYPES[s.type].cap, Math.max(0, num(s.cargo, 0))) : 0;
-      state.ships.push({ id: i, type: s.type, name: String(s.name || SHIP_TYPES[s.type].label), x: num(s.x, 0), y: num(s.y, 0),
+      const ship = makeShip(i, s.type, String(s.name || SHIP_TYPES[s.type].label));
+      Object.assign(ship, { x: num(s.x, 0), y: num(s.y, 0),
         ang: num(s.ang, 0), st, target: target < state.bodies.length ? target : -1,
         dest: dest >= 0 && dest < state.bases.length ? dest : -1,
         star: star < state.stars.length ? star : -1, cargo, res, mv: 0,
         wait: Math.max(0, num(s.wait, 0)), hitCd: Math.max(0, num(s.hitCd, 0)), ix: 0, iy: 0, mm });
+      // health and hazards (absent in older saves: full health, nothing in progress)
+      ship.maxHp = SHIP_TYPES[s.type].hp;
+      ship.hp = Math.min(ship.maxHp, Math.max(0, num(s.hp, ship.maxHp)));
+      if (s.dead === true || ship.hp <= 0) {      // a lost ship stays lost: empty, still, no orders
+        Object.assign(ship, { hp: 0, dead: true, st: IDLE, target: -1, dest: -1, star: -1, cargo: 0, res: "", mm: 0, wait: 0 });
+      } else if (SHIP_TYPES[s.type].war) {
+        ship.cargo = 0; ship.res = ""; ship.mm = 0;
+        if (ship.st !== MANUAL) ship.st = IDLE;
+        ship.target = -1; ship.dest = -1; ship.star = -1;
+        const wo = s.wo === "patrol" || s.wo === "escort" || s.wo === "attack" ? s.wo : "";
+        ship.wo = ship.st === MANUAL ? "" : wo;
+        ship.wx = Math.min(state.w, Math.max(0, num(s.wx, ship.x))); ship.wy = Math.min(state.h, Math.max(0, num(s.wy, ship.y)));
+        ship.wt = intIn(s.wt, -1, 1e9, -1);
+        if (ship.wo === "escort" && ship.wt >= raw.ships.length) ship.wo = "";
+        if (ship.wo === "") ship.wt = -1;
+      }
+      if (!ship.dead) { ship.stun = Math.min(60, Math.max(0, num(s.stun, 0))); ship.rep = Math.min(10, Math.max(0, num(s.rep, 0))); }
+      ship.cd = Math.min(60, Math.max(0, num(s.cd, 0)));
+      state.ships.push(ship);
     }
     for (const s of state.ships) {            // a ship that needs a target but has none just goes home
       if ((s.st === TO_BODY || s.st === MINING) && s.target < 0) s.st = TO_BASE;
@@ -1606,6 +2288,9 @@
     showerGap, showerHit, parTime, baseCost, shipCost, upgradeCost, upgradeBase, warpToNextSector,
     orderShip, orderShipToStar, recallShip, returnToBase, nearestBase, inStorm, step, isStranded, retire, scoreTotal,
     jobText, spawnStress, serialize, deserialize, addBackup,
+    hrand, eventsOn, aliensOn, eventGap, eventPower, raidOdds, fogRadius, flareDur, showerRadius, showerDmg,
+    alienCount, alienHp, alienDmg, alienSpeed, addonCost, buildAddon, repairCost, repairShip, repairBase,
+    orderPatrol, orderEscort, orderAttack, nearestAlien, eventWarnings, fogAt, shielded,
     newProfile, parseProfile, serializeProfile, buyLook, chooseLook, currentLooks, lookById, claimStars, syncClaimed, recordBest,
     GAME_VERSION, FEEDBACK_SCHEMA, FEEDBACK_TYPES, FEEDBACK_MAX, FEEDBACK_URL, FEEDBACK_TIMEOUT_MS,
     feedbackId, validateFeedback, feedbackGameInfo, makeFeedback, feedbackReply, newFeedbackEntry, parseFeedbackList,
