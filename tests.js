@@ -98,7 +98,13 @@ test("the hauler is faster and larger than the miner", () => {
 });
 test("a base needs materials and a clear spot", () => {
   const s = G.newGame(2), h = s.bases[0];
-  assert.ok(!G.placeBase(s, h.x + 300, h.y).ok, "broke");
+  let spot = null;
+  for (let x = 100; x < 1500 && !spot; x += 25) for (let y = 100; y < 900 && !spot; y += 25) if (!G.baseSpotProblem(s, x, y)) spot = { x, y };
+  assert.ok(spot, "found a legal spot");
+  s.stock.ore = s.stock.ice = s.stock.crystal = 0;
+  const broke = G.placeBase(s, spot.x, spot.y);
+  assert.ok(!broke.ok && /materials/.test(broke.reason), "valid spot, no materials");
+  assert.strictEqual(s.bases.length, 1);
   s.stock.ore = 1000; s.stock.ice = 1000; s.stock.crystal = 1000;
   assert.ok(!G.placeBase(s, h.x + 20, h.y).ok, "on top of home");
   assert.ok(!G.placeBase(s, 2, 2).ok, "off the edge");
@@ -119,16 +125,18 @@ test("placing a base charges the cost and adds a drop-off point", () => {
   assert.strictEqual(s.stock.crystal, 1000 - G.BASE_COST.crystal);
   assert.ok(!G.placeBase(s, spot.x + 10, spot.y).ok, "too close to the new base");
 });
-test("owning 5 bases wins the game, 4 does not", () => {
+test("building 5 bases (6 with home) wins the game, 4 built does not", () => {
   const s = G.newGame(3);
   s.stock.ore = s.stock.ice = s.stock.crystal = 5000;
+  assert.strictEqual(G.GOAL_BASES, 5);
   let built = 0;
-  for (let x = 80; x < 1520 && s.bases.length < G.GOAL_BASES; x += 40) {
-    for (let y = 80; y < 920 && s.bases.length < G.GOAL_BASES; y += 40) {
-      if (G.placeBase(s, x, y).ok) { built++; if (s.bases.length === G.GOAL_BASES - 1) assert.ok(!s.won); }
+  for (let x = 80; x < 1520 && built < G.GOAL_BASES; x += 40) {
+    for (let y = 80; y < 920 && built < G.GOAL_BASES; y += 40) {
+      if (G.placeBase(s, x, y).ok) { built++; if (built === G.GOAL_BASES - 1) assert.ok(!s.won, "4 built"); }
     }
   }
-  assert.strictEqual(s.bases.length, G.GOAL_BASES);
+  assert.strictEqual(built, G.GOAL_BASES);
+  assert.strictEqual(s.bases.length, G.GOAL_BASES + 1);
   assert.ok(s.won);
 });
 
@@ -242,6 +250,40 @@ test("recall sends a working ship home and clears its target", () => {
   assert.strictEqual(s.ships[0].st, G.IDLE);
   assert.ok(!G.recallShip(s, 99).ok);
 });
+test("a recalled ship with an empty hold goes straight to a new target", () => {
+  const s = G.newGame(1), b = nearBody(s);
+  G.orderShip(s, 0, b.id);
+  run(s, 1);
+  G.recallShip(s, 0);
+  assert.strictEqual(s.ships[0].st, G.TO_BASE);
+  assert.strictEqual(s.ships[0].cargo, 0);
+  G.orderShip(s, 0, b.id);
+  assert.strictEqual(s.ships[0].st, G.TO_BODY);
+  s.ships[0].cargo = 5; s.ships[0].res = b.res; s.ships[0].st = G.TO_BASE;   // loaded: still unloads first
+  G.orderShip(s, 0, b.id);
+  assert.strictEqual(s.ships[0].st, G.TO_BASE);
+});
+test("returnToBase sends a ship to the chosen base, not the nearest", () => {
+  const s = G.newGame(1), home = s.bases[0];
+  let spot = null;
+  for (let x = 100; x < 1500 && !spot; x += 25) for (let y = 100; y < 900 && !spot; y += 25) {
+    if (!G.baseSpotProblem(s, x, y) && Math.hypot(x - home.x, y - home.y) > 400) spot = { x, y };
+  }
+  assert.ok(spot);
+  s.stock.ore = s.stock.ice = s.stock.crystal = 1000;
+  assert.ok(G.placeBase(s, spot.x, spot.y).ok);
+  const far = s.bases[1], ship = s.ships[0];
+  G.orderShip(s, 0, nearBody(s).id);
+  run(s, 1);
+  assert.strictEqual(G.nearestBase(s, ship.x, ship.y), 0, "home is the nearest");
+  assert.ok(G.returnToBase(s, 0, 1).ok);
+  assert.strictEqual(ship.target, -1);
+  run(s, 100);
+  assert.strictEqual(ship.st, G.IDLE);
+  assert.ok(Math.hypot(ship.x - far.x, ship.y - far.y) < G.BASE_R + 12, "docked at the far base");
+  assert.ok(!G.returnToBase(s, 0, 9).ok);
+  assert.ok(!G.returnToBase(s, 99, 0).ok);
+});
 test("re-ordering a loaded ship to a different resource unloads first", () => {
   const s = G.newGame(1), ore = nearBody(s), ice = firstBody(s, "ice");
   G.orderShip(s, 0, ore.id);
@@ -309,6 +351,17 @@ test("damaged numbers and dangling targets are repaired on load", () => {
   assert.strictEqual(r.state.ships[1].cargo, G.SHIP_TYPES.miner.cap);
   run(r.state, 5);                                   // and it still runs
   for (const sh of r.state.ships) assert.ok(isFinite(sh.x) && isFinite(sh.y));
+});
+test("cargo that does not match the target body is dropped on load", () => {
+  const s = G.newGame(1), ice = firstBody(s, "ice");
+  const raw = JSON.parse(G.serialize(s));
+  raw.ships[0].st = G.MINING; raw.ships[0].target = ice.id; raw.ships[0].res = "ore"; raw.ships[0].cargo = 10;
+  raw.ships[1].st = G.MINING; raw.ships[1].target = ice.id; raw.ships[1].res = "ice"; raw.ships[1].cargo = 10;
+  const r = G.deserialize(JSON.stringify(raw));
+  assert.ok(r.ok);
+  assert.strictEqual(r.state.ships[0].cargo, 0);
+  assert.strictEqual(r.state.ships[0].res, "");
+  assert.strictEqual(r.state.ships[1].cargo, 10, "matching cargo is kept");
 });
 test("won state and bases survive a round trip", () => {
   const s = G.newGame(3);

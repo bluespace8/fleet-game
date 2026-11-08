@@ -14,7 +14,7 @@
   const WORLD_W = 1600, WORLD_H = 1000;
   const BASE_R = 26;            // drawn and docking radius of a base
   const BASE_GAP = 110;         // closest two bases may be
-  const GOAL_BASES = 5;         // bases owned (home included) to win
+  const GOAL_BASES = 5;         // bases the player must build to win (home not counted, so 6 in all)
   const RES = ["ore", "ice", "crystal"];
   const START_STOCK = { ore: 70, ice: 0, crystal: 0 };
 
@@ -133,7 +133,7 @@
     const a = id * 2.399;
     const ship = { id, type, name: SHIP_TYPES[type].label + " " + count,
       x: base.x + Math.cos(a) * (BASE_R + 12), y: base.y + Math.sin(a) * (BASE_R + 12), ang: a,
-      st: IDLE, target: -1, cargo: 0, res: "", mv: 0 };
+      st: IDLE, target: -1, dest: -1, cargo: 0, res: "", mv: 0 };
     state.ships.push(ship);
     return ship;
   }
@@ -172,7 +172,7 @@
   }
 
   function checkWin(state) {
-    if (!state.won && state.bases.length >= GOAL_BASES) { state.won = true; state.wonAt = state.time; }
+    if (!state.won && state.bases.length - 1 >= GOAL_BASES) { state.won = true; state.wonAt = state.time; }
     return state.won;
   }
 
@@ -183,8 +183,10 @@
     if (!ship || !body) return { ok: false, reason: "No such ship or body." };
     if (body.amount <= 1e-6) return { ok: false, reason: body.name + " is empty." };
     ship.target = bodyId;
-    if (ship.st === TO_BASE) return { ok: true };            // unload first, then go
-    if (ship.cargo > 0 && ship.res !== body.res) ship.st = TO_BASE;
+    ship.dest = -1;
+    // A loaded ship unloads first if it is already heading home or carries the wrong resource.
+    // An empty hold has nothing to unload, so it goes straight to the new target.
+    if (ship.cargo > 0 && (ship.st === TO_BASE || ship.res !== body.res)) ship.st = TO_BASE;
     else ship.st = TO_BODY;
     return { ok: true };
   }
@@ -193,6 +195,17 @@
     const ship = state.ships[shipId];
     if (!ship) return { ok: false, reason: "No such ship." };
     ship.target = -1;
+    ship.dest = -1;
+    if (ship.st !== IDLE) ship.st = TO_BASE;
+    return { ok: true };
+  }
+
+  // Like recallShip, but to one chosen base instead of the nearest.
+  function returnToBase(state, shipId, baseId) {
+    const ship = state.ships[shipId], base = state.bases[baseId];
+    if (!ship || !base) return { ok: false, reason: "No such ship or base." };
+    ship.target = -1;
+    ship.dest = baseId;
     if (ship.st !== IDLE) ship.st = TO_BASE;
     return { ok: true };
   }
@@ -247,12 +260,13 @@
       if (ship.cargo >= def.cap - 1e-9 || body.amount === 0) ship.st = TO_BASE;
       return;
     }
-    // TO_BASE: fly to the nearest base, unload, then repeat the run if the body still has something
-    const base = state.bases[nearestBase(state, ship.x, ship.y)];
+    // TO_BASE: fly to the chosen base (else the nearest), unload, then repeat the run if the body still has something
+    const base = state.bases[ship.dest >= 0 && ship.dest < state.bases.length ? ship.dest : nearestBase(state, ship.x, ship.y)];
     const a = ship.id * 2.399, stop = BASE_R + 10;
     if (!moveTo(ship, base.x + Math.cos(a) * stop, base.y + Math.sin(a) * stop, dt)) return;
     if (ship.cargo > 0) { state.stock[ship.res] += ship.cargo; ship.cargo = 0; }
     ship.res = "";
+    ship.dest = -1;
     const body = ship.target >= 0 ? state.bodies[ship.target] : null;
     if (body && body.amount > 1e-6) ship.st = TO_BODY;
     else { ship.target = -1; ship.st = IDLE; }
@@ -345,14 +359,17 @@
       if (!s || !SHIP_TYPES[s.type]) return { ok: false, error: "Save has a bad ship." };
       const st = num(s.st, 0) | 0;
       const target = num(s.target, -1) | 0;
+      const dest = num(s.dest, -1) | 0;
       const res = RES.indexOf(s.res) >= 0 ? s.res : "";
       const cargo = res ? Math.min(SHIP_TYPES[s.type].cap, Math.max(0, num(s.cargo, 0))) : 0;
       state.ships.push({ id: i, type: s.type, name: String(s.name || SHIP_TYPES[s.type].label), x: num(s.x, 0), y: num(s.y, 0),
         ang: num(s.ang, 0), st: st >= 0 && st <= 3 ? st : 0, target: target < state.bodies.length ? target : -1,
-        cargo, res, mv: 0 });
+        dest: dest >= 0 && dest < raw.bases.length ? dest : -1, cargo, res, mv: 0 });
     }
     for (const s of state.ships) {            // a ship that needs a target but has none just goes home
       if ((s.st === TO_BODY || s.st === MINING) && s.target < 0) s.st = TO_BASE;
+      const body = s.target >= 0 ? state.bodies[s.target] : null;   // cargo that does not fit the target is dropped
+      if (body && (s.st === TO_BODY || s.st === MINING) && s.res !== body.res) { s.cargo = 0; s.res = ""; }
     }
     return { ok: true, state };
   }
@@ -361,6 +378,6 @@
     VERSION, WORLD_W, WORLD_H, BASE_R, BASE_GAP, GOAL_BASES, RES, START_STOCK, SHIP_TYPES, BASE_COST,
     IDLE, TO_BODY, MINING, TO_BASE,
     rng, newGame, canAfford, buildShip, addShip, baseSpotProblem, placeBase, checkWin,
-    orderShip, recallShip, nearestBase, step, jobText, spawnStress, serialize, deserialize,
+    orderShip, recallShip, returnToBase, nearestBase, step, jobText, spawnStress, serialize, deserialize,
   };
 });

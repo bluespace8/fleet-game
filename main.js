@@ -10,7 +10,9 @@
   const canvas = $("game"), ctx = canvas.getContext("2d");
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  const SAVE_KEY = "fleet-game-save-v1";
+  const SAVE_KEY = "fleet-game-save-v1";         // the Save button
+  const AUTO_KEY = "fleet-game-autosave-v1";     // autosave, new game and base placement
+  const BAD_KEY = "fleet-game-damaged-save-v1";  // a copy of the last damaged save, kept for the player
   const STEP = 1 / 30, MAX_STEPS = 6;          // fixed simulation step, and a cap so a slow frame cannot spiral
   const STRESS = /[?&]stress\b/.test(location.search);
   const WORLD = { w: G.WORLD_W, h: G.WORLD_H };
@@ -28,7 +30,7 @@
   let stars = [], nebula = null;
   const trails = new Map();
   const shapes = new Map();
-  let time = 0, acc = 0, lastT = 0, lastBoard = 0, lastSave = 0, boardHtml = "", buildHtml = "", toastTimer = 0;
+  let time = 0, acc = 0, lastT = 0, lastBoard = 0, lastSave = 0, boardKey = "", buildHtml = "", toastTimer = 0;
   const fps = { frames: 0, acc: 0, worst: 0 };
 
   // ---------------------------------------------------------------- game lifecycle
@@ -43,7 +45,7 @@
     game = g;
     ui.selected = null; ui.placing = false; ui.winShown = !!g.won; acc = 0;
     trails.clear(); shapes.clear();
-    boardHtml = buildHtml = "";
+    boardKey = ""; buildHtml = "";
     $("win").hidden = true;
     refresh();
   }
@@ -54,21 +56,35 @@
     saveNow();
   }
 
-  function saveNow() {
+  function saveNow(key) {
     if (STRESS) return true;   // never overwrite a real save with the 30-ship test fleet
-    try { localStorage.setItem(SAVE_KEY, G.serialize(game)); return true; }
+    try { localStorage.setItem(key || AUTO_KEY, G.serialize(game)); return true; }
     catch (e) { toast("Could not save: " + e.message); return false; }
   }
 
-  function loadNow() {
-    try {
-      const text = localStorage.getItem(SAVE_KEY);
-      if (!text) { toast("Nothing saved yet."); return false; }
+  // Try the saves in order. Returns { state } for the first good one, plus a notice when a damaged
+  // one was passed over. A damaged save is copied to BAD_KEY first so nothing is lost silently.
+  function readSaves(keys) {
+    let notice = "", found = false;
+    for (const key of keys) {
+      let text = null;
+      try { text = localStorage.getItem(key); } catch (e) { continue; }
+      if (!text) continue;
+      found = true;
       const res = G.deserialize(text);
-      if (!res.ok) { toast(res.error); return false; }
-      start(res.state);
-      return true;
-    } catch (e) { toast("Could not load: " + e.message); return false; }
+      if (res.ok) return { state: res.state, notice };
+      try { localStorage.setItem(BAD_KEY, text); } catch (e) { /* storage full; the notice still shows */ }
+      notice = (key === SAVE_KEY ? "Your saved game" : "The autosave") + " was damaged (" + res.error.replace(/.$/, "") + ").";
+    }
+    return { state: null, notice, found };
+  }
+
+  function loadNow() {
+    const r = readSaves([SAVE_KEY, AUTO_KEY]);
+    if (!r.state) { toast(r.notice ? r.notice + " Nothing to load." : "Nothing saved yet."); return false; }
+    start(r.state);
+    if (r.notice) toast(r.notice + " Loaded the other save.");
+    return true;
   }
 
   function toast(msg) {
@@ -76,7 +92,7 @@
     el.textContent = msg;
     el.classList.add("show");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.classList.remove("show"), 2200);
+    toastTimer = setTimeout(() => el.classList.remove("show"), msg.length > 50 ? 5500 : 2200);
   }
 
   // ---------------------------------------------------------------- canvas setup
@@ -392,23 +408,53 @@
     if (html !== buildHtml) { buildHtml = html; $("build").innerHTML = html; }
   }
 
+  // Rows are built once per ship set. Every refresh only updates text, widths and classes in place,
+  // so a click never lands on a row that has just been thrown away.
+  let boardRows = [];
+
   function renderBoard() {
-    const rows = game.ships.map(s => {
-      const spec = G.SHIP_TYPES[s.type];
-      const pct = s.cargo > 0 ? Math.round((s.cargo / spec.cap) * 100) : 0;
-      return `<li data-ship="${s.id}" class="${s.id === ui.selected ? "sel" : ""}">
-        <span class="dot" style="background:${SHIP_COLOR[s.type]};opacity:${s.st === G.IDLE ? 0.45 : 1}"></span>
-        <span class="txt"><span class="name">${s.name}</span><br><span class="job">${G.jobText(game, s)}</span>
-        <div class="bar"><i style="width:${pct}%;background:${s.res ? RES_COLOR[s.res] : "#fff"}"></i></div></span></li>`;
-    }).join("");
-    if (rows !== boardHtml) { boardHtml = rows; $("board").innerHTML = rows; }
+    const list = $("board");
+    const key = game.ships.map(s => s.id).join(",");
+    if (key !== boardKey) {
+      boardKey = key;
+      list.textContent = "";
+      boardRows = game.ships.map(s => {
+        const li = document.createElement("li");
+        li.dataset.ship = s.id;
+        const dot = document.createElement("span"); dot.className = "dot";
+        const txt = document.createElement("span"); txt.className = "txt";
+        const name = document.createElement("span"); name.className = "name";
+        const job = document.createElement("span"); job.className = "job";
+        const bar = document.createElement("div"); bar.className = "bar";
+        const fill = document.createElement("i");
+        bar.appendChild(fill);
+        txt.append(name, document.createElement("br"), job, bar);
+        li.append(dot, txt);
+        list.appendChild(li);
+        return { li, dot, name, job, fill, last: "" };
+      });
+    }
+    for (let i = 0; i < game.ships.length; i++) {
+      const s = game.ships[i], row = boardRows[i];
+      const pct = s.cargo > 0 ? Math.round((s.cargo / G.SHIP_TYPES[s.type].cap) * 100) : 0;
+      const sig = s.name + "|" + s.type + "|" + s.st + "|" + s.res + "|" + pct + "|" + G.jobText(game, s) + "|" + (s.id === ui.selected);
+      if (sig === row.last) continue;
+      row.last = sig;
+      row.li.className = s.id === ui.selected ? "sel" : "";
+      row.dot.style.background = SHIP_COLOR[s.type];
+      row.dot.style.opacity = s.st === G.IDLE ? 0.45 : 1;
+      row.name.textContent = s.name;
+      row.job.textContent = G.jobText(game, s);
+      row.fill.style.width = pct + "%";
+      row.fill.style.background = s.res ? RES_COLOR[s.res] : "#fff";
+    }
     const busy = game.ships.filter(s => s.st !== G.IDLE).length;
     $("board-count").textContent = `${busy}/${game.ships.length} working`;
   }
 
   function refresh() {
     $("res").innerHTML = resLine();
-    $("goal").textContent = `Bases ${game.bases.length} / ${G.GOAL_BASES}`;
+    $("goal").textContent = `Bases built ${game.bases.length - 1} / ${G.GOAL_BASES}`;
     renderBuild();
     renderBoard();
     $("b-pause").textContent = ui.paused ? "Resume" : "Pause";
@@ -455,7 +501,7 @@
   function select(id) {
     ui.selected = id;
     ui.placing = false;
-    boardHtml = buildHtml = "";
+    boardKey = ""; buildHtml = "";
     refresh();
   }
 
@@ -477,7 +523,7 @@
     if (h && h.kind === "body") {
       const r = G.orderShip(game, ui.selected, h.o.id);
       if (!r.ok) return toast(r.reason);
-    } else if (h && h.kind === "base") G.recallShip(game, ui.selected);
+    } else if (h && h.kind === "base") G.returnToBase(game, ui.selected, h.o.id);
     else return select(null);
     refresh();
   }
@@ -495,7 +541,7 @@
     const btn = ev.target.closest("[data-build]");
     if (!btn || !game) return;
     const key = btn.dataset.build;
-    if (key === "base") { ui.placing = !ui.placing; ui.selected = null; boardHtml = buildHtml = ""; refresh(); return; }
+    if (key === "base") { ui.placing = !ui.placing; ui.selected = null; boardKey = ""; buildHtml = ""; refresh(); return; }
     const r = G.buildShip(game, key);
     if (!r.ok) toast(r.reason);
     else { select(r.ship.id); saveNow(); }
@@ -508,16 +554,24 @@
 
   function setPaused(v) { ui.paused = v; refresh(); }
   $("b-pause").addEventListener("click", () => setPaused(!ui.paused));
-  $("b-save").addEventListener("click", () => { if (saveNow()) toast(STRESS ? "Stress mode does not save." : "Saved."); });
+  $("b-save").addEventListener("click", () => { if (saveNow(SAVE_KEY)) toast(STRESS ? "Stress mode does not save." : "Saved."); });
   $("b-load").addEventListener("click", () => { if (loadNow()) toast("Loaded."); });
   $("b-new").addEventListener("click", () => newGame(true));
   $("w-new").addEventListener("click", () => newGame(false));
   $("w-keep").addEventListener("click", () => { $("win").hidden = true; });
   window.addEventListener("keydown", ev => {
-    if (ev.key === "Escape") { ui.placing = false; ui.selected = null; boardHtml = buildHtml = ""; refresh(); }
-    else if (ev.key === " " && ev.target === document.body) { ev.preventDefault(); setPaused(!ui.paused); }
+    if (ev.key === "Escape") { ui.placing = false; ui.selected = null; boardKey = ""; buildHtml = ""; refresh(); }
   });
-  window.addEventListener("beforeunload", () => { if (game) saveNow(); });
+  // Space toggles pause wherever focus is. It is handled in the capture phase and cancelled, so a
+  // focused button does not also "click" (keydown for most browsers, keyup for Firefox).
+  const isSpace = ev => ev.key === " " || ev.code === "Space";
+  window.addEventListener("keydown", ev => {
+    if (!isSpace(ev)) return;
+    ev.preventDefault();
+    if (!ev.repeat) setPaused(!ui.paused);
+  }, true);
+  window.addEventListener("keyup", ev => { if (isSpace(ev)) ev.preventDefault(); }, true);
+  window.addEventListener("beforeunload", () => { if (game) saveNow(AUTO_KEY); });
   window.addEventListener("resize", resize);
 
   // ---------------------------------------------------------------- main loop
@@ -555,14 +609,13 @@
   // ---------------------------------------------------------------- go
 
   resize();
-  let first = null;
+  let first = null, notice = "";
   if (!STRESS) {
-    try {
-      const res = G.deserialize(localStorage.getItem(SAVE_KEY) || "");
-      if (res.ok) first = res.state;
-    } catch (e) { first = null; }
+    const r = readSaves([AUTO_KEY, SAVE_KEY]);   // the autosave is the newest; the manual save is the fallback
+    first = r.state; notice = r.notice;
   }
   start(first || freshGame());
+  if (notice) toast(notice + (first ? " Loaded the other save." : " Started a new game; a copy of the damaged save was kept."));
   requestAnimationFrame(t => { lastT = t; lastSave = t; requestAnimationFrame(loop); });
 
   // for debugging from the console
