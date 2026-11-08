@@ -18,6 +18,7 @@
   const PLAYERS_KEY = "fleet-game-players-v1";   // every player and their star bank, hangar choices and best score
   const RUNS_KEY = "fleet-game-runs-v1";         // one record per finished run
   const BUYS_KEY = "fleet-game-purchases-v1";    // one record per hangar purchase
+  const FEEDBACK_KEY = "fleet-game-feedback-v1";  // saved feedback entries; never part of a save
   const STEP = 1 / 30, MAX_STEPS = 6;          // fixed simulation step, and a cap so a slow frame cannot spiral
   const STRESS = /[?&]stress\b/.test(location.search);
   const STRESS_SECTOR = G.clampSector(Number((/[?&]sector=(\d+)/.exec(location.search) || [])[1]) || 1);
@@ -36,7 +37,7 @@
   let roster = null, runLog = null, buyLog = null;   // only set when HAS
   let profile = G.newProfile(), looks = G.currentLooks(profile);
   const ui = { selected: null, placing: false, paused: false, mouse: null, winShown: false, winOpen: false,
-    endShown: false, endOpen: false, hangar: false, starsSeen: 0,
+    endShown: false, endOpen: false, hangar: false, feedback: false, starsSeen: 0,
     dlg: [], sort: { col: "best", dir: "desc" }, noLog: false };
   const view = { sc: 1, ox: 0, oy: 0, W: 1, H: 1, dpr: 1 };
   let skyStars = [], nebula = null;
@@ -823,7 +824,7 @@
   }
 
   // The win and run-end cards show only when no hangar or dialog is on top.
-  const modal = () => ui.hangar || ui.dlg.length > 0;
+  const modal = () => ui.hangar || ui.feedback || ui.dlg.length > 0;
   function showCards() {
     $("win").hidden = modal() || !ui.winOpen; $("end").hidden = modal() || !ui.endOpen;
   }
@@ -927,6 +928,7 @@
   }
 
   function openDlg(view, id) {
+    if (ui.feedback) return;   // the feedback form has the screen
     const cur = ui.dlg[ui.dlg.length - 1];
     if (cur && cur.view === view && cur.id === id) return;   // already on top
     ui.dlg.push({ view, id });
@@ -1092,6 +1094,278 @@
 
   function updatePlayerButton() { if (HAS) $("b-player").textContent = "☺ " + me().name; }
 
+  // ---------------------------------------------------------------- feedback form
+
+  const OFFLINE_SHORT = "Dashboard not running";
+  const FALLBACK_TEXT = "Dashboard not running; saved here. Start the dashboard and press Send in Saved feedback.";
+  const fb = { list: [], sending: false, opener: null, wasPaused: false };
+
+  function loadFeedbackList() {
+    let text = null;
+    try { text = localStorage.getItem(FEEDBACK_KEY); } catch (e) { /* no storage: the list lasts for this visit only */ }
+    fb.list = G.parseFeedbackList(text);
+  }
+
+  // Feedback is not game state, so it is kept in stress mode too. Returns false when the browser refuses.
+  function saveFeedbackList() {
+    try { localStorage.setItem(FEEDBACK_KEY, G.serializeFeedbackList(fb.list)); return true; }
+    catch (e) { return false; }
+  }
+
+  function fbStatus(msg, kind) {
+    const el = $("f-status");
+    el.textContent = msg || "";
+    el.className = "f-status" + (kind ? " " + kind : "");
+  }
+
+  function fbCount() {
+    const n = $("f-message").value.trim().length;
+    const c = $("f-count");
+    c.textContent = n + " / " + G.FEEDBACK_MAX;
+    c.classList.toggle("over", n > G.FEEDBACK_MAX);
+  }
+
+  function fbFocusables() {
+    return Array.from($("feedback").querySelectorAll("button, select, textarea, input"))
+      .filter(el => !el.disabled && el.getClientRects().length > 0);
+  }
+
+  // After a re-render or a disabled button, make sure focus has not fallen out of the dialog.
+  function fbKeepFocus() {
+    if (ui.feedback && !$("feedback").contains(document.activeElement)) $("f-title").focus();
+  }
+
+  function renderFeedbackList() {
+    const list = $("f-list");
+    list.textContent = "";
+    const unsent = fb.list.filter(e => !e.sent).length;
+    $("f-unsent").textContent = fb.list.length ? unsent + " not sent of " + fb.list.length : "nothing saved yet";
+    $("f-send-unsent").disabled = fb.sending || !unsent;
+    $("f-download").disabled = !fb.list.length;
+    $("f-send").disabled = fb.sending;
+    for (const id of ["f-type", "f-rating", "f-message", "f-info"]) $(id).disabled = fb.sending;
+    $("f-send").textContent = fb.sending ? "Sending..." : "Send to team";
+    for (const e of fb.list) {
+      const p = e.payload, li = document.createElement("li");
+      const state = document.createElement("span");
+      state.className = "f-state " + (e.sent ? "sent" : "unsent");
+      state.textContent = e.sent ? "Sent" : "Not sent";
+      const txt = document.createElement("span"); txt.className = "f-txt";
+      const first = document.createElement("div"); first.className = "f-first";
+      first.textContent = p.type + ": " + (p.message.split("\n")[0] || "");
+      const meta = document.createElement("div"); meta.className = "f-meta";
+      meta.textContent = new Date(p.created).toLocaleString() + (!e.sent && e.lastError ? " - " + e.lastError : "");
+      txt.append(first, meta);
+      li.append(state, txt);
+      const add = (act, label) => {
+        const b = document.createElement("button");
+        b.type = "button"; b.dataset.act = act; b.dataset.id = p.id; b.textContent = label;
+        if (act === "send") b.disabled = fb.sending;
+        li.appendChild(b);
+      };
+      if (!e.sent) add("send", "Send");
+      add("copy", "Copy");
+      add("delete", "Delete");
+      list.appendChild(li);
+    }
+    fbKeepFocus();
+  }
+
+  function openFeedback(opener) {
+    if (ui.feedback) return;
+    fb.opener = opener || document.activeElement;
+    fb.wasPaused = ui.paused;
+    ui.feedback = true; ui.paused = true;
+    $("win").hidden = true; $("end").hidden = true; $("hangar").hidden = true; $("dlg").hidden = true;   // an open Players/Scores/Stats stack waits underneath
+    for (const id of ["side", "topbar", "paused"]) $(id).inert = true;   // nothing behind the dialog can be reached
+    $("feedback").hidden = false;
+    fbCount(); fbStatus("");
+    renderFeedbackList();
+    if (game) refresh();
+    $("f-message").focus();
+  }
+
+  function closeFeedback() {
+    if (!ui.feedback) return;
+    ui.feedback = false; ui.paused = fb.wasPaused;
+    $("feedback").hidden = true;
+    for (const id of ["side", "topbar", "paused"]) $(id).inert = false;
+    $("hangar").hidden = !ui.hangar;
+    if (ui.dlg.length) showDlg(); else showCards();
+    if (game) refresh();
+    const back =fb.opener && document.contains(fb.opener) && fb.opener.getClientRects().length ? fb.opener : $("b-feedback");
+    if (!ui.dlg.length) back.focus();   // showDlg has already placed focus when a dialog is coming back
+    fb.opener = null;
+  }
+
+  // POST one payload. Resolves to { status, text } for any reply, or { error } when there was none (offline, refused, timed out).
+  async function postFeedback(payload) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), G.FEEDBACK_TIMEOUT_MS);
+    try {
+      const res = await fetch(G.FEEDBACK_URL, { method: "POST", headers: { "Content-Type": "text/plain;charset=UTF-8" }, body: JSON.stringify(payload), signal: ctl.signal });
+      let text = "";
+      try { text = await res.text(); } catch (e) { text = ""; }
+      return { status: res.status, text };
+    } catch (e) {
+      return { error: ctl.signal.aborted ? "Timed out" : String((e && e.message) || e) };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function setSending(v) {
+    fb.sending = v;
+    renderFeedbackList();
+  }
+
+  // The "Send to team" button.
+  async function submitFeedback() {
+    if (fb.sending || !ui.feedback) return;
+    const input = { type: $("f-type").value, rating: $("f-rating").value, message: $("f-message").value };
+    const info = $("f-info").checked ? G.feedbackGameInfo(game, { userAgent: navigator.userAgent }) : null;
+    const made = G.makeFeedback(input, info);
+    if (!made.ok) {
+      fbStatus(made.reason, "err");
+      $(made.field === "message" ? "f-message" : made.field === "rating" ? "f-rating" : "f-type").focus();
+      return;
+    }
+    const entry = G.newFeedbackEntry(made.payload);
+    fbStatus("Sending...");
+    setSending(true);
+    const res = await postFeedback(entry.payload);
+    const reply = res.error ? null : G.feedbackReply(res.status, res.text);
+    let keep = true, msg, kind;
+    if (reply && reply.sent) {
+      entry.sent = true; entry.sentAt = new Date().toISOString();
+      msg = reply.message; kind = "ok";
+    } else if (reply && !reply.retry) {   // 400, 403, 413: sending the same thing again would fail the same way
+      keep = false; msg = reply.message; kind = "err";
+    } else {                              // no dashboard, 429, 5xx: keep it to send later
+      entry.lastError = reply ? reply.message : OFFLINE_SHORT;
+      msg = reply ? reply.message + " Saved here; press Send in Saved feedback to try again." : FALLBACK_TEXT;
+      kind = "err";
+    }
+    let stored = true;
+    if (keep) {
+      fb.list.unshift(entry);
+      stored = saveFeedbackList();
+      if (entry.sent) { $("f-message").value = ""; fbCount(); }
+    }
+    if (!stored) msg += " Could not keep a copy in this browser.";
+    fbStatus(msg, kind);
+    setSending(false);
+    fbKeepFocus();
+  }
+
+  // Send one saved entry again with its stored payload (same id), and update it.
+  async function sendSaved(entry) {
+    const res = await postFeedback(entry.payload);
+    const reply = res.error ? null : G.feedbackReply(res.status, res.text);
+    if (reply && reply.sent) { entry.sent = true; entry.sentAt = new Date().toISOString(); entry.lastError = null; return { ok: true, message: reply.message }; }
+    entry.lastError = reply ? reply.message : OFFLINE_SHORT;
+    return { ok: false, offline: !reply, message: reply ? reply.message : FALLBACK_TEXT };
+  }
+
+  async function sendOne(id) {
+    const entry = fb.list.find(e => e.payload.id === id);
+    if (fb.sending || !entry || entry.sent) return;
+    fbStatus("Sending...");
+    setSending(true);
+    const r = await sendSaved(entry);
+    const stored = saveFeedbackList();
+    fbStatus(r.message + (stored ? "" : " Could not keep a copy in this browser."), r.ok ? "ok" : "err");
+    setSending(false);
+    fbKeepFocus();
+  }
+
+  async function sendAllUnsent() {
+    if (fb.sending) return;
+    const todo = fb.list.filter(e => !e.sent).reverse();   // oldest first
+    if (!todo.length) return;
+    fbStatus("Sending...");
+    setSending(true);
+    let done = 0, last = null;
+    for (const entry of todo) {
+      last = await sendSaved(entry);
+      if (last.ok) done++;
+      else if (last.offline) break;   // no dashboard: do not try the rest
+    }
+    const stored = saveFeedbackList();
+    fbStatus("Sent " + done + " of " + todo.length + "." + (done < todo.length && !last.ok ? " " + last.message : "") +
+      (stored ? "" : " Could not keep a copy in this browser."), done === todo.length ? "ok" : "err");
+    setSending(false);
+    fbKeepFocus();
+  }
+
+  function downloadAll() {
+    if (!fb.list.length) return fbStatus("Nothing saved yet.", "err");
+    const x = G.feedbackExport(fb.list, new Date());
+    const url = URL.createObjectURL(new Blob([x.text], { type: "application/json" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = x.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    fbStatus("Downloaded " + x.name, "ok");
+  }
+
+  // Clipboard API when the page may use it; otherwise a selected read-only textarea and the browser's copy command.
+  async function copyText(text) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(text); return true; }
+    } catch (e) { /* not allowed here (file pages): use the fallback */ }
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.readOnly = true; ta.setAttribute("aria-label", "Feedback text to copy");
+    ta.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
+    $("feedback").appendChild(ta);
+    const back = document.activeElement;
+    ta.focus(); ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    ta.remove();
+    if (back && back.focus) back.focus();
+    return ok;
+  }
+
+  async function copyEntry(entry) {
+    const ok = await copyText(G.feedbackText(entry));
+    fbStatus(ok ? "Copied." : "Could not copy. Use Download all instead.", ok ? "ok" : "err");
+  }
+
+  for (const id of ["b-feedback", "p-feedback", "e-feedback", "w-feedback"]) $(id).addEventListener("click", ev => openFeedback(ev.currentTarget));
+  $("f-close").addEventListener("click", closeFeedback);
+  $("f-form").addEventListener("submit", ev => ev.preventDefault());   // Enter never sends; Ctrl+Enter and the button do
+  $("f-send").addEventListener("click", submitFeedback);
+  $("f-message").addEventListener("input", fbCount);
+  $("f-send-unsent").addEventListener("click", sendAllUnsent);
+  $("f-download").addEventListener("click", downloadAll);
+  $("f-list").addEventListener("click", ev => {
+    const btn = ev.target.closest("[data-act]");
+    if (!btn) return;
+    const entry = fb.list.find(e => e.payload.id === btn.dataset.id);
+    if (!entry) return;
+    if (btn.dataset.act === "send") sendOne(entry.payload.id);
+    else if (btn.dataset.act === "copy") copyEntry(entry);
+    else if (btn.dataset.act === "delete") {
+      if (!confirm("Delete this saved feedback" + (entry.sent ? "?" : "? It has not been sent yet."))) return;
+      fb.list = fb.list.filter(e => e !== entry);
+      if (!saveFeedbackList()) fbStatus("Deleted, but the browser would not update its saved copy.", "err");
+      renderFeedbackList();
+    }
+  });
+  // Keys inside the dialog (capture phase, so they come before everything else): Tab stays inside, Ctrl/Cmd+Enter sends.
+  window.addEventListener("keydown", ev => {
+    if (!ui.feedback) return;
+    if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); submitFeedback(); return; }
+    if (ev.key !== "Tab") return;
+    const items = fbFocusables();
+    if (!items.length) { ev.preventDefault(); return; }
+    const first = items[0], last = items[items.length - 1], at = document.activeElement;
+    const edge = !$("feedback").contains(at) || at === $("f-title");
+    if (ev.shiftKey && (edge || at === first)) { ev.preventDefault(); last.focus(); }
+    else if (!ev.shiftKey && (edge || at === last)) { ev.preventDefault(); first.focus(); }
+  }, true);
+
   // ---------------------------------------------------------------- input
 
   function toWorld(ev) {
@@ -1203,6 +1477,7 @@
   $("w-keep").addEventListener("click", () => { ui.winOpen = false; $("win").hidden = true; });
   window.addEventListener("keydown", ev => {
     if (ev.key !== "Escape") return;
+    if (ui.feedback) return closeFeedback();
     if (ui.dlg.length) return popDlg();   // the top dialog; a stats view opened from the scoreboard goes back to it
     if (ui.hangar) return closeHangar();
     ui.placing = false; ui.selected = null; boardKey = ""; buildHtml = ""; refresh();
@@ -1210,12 +1485,13 @@
   // Space toggles pause wherever focus is. It is handled in the capture phase and cancelled, so a
   // focused button does not also "click" (keydown for most browsers, keyup for Firefox).
   const isSpace = ev => ev.key === " " || ev.code === "Space";
+  const typing = ev => ui.feedback || (ev.target && (ev.target.tagName === "INPUT" || ev.target.tagName === "TEXTAREA"));
   window.addEventListener("keydown", ev => {
-    if (!isSpace(ev) || (ev.target && ev.target.tagName === "INPUT")) return;   // a space typed in a name box is just a space
+    if (!isSpace(ev) || typing(ev)) return;   // a space typed in a name box or the feedback form is just a space
     ev.preventDefault();
     if (!ev.repeat) setPaused(!ui.paused);
   }, true);
-  window.addEventListener("keyup", ev => { if (isSpace(ev) && !(ev.target && ev.target.tagName === "INPUT")) ev.preventDefault(); }, true);
+  window.addEventListener("keyup", ev => { if (isSpace(ev) && !typing(ev)) ev.preventDefault(); }, true);
   window.addEventListener("beforeunload", () => { if (game) saveNow(AUTO_KEY); });
   window.addEventListener("resize", resize);
 
@@ -1256,6 +1532,7 @@
   // ---------------------------------------------------------------- go
 
   const profileNotice = loadProfile();
+  loadFeedbackList();
   resize();
   let first = null, notice = "", damaged = false;
   if (!STRESS) {

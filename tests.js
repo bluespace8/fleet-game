@@ -1530,5 +1530,190 @@ test("the new log code uses no DOM, Date, localStorage or Math.random", () => {
   assert.ok(i > 0 && !/document|window|localStorage|Date|Math\.random/.test(part));
 });
 
+// ---------------------------------------------------------------- feedback form
+console.log("feedback");
+const FB_DATE = new Date(Date.UTC(2026, 10, 7, 22, 45, 1, 123));
+const fbOk = { type: "bug", rating: 4, message: "  The warp button is stuck.  " };
+const fbMake = (over, info) => G.makeFeedback(Object.assign({}, fbOk, over), info === undefined ? null : info, FB_DATE, () => 0.5);
+
+test("feedback constants match the shared contract", () => {
+  assert.strictEqual(G.FEEDBACK_SCHEMA, "fleet-feedback/1");
+  assert.deepStrictEqual(G.FEEDBACK_TYPES, ["bug", "idea", "balance", "other"]);
+  assert.strictEqual(G.FEEDBACK_MAX, 2000);
+  assert.strictEqual(G.FEEDBACK_URL, "http://127.0.0.1:8765/api/feedback");
+  assert.strictEqual(G.FEEDBACK_TIMEOUT_MS, 5000);
+  assert.strictEqual(G.GAME_VERSION, "first-playable");
+});
+test("a good feedback input validates, with or without a rating", () => {
+  assert.deepStrictEqual(G.validateFeedback(fbOk), { ok: true });
+  for (const r of [null, undefined, "", 1, 5, "3", " 2 "]) assert.strictEqual(G.validateFeedback({ type: "idea", rating: r, message: "x" }).ok, true, String(r));
+  assert.strictEqual(G.validateFeedback({ type: "other", message: "x".repeat(2000) }).ok, true);
+});
+test("an empty or whitespace-only message is refused", () => {
+  for (const m of ["", "   ", "\n\t ", undefined, null, 5]) {
+    const r = G.validateFeedback({ type: "bug", rating: null, message: m });
+    assert.strictEqual(r.ok, false); assert.strictEqual(r.field, "message"); assert.ok(r.reason.length > 0);
+  }
+});
+test("a message over 2000 characters is refused, 2000 after trimming is fine", () => {
+  const r = G.validateFeedback({ type: "bug", message: "x".repeat(2001) });
+  assert.strictEqual(r.ok, false); assert.strictEqual(r.field, "message");
+  assert.strictEqual(G.validateFeedback({ type: "bug", message: "  " + "x".repeat(2000) + "  " }).ok, true);
+});
+test("a bad type is refused", () => {
+  for (const t of ["", "Bug", "praise", undefined, null, 3]) {
+    const r = G.validateFeedback({ type: t, message: "x" });
+    assert.strictEqual(r.ok, false); assert.strictEqual(r.field, "type");
+  }
+  assert.strictEqual(G.validateFeedback(null).ok, false);
+});
+test("a bad rating is refused (0, 6, 2.5, text, negative)", () => {
+  for (const v of [0, 6, 2.5, "x", "2.5", -1, "0", "6", NaN, Infinity, true, {}]) {
+    const r = G.validateFeedback({ type: "bug", rating: v, message: "x" });
+    assert.strictEqual(r.ok, false, String(v)); assert.strictEqual(r.field, "rating");
+  }
+});
+test("game info with no game has only the version and the user agent", () => {
+  assert.deepStrictEqual(G.feedbackGameInfo(null, { userAgent: "UA/1" }), { version: "first-playable", userAgent: "UA/1" });
+  assert.deepStrictEqual(G.feedbackGameInfo(null, null), { version: "first-playable" });
+});
+test("game info reads sector, score, ships and whole played seconds", () => {
+  const s = G.newGame(3, 2);
+  s.time = 612.9;
+  const i = G.feedbackGameInfo(s, { userAgent: "UA" });
+  assert.strictEqual(i.sector, 2); assert.strictEqual(i.score, G.scoreTotal(s));
+  assert.strictEqual(i.ships, s.ships.length); assert.strictEqual(i.playedSeconds, 612);
+  assert.deepStrictEqual(Object.keys(i), ["version", "sector", "score", "ships", "playedSeconds", "userAgent"]);
+});
+test("game info cuts strings to 200 characters and drops non-finite numbers", () => {
+  const s = G.newGame(3);
+  s.time = NaN; s.sector = Infinity;
+  const i = G.feedbackGameInfo(s, { userAgent: "u".repeat(500) });
+  assert.strictEqual(i.userAgent.length, 200);
+  assert.ok(!("playedSeconds" in i) && !("sector" in i));
+  assert.ok("score" in i && "ships" in i);
+});
+test("feedbackId has the expected shape, is UTC, and always passes the dashboard pattern", () => {
+  assert.strictEqual(G.feedbackId(FB_DATE, () => 0), "fb-20261107-224501-000000");
+  assert.strictEqual(G.feedbackId(FB_DATE, () => 0.9999999), "fb-20261107-224501-zzzzzz");
+  for (const r of [() => -1, () => NaN, () => 5, Math.random]) assert.ok(/^[A-Za-z0-9-]{8,64}$/.test(G.feedbackId(FB_DATE, r)));
+  assert.ok(/^fb-\d{8}-\d{6}-[0-9a-z]{6}$/.test(G.feedbackId()));
+  const seq = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]; let k = 0;
+  assert.strictEqual(G.feedbackId(FB_DATE, () => seq[k++]), "fb-20261107-224501-37aeil");
+});
+test("makeFeedback builds exactly the contract keys in order, trims, and keeps a null rating", () => {
+  const r = fbMake({});
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(Object.keys(r.payload), ["schema", "id", "created", "type", "rating", "message", "gameInfo"]);
+  assert.strictEqual(r.payload.schema, "fleet-feedback/1");
+  assert.strictEqual(r.payload.created, "2026-11-07T22:45:01.123Z");
+  assert.strictEqual(r.payload.message, "The warp button is stuck.");
+  assert.strictEqual(r.payload.rating, 4); assert.strictEqual(r.payload.gameInfo, null);
+  assert.strictEqual(fbMake({ rating: "" }).payload.rating, null);
+  assert.strictEqual(fbMake({ rating: undefined }).payload.rating, null);
+  assert.strictEqual(fbMake({ rating: "3" }).payload.rating, 3);
+  const info = { version: "first-playable", ships: 2 };
+  assert.deepStrictEqual(fbMake({}, info).payload.gameInfo, info);
+});
+test("makeFeedback passes the validation failure through and makes no payload", () => {
+  const r = fbMake({ message: " " });
+  assert.strictEqual(r.ok, false); assert.strictEqual(r.field, "message"); assert.ok(!("payload" in r));
+});
+test("feedbackReply: 200 ok is sent, duplicate or not", () => {
+  const a = G.feedbackReply(200, '{"ok":true,"file":"x.json","duplicate":false}');
+  const b = G.feedbackReply(200, '{"ok":true,"file":"x.json","duplicate":true}');
+  assert.strictEqual(a.sent, true); assert.strictEqual(a.duplicate, false);
+  assert.strictEqual(b.sent, true); assert.strictEqual(b.duplicate, true);
+  assert.strictEqual(a.message, "Sent to the team; the lead will draft a plan for your approval");
+});
+test("feedbackReply: 400, 403 and 413 show the server's message and do not retry", () => {
+  for (const st of [400, 403, 413]) {
+    const r = G.feedbackReply(st, JSON.stringify({ ok: false, message: "No: " + st }));
+    assert.deepStrictEqual(r, { sent: false, retry: false, message: "No: " + st });
+  }
+});
+test("feedbackReply: 429 and 5xx can be retried later", () => {
+  assert.deepStrictEqual(G.feedbackReply(429, '{"ok":false,"message":"Inbox full"}'), { sent: false, retry: true, message: "Inbox full" });
+  assert.deepStrictEqual(G.feedbackReply(500, "{}"), { sent: false, retry: true, message: "Dashboard replied 500" });
+  assert.strictEqual(G.feedbackReply(503, "").retry, true);
+});
+test("feedbackReply: other non-200 statuses (404, 405) can be retried later", () => {
+  assert.deepStrictEqual(G.feedbackReply(404, "{}"), { sent: false, retry: true, message: "Dashboard replied 404" });
+  assert.deepStrictEqual(G.feedbackReply(405, '{"ok":false,"message":"No"}'), { sent: false, retry: true, message: "No" });
+});
+test("feedbackReply never throws on bad bodies and does not call a 200 without ok:true sent", () => {
+  for (const body of ["", "not json", "null", "[1]", "42", undefined, null, '{"ok":false}', '{"message":5}']) {
+    const r = G.feedbackReply(400, body);
+    assert.strictEqual(r.sent, false); assert.strictEqual(typeof r.message, "string");
+  }
+  assert.strictEqual(G.feedbackReply(200, "oops").sent, false);
+  assert.strictEqual(G.feedbackReply(200, '{"ok":"yes"}').sent, false);
+  assert.strictEqual(G.feedbackReply(400, "oops").message, "Dashboard replied 400");
+});
+test("newFeedbackEntry starts not sent", () => {
+  const p = fbMake({}).payload;
+  assert.deepStrictEqual(G.newFeedbackEntry(p), { payload: p, sent: false, sentAt: null, lastError: null });
+});
+test("the stored list survives a round trip, newest first", () => {
+  const mk = (sec, over) => G.newFeedbackEntry(G.makeFeedback(Object.assign({}, fbOk, over), null, new Date(Date.UTC(2026, 10, 7, 22, 0, sec)), () => sec / 100).payload);
+  const a = mk(1, { message: "old" }), b = mk(30, { message: "new" });
+  b.sent = true; b.sentAt = "2026-11-07T22:01:00.000Z"; a.lastError = "Inbox full";
+  const back = G.parseFeedbackList(G.serializeFeedbackList([a, b]));
+  assert.deepStrictEqual(back.map(e => e.payload.message), ["new", "old"]);
+  assert.deepStrictEqual(back[0], b); assert.deepStrictEqual(back[1], a);
+  assert.deepStrictEqual(Object.keys(back[0].payload), ["schema", "id", "created", "type", "rating", "message", "gameInfo"]);
+});
+test("parsing the stored list never throws on junk and drops invalid entries", () => {
+  for (const t of [null, undefined, "", "junk", "{", "{}", "null", "42", '"x"', '[1,null,"a",[]]']) assert.deepStrictEqual(G.parseFeedbackList(t), []);
+  const good = G.newFeedbackEntry(fbMake({}).payload);
+  const bad = f => { const e = JSON.parse(JSON.stringify(good)); f(e.payload); return e; };
+  const list = [good,
+    bad(p => { p.id = "short"; }), bad(p => { p.id = "has space in it"; }), bad(p => { p.id = "x".repeat(65); }), bad(p => { p.id = 12345678; }),
+    bad(p => { p.message = ""; }), bad(p => { p.message = "x".repeat(2001); }), bad(p => { p.type = "nope"; }),
+    bad(p => { p.rating = 9; }), bad(p => { p.rating = "3"; }), bad(p => { p.created = "yesterday"; }),
+    { sent: true }, { payload: null }, { payload: [] }];
+  const back = G.parseFeedbackList(JSON.stringify(list));
+  assert.strictEqual(back.length, 1);
+  assert.strictEqual(back[0].payload.id, good.payload.id);
+});
+test("parsing the stored list ignores a repeated id and bad sent/lastError values", () => {
+  const e = G.newFeedbackEntry(fbMake({}).payload);
+  const back = G.parseFeedbackList(JSON.stringify([Object.assign({}, e, { sent: "yes", sentAt: 5, lastError: 7 }), e]));
+  assert.strictEqual(back.length, 1);
+  assert.strictEqual(back[0].sent, false); assert.strictEqual(back[0].sentAt, null); assert.strictEqual(back[0].lastError, null);
+});
+test("feedbackText lists type, rating, time, id, status, message and game info", () => {
+  const e = G.newFeedbackEntry(fbMake({ type: "idea" }, { version: "first-playable", sector: 3 }).payload);
+  const t = G.feedbackText(e);
+  assert.ok(/Type: idea/.test(t) && /Rating: 4/.test(t) && /Created: 2026-11-07T22:45:01.123Z/.test(t));
+  assert.ok(t.indexOf("Id: " + e.payload.id) >= 0 && /Status: not sent/.test(t));
+  assert.ok(t.indexOf("The warp button is stuck.") >= 0);
+  assert.ok(/^sector: 3$/m.test(t) && /^version: first-playable$/m.test(t));
+  e.sent = true;
+  assert.ok(/Status: sent/.test(G.feedbackText(e)));
+});
+test("feedbackText says so when there is no rating or no game info", () => {
+  const t = G.feedbackText(G.newFeedbackEntry(fbMake({ rating: null }).payload));
+  assert.ok(/no rating/.test(t) && /No game info attached\./.test(t));
+});
+test("feedbackExport names the file by local date and wraps the entries", () => {
+  const e = G.newFeedbackEntry(fbMake({}).payload); e.sent = true; e.sentAt = "2026-11-07T22:50:00.000Z";
+  const d = new Date(2026, 0, 5, 12, 0, 0);
+  const x = G.feedbackExport([e], d);
+  assert.strictEqual(x.name, "fleet-game-feedback-2026-01-05.json");
+  const o = JSON.parse(x.text);
+  assert.strictEqual(o.schema, "fleet-feedback-export/1"); assert.strictEqual(o.exported, d.toISOString());
+  assert.deepStrictEqual(Object.keys(o.entries[0]), ["sent", "sentAt", "payload"]);
+  assert.deepStrictEqual(o.entries[0].payload, e.payload); assert.strictEqual(o.entries[0].sent, true);
+  assert.ok(x.text.indexOf("\n  ") > 0, "pretty printed");
+  assert.deepStrictEqual(JSON.parse(G.feedbackExport([], d).text).entries, []);
+});
+test("main.js sends feedback only to FEEDBACK_URL, with only the one header", () => {
+  const src = require("fs").readFileSync(__dirname + "/main.js", "utf8");
+  assert.strictEqual((src.match(/\bfetch\(/g) || []).length, 1);
+  assert.ok(/fetch\(G\.FEEDBACK_URL, \{ method: "POST", headers: \{ "Content-Type": "text\/plain;charset=UTF-8" \}, body: JSON\.stringify\(payload\)/.test(src));
+  assert.ok(!/credentials|XMLHttpRequest|sendBeacon|WebSocket|https?:\/\//.test(src));
+});
+
 console.log("\n" + passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);

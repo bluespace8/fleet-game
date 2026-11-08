@@ -1181,6 +1181,166 @@
       runs: runLog.runs, purchases: buyLog.buys }, null, 2);
   }
 
+  // ---------------------------------------------------------------- feedback form (no DOM; main.js does the sending)
+  // The payload shape is shared with the dashboard's inbox (fleet-feedback/1); do not change it alone.
+
+  const GAME_VERSION = "first-playable";   // build name sent as gameInfo.version (the save VERSION is separate)
+  const FEEDBACK_SCHEMA = "fleet-feedback/1";
+  const FEEDBACK_TYPES = ["bug", "idea", "balance", "other"];
+  const FEEDBACK_MAX = 2000;
+  const FEEDBACK_URL = "http://127.0.0.1:8765/api/feedback";
+  const FEEDBACK_TIMEOUT_MS = 5000;
+  const FEEDBACK_INFO_MAX = 200;
+  const FEEDBACK_ID_RE = /^[A-Za-z0-9-]{8,64}$/;
+
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+
+  // "fb-YYYYMMDD-HHMMSS-xxxxxx": UTC time plus six lowercase base-36 characters from rand.
+  function feedbackId(date, rand) {
+    const d = date || new Date(), r = rand || Math.random;
+    let tail = "";
+    for (let i = 0; i < 6; i++) {
+      let v = Number(r());
+      if (!(v >= 0)) v = 0;
+      tail += "0123456789abcdefghijklmnopqrstuvwxyz".charAt(Math.min(35, Math.floor(v * 36)));
+    }
+    return "fb-" + d.getUTCFullYear() + pad2(d.getUTCMonth() + 1) + pad2(d.getUTCDate()) + "-" +
+      pad2(d.getUTCHours()) + pad2(d.getUTCMinutes()) + pad2(d.getUTCSeconds()) + "-" + tail;
+  }
+
+  // The rating as an integer 1-5, null when not given, or NaN when it is not valid.
+  function feedbackRating(v) {
+    if (v === null || v === undefined) return null;
+    if (typeof v === "string") {
+      const t = v.trim();
+      if (t === "") return null;
+      if (!/^[0-9]+$/.test(t)) return NaN;
+      v = Number(t);
+    }
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 1 || v > 5) return NaN;
+    return v;
+  }
+
+  function validateFeedback(input) {
+    const o = input && typeof input === "object" ? input : {};
+    if (FEEDBACK_TYPES.indexOf(o.type) < 0) return { ok: false, field: "type", reason: "Pick a type: Bug, Idea, Balance or Other." };
+    if (Number.isNaN(feedbackRating(o.rating))) return { ok: false, field: "rating", reason: "The rating must be a whole number from 1 to 5, or left empty." };
+    if (typeof o.message !== "string" || !o.message.trim()) return { ok: false, field: "message", reason: "Write a message first." };
+    if (o.message.trim().length > FEEDBACK_MAX) return { ok: false, field: "message", reason: "The message is too long (" + o.message.trim().length + " of " + FEEDBACK_MAX + " characters)." };
+    return { ok: true };
+  }
+
+  // What the player's game looks like, for the "attach game info" box. state may be null.
+  function feedbackGameInfo(state, env) {
+    const info = { version: GAME_VERSION };
+    const num = (key, v) => { if (typeof v === "number" && isFinite(v)) info[key] = v; };
+    if (state) {
+      num("sector", state.sector);
+      try { num("score", scoreTotal(state)); } catch (e) { /* no score */ }
+      if (Array.isArray(state.ships)) num("ships", state.ships.length);
+      if (typeof state.time === "number" && isFinite(state.time)) num("playedSeconds", Math.floor(state.time));
+    }
+    const ua = env && env.userAgent;
+    if (typeof ua === "string" && ua) info.userAgent = ua.slice(0, FEEDBACK_INFO_MAX);
+    info.version = String(info.version).slice(0, FEEDBACK_INFO_MAX);
+    return info;
+  }
+
+  function makeFeedback(input, gameInfo, date, rand) {
+    const v = validateFeedback(input);
+    if (!v.ok) return v;
+    const d = date || new Date();
+    return { ok: true, payload: {
+      schema: FEEDBACK_SCHEMA,
+      id: feedbackId(d, rand),
+      created: d.toISOString(),
+      type: input.type,
+      rating: feedbackRating(input.rating),
+      message: input.message.trim(),
+      gameInfo: gameInfo && typeof gameInfo === "object" ? gameInfo : null,
+    } };
+  }
+
+  // How main.js treats a reply from the dashboard. Never throws, whatever the body is.
+  function feedbackReply(status, bodyText) {
+    let body = null;
+    try { body = JSON.parse(bodyText); } catch (e) { body = null; }
+    if (!body || typeof body !== "object") body = {};
+    if (status === 200 && body.ok === true) {
+      return { sent: true, duplicate: body.duplicate === true, message: "Sent to the team; the lead will draft a plan for your approval" };
+    }
+    const said = typeof body.message === "string" && body.message.trim() ? body.message.trim().slice(0, 300) : "";
+    const message = said || "Dashboard replied " + (status === 200 ? "200 without ok" : status);
+    const retry = !(status === 400 || status === 403 || status === 413);   // only these are final; anything else may work later
+    return { sent: false, retry, message };
+  }
+
+  function newFeedbackEntry(payload) {
+    return { payload, sent: false, sentAt: null, lastError: null };
+  }
+
+  // The stored list. Junk gives []; entries with an invalid payload or a bad id are dropped; newest first.
+  function parseFeedbackList(text) {
+    let raw = null;
+    try { raw = JSON.parse(text); } catch (e) { return []; }
+    if (!Array.isArray(raw)) return [];
+    const out = [], seen = {};
+    for (const e of raw) {
+      const p = e && typeof e === "object" ? e.payload : null;
+      if (!p || typeof p !== "object" || Array.isArray(p)) continue;
+      if (typeof p.id !== "string" || !FEEDBACK_ID_RE.test(p.id) || seen[p.id]) continue;
+      if (typeof p.created !== "string" || isNaN(Date.parse(p.created))) continue;
+      if (!validateFeedback(p).ok) continue;
+      const rating = feedbackRating(p.rating);
+      if (p.rating !== null && p.rating !== undefined && typeof p.rating !== "number") continue;
+      seen[p.id] = true;
+      out.push({
+        payload: { schema: FEEDBACK_SCHEMA, id: p.id, created: p.created, type: p.type, rating, message: p.message.trim(),
+          gameInfo: p.gameInfo && typeof p.gameInfo === "object" && !Array.isArray(p.gameInfo) ? p.gameInfo : null },
+        sent: e.sent === true,
+        sentAt: e.sent === true && typeof e.sentAt === "string" ? e.sentAt : null,
+        lastError: typeof e.lastError === "string" ? e.lastError : null,
+      });
+    }
+    return out.map((e, i) => ({ e, i }))
+      .sort((a, b) => (Date.parse(b.e.payload.created) - Date.parse(a.e.payload.created)) || (a.i - b.i))
+      .map(x => x.e);
+  }
+
+  function serializeFeedbackList(list) {
+    return JSON.stringify(Array.isArray(list) ? list : []);
+  }
+
+  // Plain text for the Copy button.
+  function feedbackText(entry) {
+    const p = entry.payload;
+    const lines = [
+      "Type: " + p.type,
+      "Rating: " + (p.rating === null || p.rating === undefined ? "no rating" : p.rating + " of 5"),
+      "Created: " + p.created,
+      "Id: " + p.id,
+      "Status: " + (entry.sent ? "sent" : "not sent"),
+      "",
+      p.message,
+      "",
+    ];
+    const info = p.gameInfo;
+    const keys = info && typeof info === "object" ? Object.keys(info) : [];
+    if (!keys.length) lines.push("No game info attached.");
+    else for (const k of keys) lines.push(k + ": " + info[k]);
+    return lines.join("\n");
+  }
+
+  // The Download all file: name uses the local date.
+  function feedbackExport(list, date) {
+    const d = date || new Date();
+    const entries = (Array.isArray(list) ? list : []).map(e => ({ sent: !!e.sent, sentAt: e.sentAt || null, payload: e.payload }));
+    return {
+      name: "fleet-game-feedback-" + d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()) + ".json",
+      text: JSON.stringify({ schema: "fleet-feedback-export/1", exported: d.toISOString(), entries }, null, 2),
+    };
+  }
+
   return {
     newRoster, parseRoster, serializeRoster, currentPlayer, addPlayer, renamePlayer, choosePlayer,
     newRunLog, parseRunLog, serializeRunLog, shouldLogRun, runRecord, addRun,
@@ -1195,5 +1355,8 @@
     orderShip, orderShipToStar, recallShip, returnToBase, nearestBase, inStorm, step, isStranded, retire, scoreTotal,
     jobText, spawnStress, serialize, deserialize, addBackup,
     newProfile, parseProfile, serializeProfile, buyLook, chooseLook, currentLooks, lookById, claimStars, syncClaimed, recordBest,
+    GAME_VERSION, FEEDBACK_SCHEMA, FEEDBACK_TYPES, FEEDBACK_MAX, FEEDBACK_URL, FEEDBACK_TIMEOUT_MS,
+    feedbackId, validateFeedback, feedbackGameInfo, makeFeedback, feedbackReply, newFeedbackEntry, parseFeedbackList,
+    serializeFeedbackList, feedbackText, feedbackExport,
   };
 });
