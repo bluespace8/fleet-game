@@ -286,11 +286,34 @@
     canvas.height = Math.round(view.H * view.dpr);
     topH = $("topbar").offsetHeight;
     const top = Math.max(56, topH + 18), ww = game ? game.w : G.TUNING.world.w, wh = game ? game.h : G.TUNING.world.h;
-    view.sc = Math.max(0.2, Math.min(view.W / ww, (view.H - top - 10) / wh));
-    view.ox = (view.W - ww * view.sc) / 2;
-    view.oy = top + (view.H - top - 10 - wh * view.sc) / 2;
+    view.fit = Math.max(0.2, Math.min(view.W / ww, (view.H - top - 10) / wh));
+    view.fox = (view.W - ww * view.fit) / 2;
+    view.foy = top + (view.H - top - 10 - wh * view.fit) / 2;
+    applyCam();
     buildSky();
   }
+
+  // Zoom and pan: cam.z multiplies the fit-to-window scale, (cam.x, cam.y) shifts the map in CSS pixels.
+  const cam = { z: 1, x: 0, y: 0 }, CAM_MIN = 1, CAM_MAX = 6;
+  function applyCam() {
+    const ww = game ? game.w : G.TUNING.world.w, wh = game ? game.h : G.TUNING.world.h;
+    cam.z = Math.max(CAM_MIN, Math.min(CAM_MAX, cam.z));
+    view.sc = view.fit * cam.z;
+    const mw = ww * view.sc, mh = wh * view.sc, keep = 80;   // keep at least 80px of the map on screen
+    cam.x = Math.max(keep - view.fox - mw, Math.min(view.W - keep - view.fox, cam.x));
+    cam.y = Math.max(keep - view.foy - mh, Math.min(view.H - keep - view.foy, cam.y));
+    if (cam.z === 1) { cam.x = 0; cam.y = 0; }
+    view.ox = view.fox + cam.x; view.oy = view.foy + cam.y;
+  }
+  function zoomAt(mx, my, k) {   // mx, my: canvas CSS pixels that stay fixed
+    const old = cam.z;
+    cam.z = Math.max(CAM_MIN, Math.min(CAM_MAX, cam.z * k));
+    const r = cam.z / old;
+    cam.x = mx - (mx - view.ox) * r - view.fox;
+    cam.y = my - (my - view.oy) * r - view.foy;
+    applyCam();
+  }
+  function spriteQ() { return Math.round(view.sc * 4) / 4 || 0.25; }   // coarse steps so zooming does not flood the sprite cache
 
   // ---------------------------------------------------------------- sky scenes
   // SCENES[name] = { build(n, W, H), draw(dt) }. build paints the static part into the offscreen
@@ -954,7 +977,7 @@
   // Body sprites: the same radius as the body, glow-free, so the "amount left" ring still reads around them.
   function bodySprite(b) {
     const id = themeId(), kind = BODY_HUE[b.kind] ? b.kind : "asteroid", r = Math.round(b.r), box = r * 2.8;
-    return cached("body|" + id + "|" + kind + "|" + r, box, box, view.sc, g => {
+    return cached("body|" + id + "|" + kind + "|" + r, box, box, spriteQ(), g => {
       const rnd = G.rng(r * 131 + kind.length * 17 + (id === "hamster" ? 1 : 2));
       if (id === "hamster") {
         if (kind === "asteroid") {   // seed pile
@@ -1655,7 +1678,7 @@
   // A fog bank: a soft cloud painted once per radius, opaque enough in the middle to hide what is under it.
   function fogSprite(r) {
     const box = r * 2.5;
-    return cached("fog|" + r, box, box, view.sc, g => {
+    return cached("fog|" + r, box, box, spriteQ(), g => {
       const grad = g.createRadialGradient(0, 0, r * 0.2, 0, 0, r * 1.05);
       grad.addColorStop(0, "rgba(116,128,160,0.95)"); grad.addColorStop(0.6, "rgba(104,118,152,0.9)"); grad.addColorStop(1, "rgba(96,110,146,0)");
       g.fillStyle = grad; g.beginPath(); g.arc(0, 0, r * 1.05, 0, Math.PI * 2); g.fill();
@@ -3080,7 +3103,31 @@
     refresh();
   }
 
-  canvas.addEventListener("click", onClick);
+  let drag = null, dragged = false;
+  canvas.addEventListener("click", ev => { if (dragged) { dragged = false; return; } onClick(ev); });
+  canvas.addEventListener("wheel", ev => {
+    if (!game || modal()) return;
+    ev.preventDefault();
+    const r = canvas.getBoundingClientRect();
+    zoomAt(ev.clientX - r.left, ev.clientY - r.top, Math.exp(-ev.deltaY * (ev.deltaMode === 1 ? 0.05 : 0.0015)));
+    if (ui.mouse) ui.mouse = toWorld(ev);
+  }, { passive: false });
+  canvas.addEventListener("mousedown", ev => {
+    if (ev.button === 1) ev.preventDefault();
+    drag = { x: ev.clientX, y: ev.clientY, cx: cam.x, cy: cam.y, moved: false };
+  });
+  window.addEventListener("mousemove", ev => {
+    if (!drag) return;
+    const dx = ev.clientX - drag.x, dy = ev.clientY - drag.y;
+    if (!drag.moved && Math.hypot(dx, dy) < 5) return;
+    drag.moved = true; dragged = true;
+    cam.x = drag.cx + dx; cam.y = drag.cy + dy;
+    applyCam();
+    canvas.style.cursor = "grabbing";
+  });
+  window.addEventListener("mouseup", () => { drag = null; setTimeout(() => { dragged = false; }, 0); });
+  canvas.addEventListener("contextmenu", ev => ev.preventDefault());
+  canvas.addEventListener("dblclick", ev => { if (ev.shiftKey) { cam.z = 1; applyCam(); } });
   canvas.addEventListener("mousemove", ev => {
     ui.mouse = toWorld(ev);
     ui.cursor = null;   // the mouse takes the placement ghost back from the keyboard cursor
