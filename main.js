@@ -1984,7 +1984,7 @@
     if (!s) return;
     const r = G.setMothball(game, id, !s.mothballed);
     if (!r.ok) toast(r.reason);
-    else { toast(shipName(s) + (ship.mothballed ? " is mothballed at the base." : ` is waking up (${G.TUNING.econ.maint.wakeSecs} s).`)); saveNow(); }
+    else { toast(shipName(s) + (s.mothballed ? " is mothballed at the base." : ` is waking up (${G.TUNING.econ.maint.wakeSecs} s).`)); saveNow(); }
     boardKey = ""; refresh();
   }
 

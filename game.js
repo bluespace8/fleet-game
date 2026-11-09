@@ -1105,7 +1105,7 @@
   // One shape for a ship, whoever makes it. ix, iy: manual flight input (runtime only); mm: manual sub-mode 0 flying,
   // 1 mining, 2 unloading. hp/maxHp: health; dead: lost for good (the entry stays so ids hold); stun: flare seconds left;
   // rep: seconds left in a repair. Warship orders: wo "patrol" | "escort" | "attack" | "", wx/wy the patrol point,
-  // wt the escort ship id or attack alien id, cd the fire cooldown. mothballed: parked at home on a reduced running cost,
+  // wt the escort ship id or attack alien id, cd the fire cooldown. mothballed: parked at the base it docked at on a reduced running cost,
   // wake: seconds left before a woken ship works again (both slice b).
   function makeShip(id, type, name) {
     const hp = SHIP_TYPES[type].hp;
