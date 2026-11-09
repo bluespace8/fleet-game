@@ -4267,7 +4267,7 @@ test("an event gap is shorter by 20% per live nest, and raids come from the edge
   const gap = (sector, kill) => {
     const s = G.newGame(21, sector); s.showerIn = 3000; s.eventIn = 0;
     if (kill) s.nests.forEach(n => { n.dead = true; });
-    G.step(s, HDT);
+    withTuning(G.TUNING.events, "raidFirst", 1, () => withTuning(G.TUNING.events, "raidMax", 1, () => G.step(s, HDT)));   // a raid roll: only raid gaps are boosted
     return s.eventIn;
   };
   for (const sector of [3, 5, 7]) {
@@ -4471,8 +4471,88 @@ test("the same seed and orders give the same fight, nests and science", () => {
   assert.strictEqual(G.serialize(a.s), G.serialize(b.s));
   assert.ok(a.s.science > 0 && a.nest.hp < a.nest.max);
   const text = require("fs").readFileSync(__dirname + "/game.js", "utf8");
-  const part = text.slice(text.indexOf("science, nests and the tech tree"), text.indexOf("stubs for slice b"));
+  const part = text.slice(text.indexOf("function scienceFor"), text.indexOf("\n  // ", text.indexOf("function orderTarget")));   // slice a: scienceFor up to the first comment line after orderTarget, its last function
   assert.ok(part.length > 5000 && part.indexOf("Math.random") < 0, "no Math.random in the science code");
+});
+
+test("save: Hardened hulls and Deep holds survive a round trip; a forged save cannot pass the tech-adjusted caps", () => {
+  const mk = tech => { const s = ngame(18, 3); s.nests = []; giveAll(s); s.tech = tech.slice(); return s; };
+  const s = mk(["mil_hulls", "ind_holds"]);
+  const w = G.buildShip(s, "warship").ship, w2 = G.buildShip(s, "warship").ship, m = G.buildShip(s, "miner").ship;
+  G.step(s, HDT);
+  assert.strictEqual(w.maxHp, 117);
+  w.hp = 100; w2.hp = 60; m.res = "ore"; m.cargo = 24;
+  const c = G.deserialize(G.serialize(s)).state;
+  assert.strictEqual(c.ships[w.id].maxHp, 117); assert.strictEqual(c.ships[w.id].hp, 100);
+  assert.strictEqual(c.ships[w2.id].maxHp, 117); assert.strictEqual(c.ships[w2.id].hp, 60);
+  assert.strictEqual(c.ships[m.id].cargo, 24, "Deep holds cargo kept");
+  G.step(c, HDT);
+  assert.strictEqual(c.ships[w.id].hp, 100, "not healed by the next step");
+  assert.strictEqual(c.ships[w2.id].hp, 60);
+  // forged: hp and cargo far over the cap
+  for (const tech of [[], ["mil_hulls", "ind_holds"]]) {
+    const f = mk(tech), fw = G.buildShip(f, "warship").ship, fm = G.buildShip(f, "miner").ship;
+    const raw = JSON.parse(G.serialize(f));
+    raw.ships[fw.id].hp = 99999; raw.ships[fw.id].maxHp = 99999; raw.ships[fm.id].res = "ore"; raw.ships[fm.id].cargo = 99999;
+    const g = G.deserialize(JSON.stringify(raw)).state;
+    assert.strictEqual(g.ships[fw.id].hp, tech.length ? 117 : 90); assert.strictEqual(g.ships[fw.id].maxHp, tech.length ? 117 : 90);
+    assert.strictEqual(g.ships[fm.id].cargo, tech.length ? 25 : 20);
+  }
+  // a save that lists the tech after the ships, or junk tech, still loads with only real ids counted
+  const j = JSON.parse(G.serialize(s)); j.tech = ["mil_hulls", "nope", 5];
+  const jr = G.deserialize(JSON.stringify(j)).state;
+  assert.deepStrictEqual(jr.tech, ["mil_hulls"]); assert.strictEqual(jr.ships[w.id].maxHp, 117); assert.strictEqual(jr.ships[m.id].cargo, 20);
+});
+test("jobText shows cargo against the tech-adjusted hold", () => {
+  const s = ngame(18, 3); s.nests = []; const sh = s.ships[0], body = nearBody(s);
+  sh.st = G.MINING; sh.target = body.id; sh.cargo = 22; sh.res = body.res;
+  assert.ok(/22[/]20$/.test(G.jobText(s, sh)), G.jobText(s, sh));
+  s.tech = ["ind_holds"];
+  assert.ok(/22[/]25$/.test(G.jobText(s, sh)), G.jobText(s, sh));
+});
+test("the wave bonus is paid only if no base was lost during the wave", () => {
+  const run = loseBase => {
+    const s = hgame(2, 3); giveAll(s); buildGoal(s); s.nests = [];
+    liveEvent(s, "raid", { x: 100, y: 100, r: 40, power: 2 }); G.step(s, HDT);
+    assert.strictEqual(s.aliens.length, 2); for (const a of s.aliens) a.cd = 1e6;
+    if (loseBase) {
+      const b = s.bases[1];
+      liveShower(s, { x: b.x, y: b.y, r: 40, power: 99, dur: 100 });
+      hrun(s, 20);
+      assert.ok(b.down && s.waves[1].lost === true, "base lost, wave marked");
+      s.showers = [];
+    }
+    s.science = 0; G.drainEvents(s);
+    for (const a of s.aliens.slice()) { shotOn(s, a, "warship", 9999); G.step(s, HDT); }
+    assert.strictEqual(s.aliens.length, 0);
+    const ev = G.drainEvents(s);
+    return { sci: s.science, repelled: ev.some(e => e.type === "wave:repelled"), s };
+  };
+  const ok = run(false), bad = run(true);
+  assert.ok(ok.repelled && ok.sci === 7, "no loss: 2 + 2 + 3 (got " + ok.sci + ")");
+  assert.ok(!bad.repelled && bad.sci === 4, "a base lost: kills only (got " + bad.sci + ")");
+  // the flag survives a save
+  const r = G.deserialize(G.serialize(bad.s)).state;
+  assert.strictEqual(r.waves[1].lost, true);
+  // a wave that starts after the loss is not marked
+  const later = hgame(2, 3); later.nests = []; later.waves[1] = { alive: 0, escaped: 0, lost: true };
+  liveEvent(later, "raid", { x: 100, y: 100, r: 40, power: 1 }); G.step(later, HDT);
+  assert.ok(!later.waves[later.waveSeq].lost);
+});
+test("nests shorten only the raid gap: fog and flare timing is the same with nests or without", () => {
+  for (const sector of [3, 5, 7]) {
+    const gap = (kill, kind) => {
+      const s = G.newGame(21, sector); s.showerIn = 3000; s.eventIn = 0;
+      if (kill) s.nests.forEach(n => { n.dead = true; });
+      const E = G.TUNING.events, odds = kind === "fog" ? 0 : 0;
+      withTuning(E, "raidFirst", odds, () => withTuning(E, "raidMax", odds, () => withTuning(E, "raidPerSector", 0, () => {
+        withTuning(E.weight, "fog", kind === "fog" ? 1 : 0, () => withTuning(E.weight, "flare", kind === "flare" ? 1 : 0, () => G.step(s, HDT)));
+      })));
+      assert.ok(s.events.some(e => e.kind === kind), "rolled a " + kind);
+      return s.eventIn;
+    };
+    for (const kind of ["fog", "flare"]) assert.strictEqual(gap(false, kind), gap(true, kind), "sector " + sector + " " + kind);
+  }
 });
 
 

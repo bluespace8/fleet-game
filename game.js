@@ -571,8 +571,8 @@
   }
 
   // Called when an alien dies (src: "warship" | "turret" | "alien"). Returns the science it earned. A guard pays its own
-  // kill and its nest starts a respawn timer; a raider pays by who killed it; the last raider of a wave (none escaped) adds
-  // the wave bonus.
+  // kill and its nest starts a respawn timer; a raider pays by who killed it; the last raider of a wave (none escaped, no base
+  // lost while it lasted) adds the wave bonus.
   function onAlienKilled(state, alien, src) {
     const before = state.science;
     if (alien.nest >= 0) {
@@ -583,7 +583,7 @@
       const source = src === "turret" ? "turret" : src === "alien" ? "" : "raider";
       if (source) awardScience(state, scienceFor(state, source), source);
       const w = alien.wave >= 0 && state.waves ? state.waves[alien.wave] : null;
-      if (w && w.alive === 0 && w.escaped === 0 && !w.repelled) {
+      if (w && w.alive === 0 && w.escaped === 0 && !w.lost && !w.repelled) {
         w.repelled = true;
         emit(state, "wave:repelled", { wave: alien.wave });
         awardScience(state, scienceFor(state, "wave"), "wave");
@@ -1219,6 +1219,7 @@
     if (base.hp > 0) return;
     base.hp = 0;
     pushFx(state, "boom", base.x, base.y, base.x, base.y);
+    for (const k of Object.keys(state.waves || {})) if (state.waves[k].alive > 0) state.waves[k].lost = true;   // no wave bonus for a wave that cost a base
     if (base.home) endRun(state, "destroyed");
     else base.down = true;
   }
@@ -1493,7 +1494,8 @@
       }
     }
     ev.push(e);
-    state.eventIn = eventGap(n) * (1 - E.jitter / 2 + E.jitter * hrand(state)) / (1 + T.science.nest.raidBoost * liveNests(state).length);
+    state.eventIn = eventGap(n) * (1 - E.jitter / 2 + E.jitter * hrand(state));
+    if (kind === "raid") state.eventIn /= 1 + T.science.nest.raidBoost * liveNests(state).length;   // nests shorten the raid gap only
   }
 
   // The raid arrives: the aliens appear around the warned point at the edge of the map.
@@ -1935,7 +1937,7 @@
     }
     switch (ship.st) {
       case TO_BODY: return "Flying to " + (body ? bodyLabel(body, L) : "target");
-      case MINING: return "Mining " + (body ? bodyLabel(body, L) : "") + " " + r0(ship.cargo) + "/" + def.cap;
+      case MINING: return "Mining " + (body ? bodyLabel(body, L) : "") + " " + r0(ship.cargo) + "/" + r0(cargoCap(state, def));
       case TO_STAR: return "Flying to a star";
       case UNLOADING: return "Unloading";
       case MANUAL: return ship.mm === 1 ? "Manual: mining " + (body ? bodyLabel(body, L) : "") : ship.mm === 2 ? "Manual: unloading" : "Manual";
@@ -2122,6 +2124,8 @@
       // a save from before this field: its taken stars were already paid to whoever was playing
       for (const st of state.stars) if (st.taken) state.starsPaid.push(starKey(state, st));
     }
+    state.tech = [];      // read before the ships: their caps (Deep holds, Hardened hulls) depend on it
+    if (Array.isArray(raw.tech)) for (const id of raw.tech.slice(0, 64)) if (typeof id === "string" && TECH_BY_ID[id] && state.tech.indexOf(id) < 0) state.tech.push(id);
     for (let i = 0; i < raw.ships.length; i++) {
       const s = raw.ships[i];
       if (!s || typeof s.type !== "string" || !Object.prototype.hasOwnProperty.call(SHIP_TYPES, s.type)) return { ok: false, error: "Save has a bad ship." };
@@ -2133,7 +2137,7 @@
       const dest = intIn(s.dest, -1, 1e9, -1);
       const star = intIn(s.star, -1, 1e9, -1);
       const res = RES.indexOf(s.res) >= 0 ? s.res : "";
-      const cargo = res ? Math.min(SHIP_TYPES[s.type].cap, Math.max(0, num(s.cargo, 0))) : 0;
+      const cargo = res ? Math.min(cargoCap(state, SHIP_TYPES[s.type]), Math.max(0, num(s.cargo, 0))) : 0;
       const ship = makeShip(i, s.type, String(s.name || SHIP_TYPES[s.type].label));
       Object.assign(ship, { x: num(s.x, 0), y: num(s.y, 0),
         ang: num(s.ang, 0), st, target: target < state.bodies.length ? target : -1,
@@ -2141,7 +2145,7 @@
         star: star < state.stars.length ? star : -1, cargo, res, mv: 0,
         wait: Math.max(0, num(s.wait, 0)), hitCd: Math.max(0, num(s.hitCd, 0)), ix: 0, iy: 0, mm });
       // health and hazards (absent in older saves: full health, nothing in progress)
-      ship.maxHp = SHIP_TYPES[s.type].hp;
+      ship.maxHp = SHIP_TYPES[s.type].war ? Math.round(SHIP_TYPES[s.type].hp * techMult(state, "warshipHp")) : SHIP_TYPES[s.type].hp;
       ship.hp = Math.min(ship.maxHp, Math.max(0, num(s.hp, ship.maxHp)));
       if (s.dead === true || ship.hp <= 0) {      // a lost ship stays lost: empty, still, no orders
         Object.assign(ship, { hp: 0, dead: true, st: IDLE, target: -1, dest: -1, star: -1, cargo: 0, res: "", mm: 0, wait: 0 });
@@ -2178,8 +2182,6 @@
     // tech, nests regenerated from the seed at full health, 500 credits, no debt (so the debt rule is off for that run).
     state.science = Math.max(0, num(raw.science, 0)); state.sciTotal = Math.max(state.science, num(raw.sciTotal, 0));
     state.sciSector = Math.max(0, num(raw.sciSector, 0));
-    state.tech = [];
-    if (Array.isArray(raw.tech)) for (const id of raw.tech.slice(0, 64)) if (typeof id === "string" && TECH_BY_ID[id] && state.tech.indexOf(id) < 0) state.tech.push(id);
     if (!pre3 && Array.isArray(raw.nests)) state.nests = sanitizeNests(raw.nests, state);
     else api.generateNests(state, mapSeed(state.seed, sector));
     state.waveSeq = intIn(raw.waveSeq, 0, 1e9, 0);
@@ -2188,6 +2190,7 @@
       for (const key of Object.keys(raw.waves).slice(0, 200)) {
         const w = raw.waves[key];
         if (/^\d+$/.test(key) && isObj(w)) state.waves[key] = { alive: 0, escaped: intIn(w.escaped, 0, 999, 0) };
+        if (w.lost === true) state.waves[key].lost = true;
       }
     }
     for (const a of state.aliens) {          // alive is what is really on the map
