@@ -2387,7 +2387,7 @@ test("main.js has one key guard, and never cancels Tab inside a dialog", () => {
 console.log("hazards and defense: events, fog, flares, showers");
 const HDT = 1 / 30;
 function hrun(s, secs) { for (let i = 0; i < Math.round(secs / HDT); i++) G.step(s, HDT); }
-function quiet(s) { s.showerIn = 3000; s.eventIn = 3000; return s; }       // no new showers or events
+function quiet(s) { s.showerIn = 3000; s.eventIn = 3000; s.nests = []; return s; }       // no new showers or events, and no nests (so no guards)
 function hgame(seed, sector) { return quiet(G.newGame(seed, sector)); }
 function liveEvent(s, kind, o) {   // an event already past its warning
   const e = Object.assign({ kind, x: s.w / 2, y: s.h / 2, r: 150, age: G.TUNING.events.warn, warn: G.TUNING.events.warn, dur: 30, power: 1 }, o || {});
@@ -3394,7 +3394,7 @@ test("old saves regenerate their nests from the map seed, a version 3 save keeps
     assert.ok(G.deserialize(JSON.stringify(raw)).ok);
     assert.strictEqual(calls.length, 1);
     assert.strictEqual(calls[0][1], G.mapSeed(8, 3), "the seed of the saved sector's map");
-    const v3 = JSON.parse(G.serialize(s)); v3.nests = [{ kind: "nest", x: 10, y: 10, hp: 5, max: 10 }];
+    const v3 = JSON.parse(G.serialize(s)); v3.nests = [{ id: 0, kind: "nest", x: 10, y: 10, hp: 5, max: 10 }];
     const r = G.deserialize(JSON.stringify(v3));
     assert.strictEqual(calls.length, 1, "not called again");
     assert.deepStrictEqual(r.state.nests, [{ id: 0, kind: "nest", x: 10, y: 10, hp: 5, max: 10, dead: false, guardIn: [] }]);
@@ -3416,7 +3416,7 @@ test("damaged contract data in a save clamps or is dropped, and never throws", (
   assert.strictEqual(o.econStats.earned, 0); assert.strictEqual(o.econStats.maint, 0);
   o = load(raw => { raw.rules = 7; raw.econStats = []; raw.waves = [1, 2]; raw.nests = "x"; });
   assert.deepStrictEqual(o.rules, G.TUNING.lose);
-  o = load(raw => { raw.nests = [null, 4, { kind: "tower", x: 1, y: 1 }, { kind: "nest", x: -50, y: 1e9, hp: 9999, max: 100, guardIn: [5, "x", -3, 1e9] }, { kind: "beacon", hp: 0, max: 150, x: 5, y: 5 }]; });
+  o = load(raw => { raw.nests = [null, 4, { kind: "tower", x: 1, y: 1 }, { id: 0, kind: "nest", x: -50, y: 1e9, hp: 9999, max: 100, guardIn: [5, "x", -3, 1e9] }, { id: 1, kind: "beacon", hp: 0, max: 150, x: 5, y: 5 }]; });
   assert.strictEqual(o.nests.length, 2);
   assert.deepStrictEqual(o.nests[0], { id: 0, kind: "nest", x: 0, y: o.h, hp: 100, max: 100, dead: false, guardIn: [5, 0, 0, 600] });
   assert.ok(o.nests[1].dead && o.nests[1].id === 1);
@@ -3638,8 +3638,7 @@ test("a kill still scores and may drop a star exactly as before the hook", () =>
   shotOn(s, a, "warship", 9999);
   G.step(s, HDT);
   assert.strictEqual(s.stats.kills, 1); assert.strictEqual(s.score.kills, G.TUNING.aliens.score);
-  assert.strictEqual(G.onAlienKilled(s, a, "warship"), 0, "the stub gives no science");
-  assert.strictEqual(s.science, 0);
+  assert.strictEqual(s.science, G.scienceFor(s, "raider"), "and the kill pays its science once (slice a)");
 });
 
 test("raid aliens carry their wave, and state.waves counts alive and escaped", () => {
@@ -3691,9 +3690,9 @@ test("waves and their aliens survive a save; alive is recounted from the map; a 
   const text = G.serialize(s), o = G.deserialize(text).state;
   assert.strictEqual(G.serialize(o), text);
   assert.deepStrictEqual(o.waves, { 1: { alive: 3, escaped: 1 } }); assert.ok(o.aliens.every(x => x.wave === 1));
-  const raw = JSON.parse(text); raw.waves = { 1: { alive: 99, escaped: 1 }, 7: { alive: 5, escaped: 2 }, x: { alive: 1 } }; raw.waveSeq = 0; raw.aliens[0].wave = -9; raw.aliens[1].nest = 500;
+  const raw = JSON.parse(text); raw.waves = { 1: { alive: 99, escaped: 1 }, 7: { alive: 5, escaped: 2 }, x: { alive: 1 } }; raw.waveSeq = 0; raw.aliens[0].wave = -9; raw.aliens[1].nest = 5e6;
   const r = G.deserialize(JSON.stringify(raw)).state;
-  assert.strictEqual(r.aliens[0].wave, -1); assert.strictEqual(r.aliens[1].nest, 99);
+  assert.strictEqual(r.aliens[0].wave, -1); assert.strictEqual(r.aliens[1].nest, 999999, "the same bound as a nest id");
   assert.deepStrictEqual(r.waves, { 1: { alive: 2, escaped: 1 }, 7: { alive: 0, escaped: 2 } });
   assert.strictEqual(r.waveSeq, 7, "ids are never reused");
   buildGoal(s); s.aliens.length = 0;
@@ -3736,7 +3735,7 @@ test("buildSector asks generateNests for this sector's map seed; the stub leaves
     assert.strictEqual(calls.length, 2); assert.strictEqual(calls[1][1], G.mapSeed(9, 4)); assert.strictEqual(s.sector, 4, "called for the new sector");
     assert.deepStrictEqual(s.nests, []); assert.strictEqual(s.sciSector, 0);
   });
-  assert.deepStrictEqual(G.newGame(9, 5).nests, []);
+  assert.strictEqual(G.newGame(9, 5).nests.length, 2, "and the real generator fills it in (slice a)");
 });
 test("warpToNextSector asks econWarpBlock first: a reason refuses the warp and changes nothing", () => {
   const s = hgame(25, 3);
@@ -3777,18 +3776,13 @@ test("every stub is exported with the contract's signature and returns a neutral
     emit: 3, drainEvents: 1, endRun: 2, hasTech: 2, techMult: 2, techAdd: 2 };
   for (const k of Object.keys(sig)) { assert.strictEqual(typeof G[k], "function", k); assert.strictEqual(G[k].length, sig[k], k + " takes " + sig[k]); }
   const s = hgame(4, 3), before = G.serialize(s);
-  assert.strictEqual(G.scienceFor(s, "raider"), 0); assert.strictEqual(G.awardScience(s, 5, "raider"), 0);
-  assert.strictEqual(G.onAlienKilled(s, alien(s, 1, 1), "warship"), 0); s.aliens.length = 0; s.alienSeq = 0;
-  G.stepNests(s, 1); G.stepEconomy(s, 1); G.econOnWarp(s);
-  assert.deepStrictEqual(G.damageNest(s, 0, 5, "warship"), { killed: false });
-  assert.strictEqual(G.techState(s, "mil_hulls"), "locked");
-  assert.strictEqual(G.unlockTech(s, "mil_hulls").ok, false); assert.ok(typeof G.unlockTech(s, "mil_hulls").reason === "string");
-  assert.strictEqual(G.scienceOnWarp(s), 0); assert.strictEqual(G.econScale(5), 1);
+  // slice a's functions are real now (see the science-tree tests); slice b's are still stubs here
+  G.stepEconomy(s, 1); G.econOnWarp(s);
+  assert.strictEqual(G.econScale(5), 1);
   assert.deepStrictEqual(G.econRates(s), { maint: 0, upkeep: 0, interest: 0, net: 0 });
   assert.strictEqual(G.payDebt(s, 10).ok, false); assert.strictEqual(G.payDebt(s, 10).paid, 0);
   assert.strictEqual(G.sellStock(s, "ore", 10).ok, false); assert.strictEqual(G.buyStock(s, "ore", 10).ok, false); assert.strictEqual(G.setMothball(s, 0, true).ok, false);
   assert.strictEqual(G.econWarpBlock(s), ""); assert.strictEqual(G.timeLimit(s), 0); assert.deepStrictEqual(G.econWarnings(s), []);
-  G.generateNests(s, 1); assert.deepStrictEqual(s.nests, []);
   assert.strictEqual(G.serialize(s), before, "no stub changes the game");
 });
 test("with the stubs the game plays as before: no credits drain, no science, no nests, no deaths from money", () => {
@@ -3798,7 +3792,7 @@ test("with the stubs the game plays as before: no credits drain, no science, no 
   for (let i = 0; i < 30 * 600; i++) G.step(s, HDT);
   assert.ok(!s.over);
   assert.strictEqual(s.credits, 250); assert.strictEqual(s.debt, 1500); assert.strictEqual(s.debtTick, 60);
-  assert.strictEqual(s.science, 0); assert.strictEqual(s.sciTotal, 0); assert.deepStrictEqual(s.nests, []); assert.deepStrictEqual(s.tech, []);
+  assert.strictEqual(s.science, 0); assert.strictEqual(s.sciTotal, 0); assert.ok(s.nests.every(n => !n.dead && n.hp === n.max), "nothing touched the nests"); assert.deepStrictEqual(s.tech, []);
   assert.strictEqual(s.msgs.length, 0);
   assert.ok(s.stats.ore > 0, "and the miners worked");
 });
@@ -3879,7 +3873,608 @@ test("saved nest ids are kept when valid and unique; duplicates and invalid ones
 });
 
 // ---- science-tree tests ----
-// (slice a adds its tests here, and only here)
+// A game with the hazard timers off, nests kept, and the money rules off (so these tests do not depend on slice b).
+function ngame(seed, sector) {
+  const s = G.newGame(seed, sector);
+  s.showerIn = 3000; s.eventIn = 3000;
+  s.rules = { maintenance: false, upkeep: false, debt: false, timer: false, bankruptcy: false };
+  return s;
+}
+function gains(s) { return G.drainEvents(s).filter(e => e.type === "science:gain"); }
+function guardsOf(s, id) { return s.aliens.filter(a => a.nest === id); }
+function hunt(s, warships, nest) {   // every warship attacks the nest
+  for (const w of warships) assert.ok(G.orderAttack(s, w.id, { kind: "nest", id: nest.id }).ok);
+}
+function duel(seed, sector, count, limit) {   // count warships against nest 0; runs until one side is gone
+  const s = ngame(seed, sector); giveAll(s);
+  const ws = []; for (let i = 0; i < count; i++) ws.push(G.buildShip(s, "warship").ship);
+  const nest = s.nests[0]; hunt(s, ws, nest);
+  let t = 0;
+  while (t < (limit || 300) && !nest.dead && ws.some(w => !w.dead)) { G.step(s, HDT); t += HDT; }
+  return { s, ws, nest, t };
+}
+
+console.log("science tree: science and nests");
+test("science never comes from mining, delivering, stars or building", () => {
+  for (const sector of [1, 2]) {
+    const s = ngame(11, sector), b = nearBody(s);
+    G.orderShip(s, 0, b.id); G.orderShip(s, 1, b.id);
+    run(s, 300);
+    assert.ok(s.stats.ore > 0 && s.delivered.ore > 0, "they mined and delivered");
+    G.orderShipToStar(s, 0, 0); run(s, 120);
+    buildGoal(s);
+    assert.ok(s.won);
+    assert.strictEqual(s.science, 0); assert.strictEqual(s.sciTotal, 0);
+    assert.ok(!G.drainEvents(s).some(e => e.type === "science:gain"), "no science event");
+  }
+  const s = ngame(11, 2); buildGoal(s); assert.ok(G.warpToNextSector(s).ok);
+  assert.strictEqual(s.science, 0, "and a warp out of a sector with no nests pays nothing");
+});
+test("a raider killed by a warship pays 2 in sector 3, once, with a science:gain event", () => {
+  const s = ngame(5, 3); s.nests = [];
+  const w = warship(s), a = alien(s, w.x + 50, w.y);
+  G.drainEvents(s);
+  assert.strictEqual(G.onAlienKilled(s, a, "warship"), 2);
+  assert.strictEqual(s.science, 2); assert.strictEqual(s.sciTotal, 2);
+  assert.deepStrictEqual(G.drainEvents(s), [{ type: "science:gain", amount: 2, source: "raider", total: 2 }]);
+});
+test("kills pay by sector and by who made them; a real kill pays once", () => {
+  const s = ngame(5, 3); s.nests = [];
+  G.drainEvents(s);
+  const b = alien(s, 100, 100);
+  assert.strictEqual(G.onAlienKilled(s, b, "warship"), 2);
+  const ev = G.drainEvents(s);
+  assert.deepStrictEqual(ev, [{ type: "science:gain", amount: 2, source: "raider", total: 2 }]);
+  for (const [sector, raider] of [[3, 2], [4, 2], [5, 3], [6, 3], [7, 4], [8, 4], [9, 5]]) {
+    const t = ngame(5, sector); t.nests = [];
+    assert.strictEqual(G.scienceFor(t, "raider"), raider, "sector " + sector);
+    assert.strictEqual(G.onAlienKilled(t, alien(t, 1, 1), "warship"), raider);
+    assert.strictEqual(G.onAlienKilled(t, alien(t, 1, 1), "turret"), 1, "a turret kill pays 1");
+    assert.strictEqual(t.science, raider + 1);
+  }
+  const u = ngame(5, 3); u.nests = [];
+  assert.strictEqual(G.onAlienKilled(u, alien(u, 1, 1), "alien"), 0, "an alien's own shot pays nothing");
+  const a = alien(u, 300, 300); shotOn(u, a, "warship", 9999); G.step(u, HDT); G.step(u, HDT); G.step(u, HDT);
+  assert.strictEqual(u.science, 2, "one real kill, one payment");
+  assert.strictEqual(G.scienceFor(ngame(5, 1), "raider"), 0, "none before sector 3");
+  assert.strictEqual(G.scienceFor(ngame(5, 2), "nest"), 0); assert.strictEqual(G.scienceFor(ngame(5, 2), "beacon"), 8);
+  assert.strictEqual(G.scienceFor(ngame(5, 3), "beacon"), 0);
+  assert.deepStrictEqual([3, 4, 5, 6].map(n => G.scienceFor(ngame(5, n), "nest")), [10, 14, 18, 22]);
+  assert.strictEqual(G.scienceFor(ngame(5, 3), "wave"), 3); assert.strictEqual(G.scienceFor(ngame(5, 3), "secured"), 5);
+  assert.strictEqual(G.scienceFor(ngame(5, 3), "guard"), 1); assert.strictEqual(G.scienceFor(ngame(5, 3), "nonsense"), 0);
+});
+test("a wave repelled pays +3 once when every raider dies; a raider that escaped denies it", () => {
+  const s = ngame(6, 3); s.nests = [];
+  liveEvent(s, "raid", { x: 100, y: 100, r: 40, power: 2 });
+  G.step(s, HDT);
+  assert.strictEqual(s.aliens.length, 2); for (const a of s.aliens) a.cd = 1e6;
+  G.drainEvents(s);
+  shotOn(s, s.aliens[0], "warship", 9999); G.step(s, HDT);
+  assert.strictEqual(s.science, 2, "the first kill: no bonus yet");
+  shotOn(s, s.aliens[0], "warship", 9999); G.step(s, HDT);
+  assert.strictEqual(s.science, 7, "2 + 2 + 3");
+  const ev = G.drainEvents(s);
+  assert.deepStrictEqual(ev.filter(e => e.type === "wave:repelled"), [{ type: "wave:repelled", wave: 1 }]);
+  assert.deepStrictEqual(ev.filter(e => e.type === "science:gain").map(e => [e.source, e.amount]), [["raider", 2], ["raider", 2], ["wave", 3]]);
+  G.step(s, HDT); G.step(s, HDT);
+  assert.strictEqual(s.science, 7, "and never again");
+  // one escapes
+  const t = ngame(6, 3); t.nests = [];
+  liveEvent(t, "raid", { x: 100, y: 100, r: 40, power: 2 }); G.step(t, HDT);
+  for (const a of t.aliens) a.cd = 1e6;
+  t.aliens[1].age = G.TUNING.aliens.stay + 1;
+  hrun(t, 30);
+  assert.strictEqual(t.waves[1].escaped, 1);
+  const last = t.aliens[0]; last.age = 0; shotOn(t, last, "warship", 9999); G.step(t, HDT);
+  assert.strictEqual(t.science, 2, "only the kill: no wave bonus after an escape");
+  assert.ok(!G.drainEvents(t).some(e => e.type === "wave:repelled"));
+});
+test("the raid cap holds for kills and wave bonuses, resets each sector, and never limits nests, the beacon or securing", () => {
+  const s = ngame(8, 3); s.nests = [];
+  assert.strictEqual(G.raidScienceCap(s), 20);
+  for (let i = 0; i < 15; i++) G.onAlienKilled(s, alien(s, 1, 1), "warship");
+  assert.strictEqual(s.science, 20, "20 in sector 3");
+  assert.strictEqual(s.sciSector, 20);
+  assert.strictEqual(G.onAlienKilled(s, alien(s, 1, 1), "turret"), 0);
+  assert.strictEqual(G.awardScience(s, 3, "wave"), 20, "wave bonuses share the cap");
+  assert.strictEqual(G.awardScience(s, 5, "guard"), 20);
+  assert.strictEqual(G.awardScience(s, 10, "nest"), 30, "a nest is not capped");
+  assert.strictEqual(G.awardScience(s, 8, "beacon"), 38); assert.strictEqual(G.awardScience(s, 5, "secured"), 43);
+  assert.strictEqual(s.sciSector, 20, "and does not use the cap");
+  assert.strictEqual(s.sciTotal, 43);
+  assert.deepStrictEqual([3, 4, 5, 10].map(n => G.raidScienceCap(ngame(8, n))), [20, 30, 40, 90]);
+  buildGoal(s); assert.ok(G.warpToNextSector(s).ok);
+  assert.strictEqual(s.sciSector, 0, "a new sector starts the count again"); assert.strictEqual(G.raidScienceCap(s), 30);
+  s.nests = [];
+  for (let i = 0; i < 20; i++) G.onAlienKilled(s, alien(s, 1, 1), "warship");
+  assert.strictEqual(s.science, 43 + 30);
+  // a partial cap: the last award is cut to fit
+  const t = ngame(8, 3); t.nests = []; t.sciSector = 19;
+  G.drainEvents(t);
+  assert.strictEqual(G.awardScience(t, 3, "wave"), 1);
+  assert.deepStrictEqual(G.drainEvents(t), [{ type: "science:gain", amount: 1, source: "wave", total: 1 }]);
+  // saved
+  t.sciSector = 7;
+  assert.strictEqual(G.deserialize(G.serialize(t)).state.sciSector, 7);
+});
+
+console.log("science tree: nests");
+test("the beacon and nests: counts by sector, fixed positions, and bodies and stars never move", () => {
+  const counts = [0, 1, 1, 1, 2, 2, 3];
+  for (let seed = 1; seed <= 5; seed++) {
+    for (let sector = 1; sector <= 7; sector++) {
+      const s = G.newGame(seed, sector), again = G.newGame(seed, sector);
+      assert.strictEqual(s.nests.length, counts[sector - 1] === 0 ? 0 : counts[sector - 1], "seed " + seed + " sector " + sector);
+      assert.deepStrictEqual(s.nests, again.nests, "same seed, same places");
+      assert.deepStrictEqual(s.nests.map(n => n.id), s.nests.map((n, i) => i));
+      let bare;
+      withSpy("generateNests", st => { st.nests = []; }, () => { bare = G.newGame(seed, sector); });
+      for (const k of ["bodies", "stars", "bases", "storms", "w", "h", "hz", "eventIn", "showerIn"]) assert.deepStrictEqual(s[k], bare[k], k + " do not move");
+      const home = s.bases[0];
+      let far = 0; for (const cx of [0, s.w]) for (const cy of [0, s.h]) far = Math.max(far, Math.hypot(cx - home.x, cy - home.y));
+      for (const n of s.nests) {
+        assert.strictEqual(n.kind, sector === 2 ? "beacon" : "nest");
+        assert.ok(Math.hypot(n.x - home.x, n.y - home.y) >= 0.6 * far - 1e-6, "far from home");
+        assert.ok(n.x >= 60 && n.y >= 60 && n.x <= s.w - 60 && n.y <= s.h - 60);
+        for (const b of s.bodies) assert.ok(Math.hypot(n.x - b.x, n.y - b.y) >= b.r + 40 - 1e-6, "clear of bodies");
+        for (const st of s.stars) assert.ok(Math.hypot(n.x - st.x, n.y - st.y) >= 90 - 1e-6, "clear of stars");
+        for (const o of s.nests) if (o !== n) assert.ok(Math.hypot(n.x - o.x, n.y - o.y) >= 160 - 1e-6, "apart");
+        assert.strictEqual(n.dead, false); assert.strictEqual(n.hp, n.max);
+        assert.strictEqual(n.max, sector === 2 ? 150 : Math.round(300 * (1 + 0.3 * (sector - 3))));
+        assert.strictEqual(n.guardIn.length, n.kind === "nest" ? 3 : 0);
+      }
+    }
+  }
+  const sameButDifferentSeed = G.newGame(2, 5).nests.map(n => [n.x, n.y]);
+  assert.notDeepStrictEqual(sameButDifferentSeed, G.newGame(3, 5).nests.map(n => [n.x, n.y]));
+});
+test("the first nest goes near the richest crystal body when one lies in the far band", () => {
+  let checked = 0;
+  for (let seed = 1; seed <= 40; seed++) {
+    const s = G.newGame(seed, 3), home = s.bases[0];
+    let far = 0; for (const cx of [0, s.w]) for (const cy of [0, s.h]) far = Math.max(far, Math.hypot(cx - home.x, cy - home.y));
+    let rich = null;
+    for (const b of s.bodies) if (b.res === "crystal" && Math.hypot(b.x - home.x, b.y - home.y) >= 0.6 * far && (!rich || b.max > rich.max)) rich = b;
+    if (!rich) continue;
+    checked++;
+    assert.ok(Math.hypot(s.nests[0].x - rich.x, s.nests[0].y - rich.y) <= 150 + 1e-6, "seed " + seed);
+  }
+  assert.ok(checked > 0, "at least one seed had such a body (" + checked + ")");
+});
+test("a nest heals 2 HP/s while no warship is within 220, a beacon never heals", () => {
+  const s = ngame(7, 3), nest = s.nests[0];
+  nest.hp = 200;
+  hrun(s, 10);
+  assert.ok(Math.abs(nest.hp - 220) < 0.1, "200 -> 220, got " + nest.hp);
+  hrun(s, 100);
+  assert.strictEqual(nest.hp, nest.max, "capped");
+  nest.hp = 200;
+  const w = warship(s); w.x = nest.x + 200; w.y = nest.y; w.cd = 1e6; w.hp = w.maxHp = 1e6;
+  hrun(s, 5);
+  assert.strictEqual(nest.hp, 200, "a warship within 220 stops it");
+  w.x = nest.x + 230; hrun(s, 5);
+  assert.ok(nest.hp > 200, "and 230 does not");
+  const t = ngame(7, 2);
+  t.nests[0].hp = 100; hrun(t, 30);
+  assert.strictEqual(t.nests[0].hp, 100, "the beacon stays as it is");
+});
+test("a nest brings 3 guards, a dead guard returns 20 s later, and a guard pays 1", () => {
+  const s = ngame(7, 3), nest = s.nests[0];
+  assert.strictEqual(guardsOf(s, 0).length, 0, "none until the world runs");
+  G.step(s, HDT);
+  const gs = guardsOf(s, 0);
+  assert.strictEqual(gs.length, 3); assert.deepStrictEqual(nest.guardIn, []);
+  for (const g of gs) { assert.strictEqual(g.hp, G.alienHp(3)); assert.strictEqual(g.wave, -1); assert.ok(Math.hypot(g.x - nest.x, g.y - nest.y) < 100); }
+  G.drainEvents(s);
+  shotOn(s, gs[0], "turret", 9999); G.step(s, HDT);
+  assert.strictEqual(guardsOf(s, 0).length, 2);
+  assert.strictEqual(s.science, 1, "a guard kill pays 1 (also from a turret)");
+  assert.strictEqual(nest.guardIn.length, 1); assert.ok(Math.abs(nest.guardIn[0] - 20) < 0.1);
+  hrun(s, 19);
+  assert.strictEqual(guardsOf(s, 0).length, 2, "not yet");
+  hrun(s, 1.5);
+  assert.strictEqual(guardsOf(s, 0).length, 3, "back after 20 s");
+  assert.deepStrictEqual(nest.guardIn, []);
+  // they stay however long the nest stands
+  for (const g of guardsOf(s, 0)) g.age = 500;
+  hrun(s, 5);
+  assert.strictEqual(guardsOf(s, 0).length, 3, "guards do not leave like raiders");
+  // a full map brings no guard, and waits
+  const t = ngame(7, 3);
+  for (let i = 0; i < G.TUNING.aliens.max; i++) alien(t, 50, 50);
+  G.step(t, HDT); assert.strictEqual(guardsOf(t, 0).length, 0); assert.deepStrictEqual(t.nests[0].guardIn, [0, 0, 0]);
+});
+test("shots hit a nest and the beacon; the enemy's shots do not; a warship fires at one in range without orders", () => {
+  const s = ngame(9, 3), nest = s.nests[0];
+  s.shots.push({ x: nest.x - 40, y: nest.y, vx: 600, vy: 0, life: 1, dmg: 25, side: "us", src: "turret" });
+  G.step(s, HDT); G.step(s, HDT);
+  assert.ok(nest.hp <= nest.max - 24 && nest.hp >= nest.max - 25, "25 damage, less a tick of healing at most: " + nest.hp);
+  const t = ngame(9, 3), tn = t.nests[0]; tn.hp = 100;
+  t.shots.push({ x: tn.x - 40, y: tn.y, vx: 600, vy: 0, life: 1, dmg: 25, side: "them", src: "alien" });
+  G.step(t, HDT); G.step(t, HDT);
+  assert.ok(tn.hp >= 100, "an alien shot passes through");
+  assert.strictEqual(t.shots.length, 1);
+  // beacon: a warship that happens by shoots it
+  const u = ngame(9, 2), bc = u.nests[0], w = warship(u);
+  assert.strictEqual(bc.kind, "beacon");
+  w.x = bc.x + 100; w.y = bc.y; w.st = G.IDLE;
+  G.drainEvents(u);
+  let steps = 0;
+  while (!bc.dead && steps++ < 30 * 60) G.step(u, HDT);
+  assert.ok(bc.dead, "destroyed");
+  assert.ok(steps < 30 * 20, "in about 12 s (" + (steps / 30) + ")");
+  assert.strictEqual(u.science, 8);
+  const ev = G.drainEvents(u);
+  assert.deepStrictEqual(ev.filter(e => e.type === "nest:destroyed"), [{ type: "nest:destroyed", id: 0, kind: "beacon", sector: 2 }]);
+  assert.deepStrictEqual(ev.filter(e => e.type === "science:gain"), [{ type: "science:gain", amount: 8, source: "beacon", total: 8 }]);
+  assert.strictEqual(u.aliens.length, 0, "a beacon has no guards and never shoots");
+  assert.strictEqual(u.stats.kills, 0);
+});
+test("damageNest: kills once, ends the guards, pays, emits; Siege lances double a warship's damage", () => {
+  const s = ngame(10, 4), nest = s.nests[0];
+  G.step(s, HDT);
+  assert.strictEqual(guardsOf(s, 0).length, 3);
+  G.drainEvents(s);
+  assert.deepStrictEqual(G.damageNest(s, 0, 100, "warship"), { killed: false });
+  assert.strictEqual(nest.hp, 290);
+  assert.deepStrictEqual(G.damageNest(s, 9, 100, "warship"), { killed: false }, "no such nest");
+  assert.deepStrictEqual(G.damageNest(s, 0, 0, "warship"), { killed: false });
+  assert.deepStrictEqual(G.damageNest(s, 0, -5, "warship"), { killed: false });
+  s.tech.push("mil_hulls", "mil_targeting", "mil_contracts", "mil_siege");
+  G.damageNest(s, 0, 10, "warship"); assert.strictEqual(nest.hp, 270, "x2");
+  G.damageNest(s, 0, 10, "turret"); assert.strictEqual(nest.hp, 260, "not for a turret");
+  const r = G.damageNest(s, 0, 1000, "warship");
+  assert.strictEqual(r.killed, true); assert.strictEqual(r.science, 14);
+  assert.ok(nest.dead && nest.hp === 0 && nest.guardIn.length === 0);
+  assert.strictEqual(guardsOf(s, 0).length, 0, "its guards fall with it");
+  assert.strictEqual(s.science, 14); assert.strictEqual(s.stats.kills, 0, "not counted as kills");
+  assert.deepStrictEqual(G.drainEvents(s).filter(e => e.type === "nest:destroyed"), [{ type: "nest:destroyed", id: 0, kind: "nest", sector: 4 }]);
+  assert.deepStrictEqual(G.damageNest(s, 0, 50, "warship"), { killed: false }, "once");
+  hrun(s, 60);
+  assert.strictEqual(guardsOf(s, 0).length, 0, "and no more guards"); assert.strictEqual(s.science, 14);
+});
+test("two warships take a sector 4 nest: guards stop returning, +14 and a guard's 1 per kill", () => {
+  const { s, ws, nest, t } = duel(2, 4, 2);
+  assert.ok(nest.dead, "destroyed after " + t.toFixed(0) + " s");
+  assert.ok(ws.some(w => !w.dead), "and a warship is left");
+  assert.strictEqual(s.science, 14 + s.stats.kills, "14 for the nest, 1 per guard killed on the way");
+  assert.ok(s.stats.kills >= 1, "it cleared guards on the way");
+  assert.ok(guardsOf(s, 0).length === 0);
+  const ev = G.drainEvents(s);
+  assert.strictEqual(ev.filter(e => e.type === "nest:destroyed").length, 1);
+  assert.ok(ev.some(e => e.type === "science:gain" && e.source === "nest" && e.amount === 14));
+  hrun(s, 40);
+  assert.strictEqual(guardsOf(s, 0).length, 0);
+});
+test("one warship loses or barely survives a nest with 3 guards from sector 3; from sector 4 it loses; two win", () => {
+  for (let seed = 1; seed <= 4; seed++) {
+    const a = duel(seed, 3, 1);
+    assert.ok(a.nest.dead ? a.ws[0].hp <= 0.35 * a.ws[0].maxHp : a.ws[0].dead, "s3 solo, seed " + seed + ": hp " + a.ws[0].hp + (a.nest.dead ? " won" : " lost"));
+    const b = duel(seed, 4, 1);
+    assert.ok(b.ws[0].dead && !b.nest.dead, "s4 solo loses, seed " + seed);
+    const c = duel(seed, 4, 2);
+    assert.ok(c.nest.dead && c.ws.some(w => !w.dead), "s4 pair wins, seed " + seed);
+    const d = duel(seed, 3, 2);
+    assert.ok(d.nest.dead && d.ws.every(w => !w.dead), "s3 pair wins and both live, seed " + seed);
+  }
+});
+test("guards shoot warships within their leash; ships outside it are left alone; raiders still ignore warships", () => {
+  const s = ngame(12, 3), nest = s.nests[0];
+  G.step(s, HDT);
+  const w = warship(s); w.x = nest.x + 160; w.y = nest.y; w.cd = 1e6; w.st = G.IDLE; w.hp = w.maxHp;
+  const far = warship(s); far.x = nest.x + 200; far.y = nest.y + 400; far.cd = 1e6; far.st = G.IDLE;
+  const hp0 = w.hp;
+  hrun(s, 4);
+  for (const g of guardsOf(s, 0)) {
+    assert.ok(Math.hypot(g.x - nest.x, g.y - nest.y) <= G.TUNING.science.nest.guardLeash + 1e-6, "inside the leash");
+    assert.strictEqual(g.tgtKind, "ship"); assert.strictEqual(g.tgt, w.id);
+  }
+  hrun(s, 6);
+  assert.ok(w.hp < hp0, "the guards hit the warship: " + w.hp);
+  assert.strictEqual(far.hp, far.maxHp, "outside the leash: untouched");
+  assert.ok(s.shots.every(h => h.side === "them" && h.src === "alien"));
+  // with the ship gone they go back to their post
+  w.dead = true; w.hp = 0; far.x = -5000; far.y = -5000;
+  hrun(s, 6);
+  for (const g of guardsOf(s, 0)) assert.strictEqual(g.tgtKind, "", "idle again");
+  // raiders (not guards): an unloaded warship beside them is not a target
+  const t = ngame(12, 3); t.nests = [];
+  const v = warship(t); v.x = 400; v.y = 400; v.cd = 1e6; v.st = G.IDLE;
+  const r = alien(t, 450, 400); r.cd = 0;
+  hrun(t, 3);
+  assert.strictEqual(r.tgtKind, "base"); assert.strictEqual(v.hp, v.maxHp);
+});
+test("with the nest dead its guards are gone, and a stray guard without a nest is dropped", () => {
+  const s = ngame(13, 3); G.step(s, HDT);
+  const g = guardsOf(s, 0)[0]; g.nest = 5;
+  G.step(s, HDT);
+  assert.ok(!s.aliens.includes(g), "no nest 5: gone");
+});
+
+console.log("science tree: orders and saves");
+test("orderAttack takes a nest: wt is NEST_ORDER + id, the warship flies there, and the order survives a save", () => {
+  const s = ngame(14, 3); giveAll(s);
+  const w = G.buildShip(s, "warship").ship, nest = s.nests[0];
+  assert.deepStrictEqual(G.orderAttack(s, w.id, { kind: "nest", id: 7 }), { ok: false, reason: "No such nest." });
+  assert.deepStrictEqual(G.orderAttack(s, w.id, { kind: "nest", id: "x" }), { ok: false, reason: "No such nest." });
+  assert.strictEqual(G.orderAttack(s, w.id, { kind: "alien", id: 99 }).ok, false);
+  assert.ok(!G.orderAttack(s, 0, { kind: "nest", id: 0 }).ok, "a miner cannot");
+  assert.ok(G.orderAttack(s, w.id, { kind: "nest", id: nest.id }).ok);
+  assert.strictEqual(w.wo, "attack"); assert.strictEqual(w.wt, G.NEST_ORDER + nest.id);
+  assert.deepStrictEqual(G.orderTarget(w), { kind: "nest", id: nest.id });
+  const d0 = Math.hypot(w.x - nest.x, w.y - nest.y);
+  hrun(s, 5);
+  assert.ok(Math.hypot(w.x - nest.x, w.y - nest.y) < d0 - 300, "on its way");
+  const back = G.deserialize(G.serialize(s)).state;
+  assert.strictEqual(back.ships[w.id].wo, "attack"); assert.strictEqual(back.ships[w.id].wt, G.NEST_ORDER + nest.id);
+  // an alien order still works the old way
+  const a = alien(s, 300, 300);
+  assert.ok(G.orderAttack(s, w.id, a.id).ok); assert.deepStrictEqual(G.orderTarget(w), { kind: "alien", id: a.id });
+  assert.ok(G.orderAttack(s, w.id, { kind: "alien", id: a.id }).ok && w.wt === a.id);
+  assert.strictEqual(G.orderTarget(s.ships[0]), null);
+  // a dead nest is refused, and an order on one that dies is dropped to a patrol
+  assert.ok(G.orderAttack(s, w.id, { kind: "nest", id: 0 }).ok);
+  nest.dead = true; nest.hp = 0;
+  hrun(s, 0.1);
+  assert.strictEqual(w.wo, "patrol"); assert.strictEqual(w.wt, -1);
+  assert.deepStrictEqual(G.orderAttack(s, w.id, { kind: "nest", id: 0 }), { ok: false, reason: "That nest is already destroyed." });
+  const u = ngame(14, 2);
+  assert.strictEqual(G.orderAttack(u, warship(u).id, { kind: "nest", id: 0 }).ok, true, "and the beacon");
+  u.nests[0].dead = true;
+  assert.ok(/beacon/.test(G.orderAttack(u, 2, { kind: "nest", id: 0 }).reason));
+});
+test("nests, guards and a fight in progress survive a save exactly, and the run goes on the same", () => {
+  const { s } = duel(3, 4, 2, 22);
+  assert.ok(s.nests[0].hp < s.nests[0].max && !s.nests[0].dead, "mid-fight");
+  assert.strictEqual(guardsOf(s, 0).length + s.nests[0].guardIn.length, 3, "three guards, each alive or on a timer");
+  const text = G.serialize(s), back = G.deserialize(text);
+  assert.ok(back.ok);
+  assert.strictEqual(noMv(G.serialize(back.state)), noMv(text));
+  assert.deepStrictEqual(back.state.nests, s.nests);
+  hrun(s, 30); hrun(back.state, 30);
+  assert.strictEqual(noMv(G.serialize(back.state)), noMv(G.serialize(s)), "the same 30 s later");
+  assert.deepStrictEqual(back.state.aliens.map(a => a.nest), s.aliens.map(a => a.nest));
+});
+test("an old save regenerates its nests from the seed at full HP, and its guards come on the first step", () => {
+  const s = G.newGame(8, 3), raw = JSON.parse(G.serialize(s));
+  raw.ver = 2; delete raw.nests; delete raw.science; delete raw.tech;
+  const r = G.deserialize(JSON.stringify(raw));
+  assert.ok(r.ok);
+  assert.deepStrictEqual(r.state.nests, G.newGame(8, 3).nests);
+  assert.ok(r.state.nests.every(n => n.hp === n.max && !n.dead));
+  r.state.showerIn = 3000; r.state.eventIn = 3000;
+  G.step(r.state, HDT);
+  assert.strictEqual(guardsOf(r.state, 0).length, 3);
+  assert.strictEqual(r.state.science, 0); assert.deepStrictEqual(r.state.tech, []);
+  const b = JSON.parse(G.serialize(G.newGame(8, 1))); b.ver = 1; delete b.nests;
+  assert.deepStrictEqual(G.deserialize(JSON.stringify(b)).state.nests, [], "sector 1 has none");
+});
+test("saved nest ids: invalid or repeated ones drop with no positional fallback, a later valid one survives", () => {
+  const s = G.newGame(8, 3), raw = JSON.parse(G.serialize(s));
+  const n = (id, x) => ({ id, kind: "nest", x, y: 10, hp: 5, max: 10 });
+  raw.nests = [n(-1, 1), n("x", 2), n(undefined, 3), n(1.5, 4), n(null, 5), n(1000000, 6), n(5, 7), n(5, 8)];
+  let r = G.deserialize(JSON.stringify(raw));
+  assert.ok(r.ok);
+  assert.deepStrictEqual(r.state.nests.map(q => [q.id, q.x]), [[5, 7]], "only the valid, first id 5 stays");
+  raw.nests = [n(999999, 1), n(0, 2)];
+  r = G.deserialize(JSON.stringify(raw));
+  assert.deepStrictEqual(r.state.nests.map(q => q.id), [999999, 0], "the top id is allowed");
+  const al = JSON.parse(G.serialize(s)); al.aliens = [{ id: 1, x: 5, y: 5, hp: 10, maxHp: 10, nest: 999999 }, { id: 2, x: 6, y: 6, hp: 10, maxHp: 10, nest: 1e9 }];
+  const o = G.deserialize(JSON.stringify(al)).state;
+  assert.deepStrictEqual(o.aliens.map(a => a.nest), [999999, 999999], "alien nest uses the same top bound");
+});
+test("an event gap is shorter by 20% per live nest, and raids come from the edge nearest one", () => {
+  const gap = (sector, kill) => {
+    const s = G.newGame(21, sector); s.showerIn = 3000; s.eventIn = 0;
+    if (kill) s.nests.forEach(n => { n.dead = true; });
+    G.step(s, HDT);
+    return s.eventIn;
+  };
+  for (const sector of [3, 5, 7]) {
+    const live = G.newGame(21, sector).nests.length;
+    const bare = gap(sector, true), boosted = gap(sector, false);
+    assert.ok(Math.abs(boosted * (1 + 0.2 * live) - bare) < 0.2, "sector " + sector + ": " + boosted + " x " + (1 + 0.2 * live) + " vs " + bare);
+  }
+  for (const sector of [3, 5, 7]) {
+    for (let seed = 1; seed <= 5; seed++) {
+      const s = G.newGame(seed, sector); s.showerIn = 3000; s.eventIn = 0;
+      withTuning(G.TUNING.events, "raidFirst", 1, () => withTuning(G.TUNING.events, "raidMax", 1, () => G.step(s, HDT)));
+      const e = s.events.find(x => x.kind === "raid");
+      assert.ok(e, "a raid was rolled");
+      const m = G.TUNING.aliens.edge;
+      const onEdge = e.x === m || e.x === s.w - m || e.y === m || e.y === s.h - m;
+      assert.ok(onEdge, "on an edge");
+      assert.ok(s.nests.some(n => {
+        const best = Math.min(n.x, s.w - n.x, n.y, s.h - n.y);
+        if (best === n.x) return e.x === m && Math.abs(e.y - Math.max(m, Math.min(s.h - m, n.y))) < 1e-6;
+        if (best === s.w - n.x) return e.x === s.w - m && Math.abs(e.y - Math.max(m, Math.min(s.h - m, n.y))) < 1e-6;
+        if (best === n.y) return e.y === m && Math.abs(e.x - Math.max(m, Math.min(s.w - m, n.x))) < 1e-6;
+        return e.y === s.h - m && Math.abs(e.x - Math.max(m, Math.min(s.w - m, n.x))) < 1e-6;
+      }), "at the edge nearest a live nest (seed " + seed + ", sector " + sector + ")");
+    }
+  }
+  const dead = G.newGame(21, 4); dead.showerIn = 3000; dead.eventIn = 0; dead.nests[0].dead = true;
+  withTuning(G.TUNING.events, "raidFirst", 1, () => withTuning(G.TUNING.events, "raidMax", 1, () => G.step(dead, HDT)));
+  assert.ok(dead.events.some(x => x.kind === "raid"), "with every nest dead raids still come, from anywhere");
+});
+test("sector secured pays +5 only when every nest of the sector is dead", () => {
+  const s = ngame(15, 3);
+  buildGoal(s);
+  G.drainEvents(s);
+  assert.strictEqual(G.scienceOnWarp(s), 0, "alive: nothing");
+  s.nests[0].dead = true; s.nests[0].hp = 0;
+  assert.ok(G.warpToNextSector(s).ok);
+  assert.strictEqual(s.science, 5);
+  assert.deepStrictEqual(G.drainEvents(s).filter(e => e.type === "science:gain"), [{ type: "science:gain", amount: 5, source: "secured", total: 5 }]);
+  const t = ngame(15, 3); buildGoal(t);
+  assert.ok(G.warpToNextSector(t).ok);
+  assert.strictEqual(t.science, 0, "warping with the nest standing pays nothing");
+  const u = ngame(15, 5); buildGoal(u);
+  assert.strictEqual(u.nests.length, 2);
+  u.nests[0].dead = true;
+  assert.strictEqual(G.scienceOnWarp(u), 0, "one of two");
+  u.nests[1].dead = true;
+  assert.strictEqual(G.scienceOnWarp(u), 5);
+  const v = ngame(15, 2); buildGoal(v);
+  assert.strictEqual(G.scienceOnWarp(v), 0, "the beacon is not a nest");
+  v.nests[0].dead = true; assert.strictEqual(G.scienceOnWarp(v), 0);
+});
+
+console.log("science tree: the tech tree");
+test("techState: owned, available, short or locked; unknown ids are locked", () => {
+  const s = ngame(16, 3);
+  assert.strictEqual(G.techState(s, "ind_drills"), "short");
+  assert.strictEqual(G.techState(s, "ind_crews"), "locked");
+  assert.strictEqual(G.techState(s, "nope"), "locked"); assert.strictEqual(G.techState(s, 7), "locked"); assert.strictEqual(G.techState(s, "__proto__"), "locked");
+  s.science = 8;
+  assert.strictEqual(G.techState(s, "ind_drills"), "available");
+  assert.strictEqual(G.techState(s, "ind_crews"), "locked", "locked even with the science: the node below is missing");
+  s.science = 100; s.tech.push("ind_drills");
+  assert.strictEqual(G.techState(s, "ind_drills"), "owned");
+  assert.strictEqual(G.techState(s, "ind_crews"), "available");
+  s.science = 15;
+  assert.strictEqual(G.techState(s, "ind_crews"), "short");
+  assert.strictEqual(G.techCost(G.TUNING.tech[0]), 8);
+  assert.deepStrictEqual(G.TUNING.tech.map(n => G.techCost(n)), [8, 16, 28, 45, 8, 16, 28, 45, 8, 16, 28, 45]);
+});
+test("unlockTech: needs the node below and the science; deducts; refuses twice; emits tech:unlock", () => {
+  const s = ngame(17, 3);
+  s.science = 7;
+  assert.deepStrictEqual(G.unlockTech(s, "ind_drills"), { ok: false, reason: "Need 1 more science." });
+  assert.deepStrictEqual(s.tech, []); assert.strictEqual(s.science, 7);
+  s.science = 8; s.sciTotal = 8;
+  G.drainEvents(s);
+  assert.deepStrictEqual(G.unlockTech(s, "ind_drills"), { ok: true, cost: 8 });
+  assert.strictEqual(s.science, 0); assert.strictEqual(s.sciTotal, 8, "the total does not go down");
+  assert.deepStrictEqual(s.tech, ["ind_drills"]);
+  assert.deepStrictEqual(G.drainEvents(s), [{ type: "tech:unlock", id: "ind_drills" }]);
+  s.science = 100;
+  assert.deepStrictEqual(G.unlockTech(s, "ind_modular"), { ok: false, reason: "Needs Lean crews." });
+  assert.deepStrictEqual(G.unlockTech(s, "ind_drills"), { ok: false, reason: "Efficient drills is already yours." });
+  assert.strictEqual(G.unlockTech(s, "nope").ok, false); assert.strictEqual(G.unlockTech(s, undefined).ok, false); assert.strictEqual(G.unlockTech(s, "__proto__").ok, false);
+  assert.strictEqual(G.unlockTech(s, "ind_crews").ok, true); assert.strictEqual(s.science, 84);
+  assert.strictEqual(G.unlockTech(s, "ind_modular").ok, true); assert.strictEqual(G.unlockTech(s, "ind_holds").ok, true);
+  assert.strictEqual(s.science, 84 - 28 - 45);
+  const t = ngame(17, 3); t.science = 3.5;
+  assert.strictEqual(G.unlockTech(t, "log_credit").reason, "Need 5 more science.");
+  const back = G.deserialize(G.serialize(s)).state;
+  assert.deepStrictEqual(back.tech, s.tech); assert.strictEqual(back.science, s.science);
+  s.over = true; assert.strictEqual(G.unlockTech(s, "log_credit").reason, "This run is over.");
+});
+test("tree: Hardened hulls raises warship HP (keeping the share), Targeting computers the shot damage", () => {
+  const s = ngame(18, 3); s.nests = []; giveAll(s);
+  const w = G.buildShip(s, "warship").ship, w2 = G.buildShip(s, "warship").ship;
+  w2.hp = 45;
+  s.science = 8; assert.ok(G.unlockTech(s, "mil_hulls").ok);
+  assert.strictEqual(w.maxHp, 117); assert.strictEqual(w.hp, 117);
+  assert.strictEqual(w2.maxHp, 117); assert.strictEqual(w2.hp, 58.5, "half stays half");
+  const w3 = G.buildShip(s, "warship").ship;
+  assert.strictEqual(w3.maxHp, 90); G.step(s, HDT);
+  assert.strictEqual(w3.maxHp, 117); assert.strictEqual(w3.hp, 117, "a new one is full at 117");
+  // damage per shot: 9 -> 11.25
+  const fire = tech => {
+    const t = ngame(18, 3); t.nests = []; giveAll(t); t.tech = tech;
+    const ship = G.buildShip(t, "warship").ship, a = alien(t, ship.x + 100, ship.y); a.cd = 1e6;
+    G.step(t, HDT);
+    return t.shots.length ? t.shots[0].dmg : -1;
+  };
+  assert.strictEqual(fire([]), 9); assert.strictEqual(fire(["mil_hulls", "mil_targeting"]), 11.25);
+  assert.strictEqual(G.TUNING.ships.warship.dmg, 9, "TUNING is unchanged");
+});
+test("tree: mining rate, cargo, speed and unloading", () => {
+  const mine = (tech, type, secs) => {
+    const s = ngame(19, 1); s.tech = tech;
+    const body = s.bodies.find(b => b.res === "ore" && b.amount >= 160);
+    if (type === "hauler") { s.stock.ore = s.stock.ice = 500; G.buildShip(s, "hauler"); }
+    const m = s.ships[type === "hauler" ? 2 : 0];
+    m.x = body.x + body.r + 12; m.y = body.y; m.st = G.MINING; m.target = body.id; m.res = "ore";
+    run(s, secs);
+    return m.cargo;
+  };
+  assert.ok(Math.abs(mine([], "miner", 1) - 5) < 0.1);
+  assert.ok(Math.abs(mine(["ind_drills"], "miner", 1) - 6) < 0.1, "5 -> 6 a second");
+  assert.ok(Math.abs(mine([], "hauler", 1) - 4) < 0.1); assert.ok(Math.abs(mine(["ind_drills"], "hauler", 1) - 4.8) < 0.1);
+  const cap = (tech, type) => { const s = ngame(19, 1); s.tech = tech; return G.cargoCap(s, G.SHIP_TYPES[type]); };
+  assert.deepStrictEqual([cap([], "miner"), cap([], "hauler"), cap(["ind_drills", "ind_crews", "ind_modular", "ind_holds"], "miner"), cap(["ind_drills", "ind_crews", "ind_modular", "ind_holds"], "hauler")], [20, 60, 25, 75]);
+  const all = ["ind_drills", "ind_crews", "ind_modular", "ind_holds"];
+  const fill = (tech, type) => {
+    const s = ngame(19, 1); s.tech = tech;
+    const body = s.bodies.find(b => b.res === "ore" && b.amount >= 160);
+    if (type === "hauler") { s.stock.ore = s.stock.ice = 500; G.buildShip(s, "hauler"); }
+    const m = s.ships[type === "hauler" ? 2 : 0];
+    m.x = body.x + body.r + 12; m.y = body.y; m.st = G.MINING; m.target = body.id; m.res = "ore";
+    for (let i = 0; i < 60 * 30 && m.st === G.MINING; i++) G.step(s, DT);
+    return m.cargo;
+  };
+  assert.ok(Math.abs(fill(all, "miner") - 25) < 1e-6, "a miner fills to 25"); assert.ok(Math.abs(fill([], "miner") - 20) < 1e-6);
+  assert.ok(Math.abs(fill(all, "hauler") - 75) < 1e-6); assert.ok(Math.abs(fill([], "hauler") - 60) < 1e-6);
+  // manual mining uses both too
+  const man = tech => {
+    const s = ngame(19, 1); s.tech = tech;
+    const body = s.bodies.find(b => b.res === "ore" && b.amount >= 160), m = s.ships[0];
+    G.takeManual(s, 0); m.x = body.x + body.r + 8; m.y = body.y;
+    assert.ok(G.manualAction(s, 0).ok);
+    run(s, 1); return m.cargo;
+  };
+  assert.ok(Math.abs(man([]) - 5) < 0.1 && Math.abs(man(["ind_drills"]) - 6) < 0.1);
+  // speed: miners and haulers only
+  const fly = (tech, type) => {
+    const s = ngame(19, 1); s.tech = tech; s.storms = [];
+    if (type === "warship") { giveAll(s); G.buildShip(s, "warship"); }
+    const ship = type === "warship" ? s.ships[2] : s.ships[0];
+    ship.x = 100; ship.y = 100;
+    if (type === "warship") G.orderPatrol(s, ship.id, 1500, 100); else { ship.st = G.TO_STAR; s.stars = [{ id: 0, x: 1500, y: 100, taken: false }]; ship.star = 0; }
+    run(s, 1); return ship.x - 100;
+  };
+  const eng = ["log_credit", "log_docks", "log_engines"];
+  assert.ok(Math.abs(fly([], "miner") - 85) < 0.5); assert.ok(Math.abs(fly(eng, "miner") - 85 * 1.15) < 0.5, "x1.15");
+  assert.ok(Math.abs(fly(eng, "warship") - fly([], "warship")) < 1e-9, "warships are not faster");
+  // unloading and dock range
+  const unload = tech => {
+    const s = ngame(19, 1); s.tech = tech;
+    const m = s.ships[0], h = s.bases[0];
+    m.cargo = 20; m.res = "ore"; m.st = G.TO_BASE; m.x = h.x + G.BASE_R + 10 + G.dockRange(s, h); m.y = h.y; m.dest = 0;
+    G.step(s, DT); G.step(s, DT);
+    return { wait: m.wait, st: m.st };
+  };
+  assert.ok(Math.abs(unload([]).wait - 20 / 30) < 0.05);
+  assert.ok(Math.abs(unload(["log_credit", "log_docks"]).wait - 20 / 45) < 0.05, "x1.5 faster");
+  const s = ngame(19, 1); s.tech = ["log_credit", "log_docks"];
+  assert.strictEqual(G.dockRange(s, s.bases[0]), 10); assert.strictEqual(G.unloadRate(s, s.bases[0]), 45);
+  s.bases[0].tier = 2; assert.strictEqual(G.dockRange(s, s.bases[0]), 36); assert.strictEqual(G.unloadRate(s, s.bases[0]), 180);
+  s.tech = []; assert.strictEqual(G.dockRange(s, s.bases[0]), 26);
+  // the drop-off range really is longer: a ship 20 further out still unloads by hand
+  const t = ngame(19, 1); t.tech = ["log_credit", "log_docks"];
+  const m = t.ships[0], h = t.bases[0];
+  G.takeManual(t, 0); m.cargo = 10; m.res = "ore"; m.x = h.x + G.BASE_R + 10 + 10 + G.MANUAL_SLACK - 1; m.y = h.y;
+  assert.strictEqual(G.manualAction(t, 0).did, "unload");
+  const t2 = ngame(19, 1); const m2 = t2.ships[0]; G.takeManual(t2, 0); m2.cargo = 10; m2.res = "ore"; m2.x = t2.bases[0].x + G.BASE_R + 10 + 10 + G.MANUAL_SLACK - 1; m2.y = t2.bases[0].y;
+  assert.notStrictEqual(G.manualAction(t2, 0).did, "unload", "not without the node");
+});
+test("tree: new base cost, and the table of every node's effect", () => {
+  const s = ngame(20, 1), base = G.baseCost(s);
+  assert.deepStrictEqual(base, { ore: 120, ice: 40, crystal: 15 });
+  s.tech = ["log_credit", "log_docks", "log_engines", "log_depots"];
+  assert.deepStrictEqual(G.baseCost(s), { ore: 102, ice: 34, crystal: 13 });
+  const t = ngame(20, 5); t.tech = s.tech.slice();
+  assert.deepStrictEqual(G.baseCost(ngame(20, 5)), { ore: 158, ice: 53, crystal: 20 });
+  assert.deepStrictEqual(G.baseCost(t), { ore: 135, ice: 45, crystal: 17 }, "x0.85 on the sector's cost");
+  const eff = (id, key, kind) => { const u = ngame(20, 1); u.tech = [id]; return kind === "add" ? G.techAdd(u, key) : G.techMult(u, key); };
+  assert.strictEqual(eff("mil_contracts", "warshipMaint"), 0.6); assert.strictEqual(eff("ind_crews", "shipMaint"), 0.7);
+  assert.strictEqual(eff("ind_modular", "baseUpkeep"), 0.65); assert.strictEqual(eff("log_credit", "overdraft", "add"), -250);
+  assert.strictEqual(eff("log_credit", "interest"), 0.5); assert.strictEqual(eff("mil_siege", "nestDmg"), 2);
+  assert.strictEqual(eff("mil_hulls", "warshipHp"), 1.3); assert.strictEqual(eff("mil_targeting", "warshipDmg"), 1.25);
+  assert.strictEqual(G.TUNING.tech.length, 12);
+});
+test("the same seed and orders give the same fight, nests and science", () => {
+  const a = duel(5, 4, 2, 120), b = duel(5, 4, 2, 120);
+  assert.strictEqual(G.serialize(a.s), G.serialize(b.s));
+  assert.ok(a.s.science > 0 && a.nest.hp < a.nest.max);
+  const text = require("fs").readFileSync(__dirname + "/game.js", "utf8");
+  const part = text.slice(text.indexOf("science, nests and the tech tree"), text.indexOf("stubs for slice b"));
+  assert.ok(part.length > 5000 && part.indexOf("Math.random") < 0, "no Math.random in the science code");
+});
+
 
 // ---- economy-lose tests ----
 // (slice b adds its tests here, and only here)

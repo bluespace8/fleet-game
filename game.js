@@ -269,7 +269,7 @@
     for (const r of RES) out[r] = Math.round((cost[r] || 0) * k);
     return out;
   }
-  function baseCost(state) { return scaleCost(T.baseCost, costMult(state.sector)); }
+  function baseCost(state) { return scaleCost(T.baseCost, costMult(state.sector) * techMult(state, "baseCost")); }   // tech: Forward depots
   function addonCost(state, kind) { return T.addons[kind] ? scaleCost(T.addons[kind].cost, costMult(state.sector)) : null; }
   function shipCost(state, type) { return scaleCost(SHIP_TYPES[type].cost, costMult(state.sector)); }
   function upgradeCost(state, baseId) {
@@ -498,25 +498,298 @@
     for (const n of list.slice(0, 8)) {
       if (!n || (n.kind !== "beacon" && n.kind !== "nest")) continue;
       const max = Math.min(99999, Math.max(1, num(n.max, 1))), hp = Math.min(max, Math.max(0, num(n.hp, max)));
-      const id = Number.isInteger(n.id) && n.id >= 0 && n.id < 1e6 ? n.id : out.length;
-      if (out.some(o => o.id === id)) continue;
-      out.push({ id, kind: n.kind, x: Math.min(state.w, Math.max(0, num(n.x, 0))), y: Math.min(state.h, Math.max(0, num(n.y, 0))),
+      if (!Number.isInteger(n.id) || n.id < 0 || n.id > NEST_ID_MAX || out.some(o => o.id === n.id)) continue;   // a bad or repeated id drops the entry
+      out.push({ id: n.id, kind: n.kind, x: Math.min(state.w, Math.max(0, num(n.x, 0))), y: Math.min(state.h, Math.max(0, num(n.y, 0))),
         hp, max, dead: n.dead === true || hp <= 0,
         guardIn: Array.isArray(n.guardIn) ? n.guardIn.slice(0, 8).map(v => Math.min(600, Math.max(0, num(v, 0)))) : [] });
     }
     return out;
   }
 
-  // ---- stubs: neutral until the owner fills them in. Names, arguments and returns are the contract.
-  function scienceFor(state, source) { return 0; }                                  // owner: slice a
-  function awardScience(state, n, source) { return state.science; }                 // owner: slice a (returns the new total)
-  function onAlienKilled(state, alien, src) { return 0; }                           // owner: slice a (returns the science gained)
-  function generateNests(state, seed) { state.nests = []; }                         // owner: slice a (seed: this sector's map seed)
-  function stepNests(state, dt) { }                                                 // owner: slice a
-  function damageNest(state, id, dmg, by) { return { killed: false }; }             // owner: slice a
-  function techState(state, id) { return "locked"; }                                // owner: slice a ("owned" | "available" | "locked" | "short")
-  function unlockTech(state, id) { return { ok: false, reason: "The tech tree is not ready yet." }; }   // owner: slice a
-  function scienceOnWarp(state) { return 0; }                                       // owner: slice a (returns the bonus)
+  // ---------------------------------------------------------------- science, nests and the tech tree (slice a)
+  // Science comes only from fighting: raider, turret and guard kills and repelled waves (capped per sector), and the
+  // sector 2 beacon, alien nests and securing a sector (never capped). Mining, delivering, stars and building give none.
+
+  const NEST_ID_MAX = 999999;        // largest nest id: sanitizeNests and the alien "nest" field in deserialize share this bound
+  const NEST_ORDER = 100000000;      // a warship's wt at or above this is an attack order on nest (wt - NEST_ORDER)
+  // Geometry of the alien structures (world units): hit radius of a nest and of the beacon, clearance from the map edge,
+  // body edges, stars and each other when placing, guard orbit radius, placement tries.
+  const NEST_GEO = { nestR: 24, beaconR: 18, edge: 60, bodyClear: 40, starClear: 90, apart: 160, orbit: 70, tries: 240, crystalTries: 80 };
+  const CAPPED_SOURCES = { raider: true, turret: true, guard: true, wave: true };   // these share the per-sector raid cap
+
+  function nestById(state, id) {
+    const list = state.nests;
+    if (!list) return null;
+    for (let i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+    return null;
+  }
+
+  // The nests (not the beacon) still standing.
+  function liveNests(state) {
+    const out = [];
+    if (state.nests) for (let i = 0; i < state.nests.length; i++) if (state.nests[i].kind === "nest" && !state.nests[i].dead) out.push(state.nests[i]);
+    return out;
+  }
+
+  function nestCount(n) { const N = T.science.nest; return n < N.firstSector ? 0 : Math.min(N.max, N.base + Math.floor((n - N.firstSector) / N.every)); }
+  function nestHp(n) { const N = T.science.nest; return Math.round(N.hp * (1 + N.hpPerSector * Math.max(0, n - N.firstSector))); }
+
+  // What a source is worth in sector state.sector, before the cap. source: "raider" (killed by a warship), "turret",
+  // "guard", "wave", "beacon", "nest", "secured". 0 for anything else or before the source exists.
+  function scienceFor(state, source) {
+    const S = T.science, n = state.sector, A = T.aliens.firstSector;
+    switch (source) {
+      case "raider": return n >= A ? S.raider + Math.floor((n - A) / S.raiderEvery) : 0;
+      case "turret": return n >= A ? S.turretKill : 0;
+      case "guard": return n >= S.nest.firstSector ? S.guardKill : 0;
+      case "wave": return n >= A ? S.wave : 0;
+      case "beacon": return n === S.beacon.sector ? S.beacon.sci : 0;
+      case "nest": return n >= S.nest.firstSector ? S.nest.sci + S.nest.sciPerSector * (n - S.nest.firstSector) : 0;
+      case "secured": return n >= S.nest.firstSector ? S.secured : 0;
+    }
+    return 0;
+  }
+
+  // The most raider, turret and guard kills and wave bonuses can earn in this sector.
+  function raidScienceCap(state) {
+    const S = T.science;
+    return S.raidCap + S.raidCapPerSector * Math.max(0, state.sector - T.aliens.firstSector);
+  }
+
+  // Add science. Raid sources are cut to what is left under the sector's cap. Returns the new total (science in hand).
+  function awardScience(state, n, source) {
+    if (!(n > 0)) return state.science;
+    if (CAPPED_SOURCES[source]) {
+      n = Math.min(n, Math.max(0, raidScienceCap(state) - state.sciSector));
+      if (!(n > 0)) return state.science;
+      state.sciSector += n;
+    }
+    state.science += n;
+    state.sciTotal += n;
+    emit(state, "science:gain", { amount: n, source, total: state.science });
+    return state.science;
+  }
+
+  // Called when an alien dies (src: "warship" | "turret" | "alien"). Returns the science it earned. A guard pays its own
+  // kill and its nest starts a respawn timer; a raider pays by who killed it; the last raider of a wave (none escaped) adds
+  // the wave bonus.
+  function onAlienKilled(state, alien, src) {
+    const before = state.science;
+    if (alien.nest >= 0) {
+      const nest = nestById(state, alien.nest);
+      if (nest && !nest.dead) nest.guardIn.push(T.science.nest.guardRespawn);
+      awardScience(state, scienceFor(state, "guard"), "guard");
+    } else {
+      const source = src === "turret" ? "turret" : src === "alien" ? "" : "raider";
+      if (source) awardScience(state, scienceFor(state, source), source);
+      const w = alien.wave >= 0 && state.waves ? state.waves[alien.wave] : null;
+      if (w && w.alive === 0 && w.escaped === 0 && !w.repelled) {
+        w.repelled = true;
+        emit(state, "wave:repelled", { wave: alien.wave });
+        awardScience(state, scienceFor(state, "wave"), "wave");
+      }
+    }
+    return state.science - before;
+  }
+
+  // Places the sector's alien structures with their own generator (rng(seed ^ 0x4E57)), so bodies and stars never move:
+  // one derelict beacon in sector 2, nests from sector 3. They sit at least minHomeShare of the largest home-to-corner
+  // distance from home; the first nest goes within nearCrystal of the richest crystal body in that band, if there is one.
+  // Guards are not made here: each nest starts with its guards' timers at 0 and stepNests spawns them.
+  function generateNests(state, seed) {
+    const S = T.science, G = NEST_GEO, n = state.sector, out = [];
+    state.nests = out;
+    const beacon = n === S.beacon.sector, count = beacon ? 1 : nestCount(n);
+    if (!count || !state.bases.length) return;
+    const r = rng(seed ^ 0x4E57), home = state.bases[0], w = state.w, h = state.h;
+    let far = 0;
+    for (const cx of [0, w]) for (const cy of [0, h]) far = Math.max(far, Math.hypot(cx - home.x, cy - home.y));
+    const minHome = far * S.nest.minHomeShare;
+    let rich = null;
+    for (const b of state.bodies) {
+      if (b.res === "crystal" && Math.hypot(b.x - home.x, b.y - home.y) >= minHome && (!rich || b.max > rich.max)) rich = b;
+    }
+    const fits = (x, y, k) => {
+      if (x < G.edge || y < G.edge || x > w - G.edge || y > h - G.edge) return false;
+      if (Math.hypot(x - home.x, y - home.y) < minHome) return false;
+      for (const b of state.bodies) if (Math.hypot(x - b.x, y - b.y) < b.r + G.bodyClear * k) return false;
+      for (const st of state.stars) if (Math.hypot(x - st.x, y - st.y) < G.starClear * k) return false;
+      for (const o of out) if (Math.hypot(x - o.x, y - o.y) < G.apart * k) return false;
+      return true;
+    };
+    for (let i = 0; i < count; i++) {
+      let spot = null;
+      for (let pass = 0; pass < 3 && !spot; pass++) {
+        const k = pass === 0 ? 1 : pass === 1 ? 0.5 : 0;
+        for (let t = 0; t < G.tries && !spot; t++) {
+          let x, y;
+          if (i === 0 && rich && t < G.crystalTries) {
+            const a = r() * Math.PI * 2, lo = rich.r + G.bodyClear, d = lo + r() * Math.max(0, S.nest.nearCrystal - lo);
+            x = rich.x + Math.cos(a) * d; y = rich.y + Math.sin(a) * d;
+          } else {
+            x = G.edge + r() * (w - 2 * G.edge); y = G.edge + r() * (h - 2 * G.edge);
+          }
+          if (fits(x, y, k)) spot = { x, y };
+        }
+      }
+      if (!spot) spot = { x: home.x < w / 2 ? w - G.edge : G.edge, y: home.y < h / 2 ? h - G.edge : G.edge };   // the far corner
+      const max = beacon ? S.beacon.hp : nestHp(n);
+      const guardIn = [];
+      if (!beacon) for (let g = 0; g < S.nest.guards; g++) guardIn.push(0);
+      out.push({ id: i, kind: beacon ? "beacon" : "nest", x: spot.x, y: spot.y, hp: max, max, dead: false, guardIn });
+    }
+  }
+
+  function warshipNear(state, x, y, range) {
+    const r2 = range * range;
+    for (let i = 0; i < state.ships.length; i++) {
+      const s = state.ships[i];
+      if (s.dead || s.mothballed || !SHIP_TYPES[s.type].war) continue;
+      const dx = s.x - x, dy = s.y - y;
+      if (dx * dx + dy * dy <= r2) return true;
+    }
+    return false;
+  }
+
+  function spawnGuard(state, nest) {
+    const a = state.alienSeq * 2.399, al = makeAlien(state, nest.x + Math.cos(a) * NEST_GEO.orbit, nest.y + Math.sin(a) * NEST_GEO.orbit, state.sector);
+    al.nest = nest.id;
+    state.aliens.push(al);
+  }
+
+  // A nest heals while no warship is near, and brings back each dead guard when its timer runs out. A beacon does neither.
+  function stepNests(state, dt) {
+    if (!state.nests || !state.nests.length) return;
+    const N = T.science.nest;
+    for (let k = 0; k < state.nests.length; k++) {
+      const nest = state.nests[k];
+      if (nest.dead || nest.kind !== "nest") continue;
+      if (nest.hp < nest.max && !warshipNear(state, nest.x, nest.y, N.regenRange)) nest.hp = Math.min(nest.max, nest.hp + N.regen * dt);
+      for (let i = nest.guardIn.length - 1; i >= 0; i--) {
+        nest.guardIn[i] = Math.max(0, nest.guardIn[i] - dt);
+        if (nest.guardIn[i] <= 0 && state.aliens.length < T.aliens.max) { nest.guardIn.splice(i, 1); spawnGuard(state, nest); }
+      }
+    }
+  }
+
+  // A guard sits at its orbit spot by the nest. Any live ship within the leash of the nest, warships too, draws it: it
+  // closes to its hold distance (never past the leash) and fires like a raider.
+  function stepGuard(state, a, nest, dt, sp) {
+    const A = T.aliens, leash = T.science.nest.guardLeash, ships = state.ships;
+    let tgt = -1, bd = Infinity;
+    for (let j = 0; j < ships.length; j++) {
+      const s = ships[j];
+      if (s.dead || s.mothballed || Math.hypot(s.x - nest.x, s.y - nest.y) > leash) continue;
+      const dx = s.x - a.x, dy = s.y - a.y, d2 = dx * dx + dy * dy;
+      if (d2 < bd) { bd = d2; tgt = j; }
+    }
+    a.vx = 0; a.vy = 0;
+    if (a.cd > 0) a.cd = Math.max(0, a.cd - dt);
+    let gx, gy, hold = 0;
+    if (tgt >= 0) { gx = ships[tgt].x; gy = ships[tgt].y; hold = A.range * A.holdFrac; a.tgtKind = "ship"; a.tgt = tgt; }
+    else {
+      const ang = a.id * 2.399;
+      gx = nest.x + Math.cos(ang) * NEST_GEO.orbit; gy = nest.y + Math.sin(ang) * NEST_GEO.orbit;
+      a.tgtKind = ""; a.tgt = -1;
+    }
+    const dx = gx - a.x, dy = gy - a.y, d = Math.sqrt(dx * dx + dy * dy);
+    if (d > hold + 1e-6) {
+      const k = Math.min(sp, d - hold) / d;
+      let nx = a.x + dx * k, ny = a.y + dy * k;
+      const ex = nx - nest.x, ey = ny - nest.y, ed = Math.sqrt(ex * ex + ey * ey);
+      if (ed > leash) { nx = nest.x + ex / ed * leash; ny = nest.y + ey / ed * leash; }
+      a.vx = (nx - a.x) / dt; a.vy = (ny - a.y) / dt;
+      a.x = nx; a.y = ny;
+    }
+    if (tgt >= 0 && a.cd <= 0) {
+      const s = ships[tgt], ddx = s.x - a.x, ddy = s.y - a.y;
+      if (ddx * ddx + ddy * ddy <= A.range * A.range && fireShot(state, a.x, a.y, s.x, s.y, A.shotSpeed, a.dmg, "them", A.range + BASE_R, "alien")) a.cd = A.cd;
+    }
+  }
+
+  // Hurt a nest or the beacon. A warship's damage is raised by Siege lances. A kill pays its science, ends the nest's
+  // guards (they fall with it), and emits "nest:destroyed". Returns {killed, science}.
+  function damageNest(state, id, dmg, by) {
+    const nest = nestById(state, id);
+    if (!nest || nest.dead || !(dmg > 0)) return { killed: false };
+    if (by === "warship") dmg *= techMult(state, "nestDmg");
+    nest.hp -= dmg;
+    if (nest.hp > 0) return { killed: false };
+    nest.hp = 0; nest.dead = true; nest.guardIn = [];
+    pushFx(state, "boom", nest.x, nest.y, nest.x, nest.y);
+    for (let i = state.aliens.length - 1; i >= 0; i--) {
+      const g = state.aliens[i];
+      if (g.nest === nest.id) { pushFx(state, "kill", g.x, g.y, g.x, g.y); state.aliens.splice(i, 1); }
+    }
+    const before = state.science;
+    awardScience(state, scienceFor(state, nest.kind), nest.kind);
+    emit(state, "nest:destroyed", { id: nest.id, kind: nest.kind, sector: state.sector });
+    return { killed: true, science: state.science - before };
+  }
+
+  // +5 for warping with every nest of the sector destroyed. Returns the bonus.
+  function scienceOnWarp(state) {
+    const nests = state.nests ? state.nests.filter(o => o.kind === "nest") : [];
+    if (!nests.length || nests.some(o => !o.dead)) return 0;
+    const before = state.science;
+    awardScience(state, scienceFor(state, "secured"), "secured");
+    return state.science - before;
+  }
+
+  // ---- the tech tree
+
+  function techCost(node) { return T.techCost[node.tier - 1]; }
+
+  // "owned", "available" (the node below is owned and there is enough science), "short" (the node below is owned,
+  // science is not enough) or "locked" (the node below is not owned yet; also for an unknown id).
+  function techState(state, id) {
+    const node = typeof id === "string" ? TECH_BY_ID[id] : null;
+    if (!node) return "locked";
+    if (hasTech(state, id)) return "owned";
+    if (node.needs && !hasTech(state, node.needs)) return "locked";
+    return state.science + 1e-9 >= techCost(node) ? "available" : "short";
+  }
+
+  function unlockTech(state, id) {
+    const node = typeof id === "string" ? TECH_BY_ID[id] : null;
+    if (!node) return { ok: false, reason: "No such tech." };
+    if (state.over) return { ok: false, reason: "This run is over." };
+    if (hasTech(state, id)) return { ok: false, reason: node.name + " is already yours." };
+    if (node.needs && !hasTech(state, node.needs)) return { ok: false, reason: "Needs " + TECH_BY_ID[node.needs].name + "." };
+    const cost = techCost(node);
+    if (state.science + 1e-9 < cost) return { ok: false, reason: "Need " + Math.ceil(cost - state.science - 1e-9) + " more science." };
+    state.science -= cost;
+    if (state.science < 0) state.science = 0;
+    state.tech.push(id);
+    emit(state, "tech:unlock", { id });
+    for (const s of state.ships) if (!s.dead && SHIP_TYPES[s.type].war) syncWarshipHp(state, s, SHIP_TYPES[s.type]);
+    return { ok: true, cost };
+  }
+
+  // ---- what the tree changes in the rules (the economy ones are read in slice b through techMult and techAdd)
+
+  // Cargo a ship holds: Deep holds raises it.
+  function cargoCap(state, def) { return def.cap * techMult(state, "cargo"); }
+  // Units a base takes in per second, and how far from it a ship can drop off: Quick docks raises both.
+  function unloadRate(state, base) { return T.upgrades[base.tier | 0].unload * techMult(state, "unload"); }
+  function dockRange(state, base) { return T.upgrades[base.tier | 0].dock + techAdd(state, "dock"); }
+
+  // A warship's maximum HP follows Hardened hulls; the share of health it has stays the same.
+  function syncWarshipHp(state, ship, def) {
+    const want = Math.round(def.hp * techMult(state, "warshipHp"));
+    if (ship.maxHp === want) return;
+    const share = ship.maxHp > 0 ? ship.hp / ship.maxHp : 1;
+    ship.maxHp = want;
+    ship.hp = Math.min(want, share * want);
+  }
+
+  // What a warship's attack order points at: {kind: "alien" | "nest", id}, or null when it has none.
+  function orderTarget(ship) {
+    if (ship.wo !== "attack" || !(ship.wt >= 0)) return null;
+    return ship.wt >= NEST_ORDER ? { kind: "nest", id: ship.wt - NEST_ORDER } : { kind: "alien", id: ship.wt };
+  }
+
+  // ---- stubs for slice b: neutral until its owner fills them in. Names, arguments and returns are the contract.
   function econScale(n) { return 1; }                                               // owner: slice b
   function econRates(state) { return { maint: 0, upkeep: 0, interest: 0, net: 0 }; }   // owner: slice b (credits per minute)
   function stepEconomy(state, dt) { }                                               // owner: slice b
@@ -791,9 +1064,9 @@
     if (def.war) return { ok: false, reason: warReason(ship) };
     if (ship.stun > 0) return { ok: false, reason: ship.name + " is stunned by a solar flare." };
     if (ship.cargo > 0) {
-      const base = state.bases[nearestBase(state, ship.x, ship.y)], up = T.upgrades[base.tier | 0];
-      if (Math.hypot(ship.x - base.x, ship.y - base.y) <= BASE_R + 10 + up.dock + MANUAL_SLACK) {
-        ship.wait = ship.cargo / up.unload;
+      const base = state.bases[nearestBase(state, ship.x, ship.y)];
+      if (Math.hypot(ship.x - base.x, ship.y - base.y) <= BASE_R + 10 + dockRange(state, base) + MANUAL_SLACK) {
+        ship.wait = ship.cargo / unloadRate(state, base);
         deliver(state, ship.res, ship.cargo);
         ship.cargo = 0; ship.res = ""; ship.mm = 2;
         return { ok: true, did: "unload" };
@@ -810,7 +1083,7 @@
     }
     if (!best && wrongRes) return { ok: false, reason: "Carrying " + (L.res[ship.res] || ship.res) + ". Unload at a " + L.base + " first." };
     if (!best) return { ok: false, reason: "Nothing in reach." };
-    if (ship.cargo >= def.cap - 1e-9) return { ok: false, reason: "Full. Unload at a " + L.base + " first." };
+    if (ship.cargo >= cargoCap(state, def) - 1e-9) return { ok: false, reason: "Full. Unload at a " + L.base + " first." };
     ship.mm = 1; ship.target = best.id; ship.res = best.res;
     return { ok: true, did: "mine" };
   }
@@ -1024,6 +1297,7 @@
   }
 
   function stepManual(state, ship, dt, mult, def) {
+    const cap = cargoCap(state, def), rate = def.rate * techMult(state, "mineRate");   // tech: Deep holds, Efficient drills
     if (ship.mm === 2) {                       // unloading: the delivery was made when it started
       ship.mv = 0;
       ship.wait -= dt;
@@ -1037,13 +1311,13 @@
         const body = state.bodies[ship.target];
         ship.mv = 0;
         if (!body || body.amount <= 1e-6) { ship.mm = 0; ship.target = -1; return; }
-        const take = Math.min(def.rate * dt * mineMult(state, ship.x, ship.y), body.amount, def.cap - ship.cargo);
+        const take = Math.min(rate * dt * mineMult(state, ship.x, ship.y), body.amount, cap - ship.cargo);
         body.amount -= take;
         if (body.amount < 1e-6) body.amount = 0;
         ship.cargo += take;
         ship.res = body.res;
         state.stats[body.res] += take;
-        if (ship.cargo >= def.cap - 1e-9 || body.amount === 0) { ship.mm = 0; ship.target = -1; }
+        if (ship.cargo >= cap - 1e-9 || body.amount === 0) { ship.mm = 0; ship.target = -1; }
         return;
       }
     }
@@ -1072,7 +1346,7 @@
       if (ship.wait <= 0) { ship.wait = 0; afterUnload(state, ship); }
       return;
     }
-    const mult = state.storms.length ? speedMult(state, ship.x, ship.y) : 1;
+    const mult = (state.storms.length ? speedMult(state, ship.x, ship.y) : 1) * techMult(state, "shipSpeed");   // tech: Afterburners (miners and haulers)
     if (ship.st === MANUAL) { stepManual(state, ship, dt, mult, def); return; }
     if (ship.st === TO_STAR) {
       const star = state.stars[ship.star];
@@ -1098,24 +1372,24 @@
         return;
       }
       ship.mv = 0;
-      const take = Math.min(def.rate * dt * mineMult(state, ship.x, ship.y), body.amount, def.cap - ship.cargo);
+      const cap = cargoCap(state, def);
+      const take = Math.min(def.rate * techMult(state, "mineRate") * dt * mineMult(state, ship.x, ship.y), body.amount, cap - ship.cargo);
       body.amount -= take;
       if (body.amount < 1e-6) body.amount = 0;
       ship.cargo += take;
       ship.res = body.res;
       state.stats[body.res] += take;
-      if (ship.cargo >= def.cap - 1e-9 || body.amount === 0) ship.st = TO_BASE;
+      if (ship.cargo >= cap - 1e-9 || body.amount === 0) ship.st = TO_BASE;
       return;
     }
     // TO_BASE: fly to the chosen base (else the nearest) and get within its drop-off range, unload
     // (an upgraded base takes less time), then repeat the run if the body still has something
     let base = ship.dest >= 0 && ship.dest < state.bases.length ? state.bases[ship.dest] : null;
     if (!base || base.down) base = state.bases[nearestBase(state, ship.x, ship.y)];   // a base that is down takes no drop-offs
-    const up = T.upgrades[base.tier | 0];
-    const a = ship.id * 2.399, stop = BASE_R + 10 + up.dock;
+    const a = ship.id * 2.399, stop = BASE_R + 10 + dockRange(state, base);
     if (!moveTo(ship, base.x + Math.cos(a) * stop, base.y + Math.sin(a) * stop, dt, mult)) return;
     let wait = 0;
-    if (ship.cargo > 0) { wait = ship.cargo / up.unload; deliver(state, ship.res, ship.cargo); ship.cargo = 0; }
+    if (ship.cargo > 0) { wait = ship.cargo / unloadRate(state, base); deliver(state, ship.res, ship.cargo); ship.cargo = 0; }
     ship.res = "";
     ship.dest = -1;
     if (wait > 0) { ship.wait = wait; ship.st = UNLOADING; }
@@ -1210,9 +1484,16 @@
       e.x = side === 0 ? edge : side === 1 ? w - edge : edge + u * (w - 2 * edge);
       e.y = side === 2 ? edge : side === 3 ? h - edge : edge + u * (h - 2 * edge);
       e.r = T.aliens.markR; e.dur = 0; e.power = alienCount(n);
+      const live = liveNests(state);
+      if (live.length) {      // a known direction: the map edge nearest one of the live nests (the one picked by the same draw)
+        const nest = live[Math.min(live.length - 1, Math.floor(u * live.length))];
+        const dl = nest.x, dr = w - nest.x, dt = nest.y, db = h - nest.y, m = Math.min(dl, dr, dt, db);
+        e.x = m === dl ? edge : m === dr ? w - edge : Math.max(edge, Math.min(w - edge, nest.x));
+        e.y = m === dl || m === dr ? Math.max(edge, Math.min(h - edge, nest.y)) : m === dt ? edge : h - edge;
+      }
     }
     ev.push(e);
-    state.eventIn = eventGap(n) * (1 - E.jitter / 2 + E.jitter * hrand(state));
+    state.eventIn = eventGap(n) * (1 - E.jitter / 2 + E.jitter * hrand(state)) / (1 + T.science.nest.raidBoost * liveNests(state).length);
   }
 
   // The raid arrives: the aliens appear around the warned point at the edge of the map.
@@ -1296,6 +1577,12 @@
     for (let i = 0; i < al.length; i++) {
       const a = al[i];
       a.age = (a.age || 0) + dt;
+      if (a.nest >= 0) {      // a nest guard: it stays near its nest and shoots any ship that comes close (warships too)
+        const nest = nestById(state, a.nest);
+        if (!nest || nest.dead) { al.splice(i, 1); i--; continue; }
+        stepGuard(state, a, nest, dt, sp);
+        continue;
+      }
       if (a.age > A.stay) {      // time to go: fly to the nearest map edge and leave (no score)
         const ex = a.x < state.w - a.x ? 0 : state.w, ey = a.y < state.h - a.y ? 0 : state.h;
         const alongX = Math.abs(a.x - ex) <= Math.abs(a.y - ey);
@@ -1373,6 +1660,12 @@
           if (al[j].hp <= 0) killAlien(state, j, s.src);
           hit = true; break;
         }
+        for (let j = 0; j < state.nests.length && !hit; j++) {     // a beacon or nest
+          const nest = state.nests[j], r = (nest.kind === "beacon" ? NEST_GEO.beaconR : NEST_GEO.nestR);
+          if (nest.dead || segDist2(s.x, s.y, nx, ny, nest.x, nest.y) > r * r) continue;
+          damageNest(state, nest.id, s.dmg, s.src || "warship");
+          hit = true;
+        }
       } else {
         for (let j = 0; j < ships.length && !hit; j++) {
           if (ships[j].dead || segDist2(s.x, s.y, nx, ny, ships[j].x, ships[j].y) > sr2) continue;
@@ -1395,18 +1688,38 @@
 
   // ---- warships
 
+  // Aliens in range come first (the ordered one before the others); with none in range, a beacon or nest: the ordered
+  // one, else the nearest. Damage is raised by Targeting computers.
   function warFire(state, ship, def) {
-    if (ship.cd > 0 || !state.aliens.length) return;
-    let k = -1;
-    if (ship.wo === "attack") {      // the ordered alien first, when it is in range
-      const a = alienById(state, ship.wt);
-      if (a) { const dx = a.x - ship.x, dy = a.y - ship.y; if (dx * dx + dy * dy <= def.range * def.range) k = state.aliens.indexOf(a); }
+    if (ship.cd > 0) return;
+    const dmg = def.dmg * techMult(state, "warshipDmg");
+    if (state.aliens.length) {
+      let k = -1;
+      if (ship.wo === "attack" && ship.wt < NEST_ORDER) {      // the ordered alien first, when it is in range
+        const a = alienById(state, ship.wt);
+        if (a) { const dx = a.x - ship.x, dy = a.y - ship.y; if (dx * dx + dy * dy <= def.range * def.range) k = state.aliens.indexOf(a); }
+      }
+      if (k < 0) k = alienIndexNear(state, ship.x, ship.y, def.range);
+      if (k >= 0) {
+        if (fireAtAlien(state, ship.x, ship.y, state.aliens[k], def.shotSpeed, dmg, def.range, "warship")) ship.cd = def.cd;
+        return;
+      }
     }
-    if (k < 0) k = alienIndexNear(state, ship.x, ship.y, def.range);
-    if (k >= 0 && fireAtAlien(state, ship.x, ship.y, state.aliens[k], def.shotSpeed, def.dmg, def.range, "warship")) ship.cd = def.cd;
+    if (!state.nests.length) return;
+    let nest = ship.wo === "attack" && ship.wt >= NEST_ORDER ? nestById(state, ship.wt - NEST_ORDER) : null;
+    if (nest && (nest.dead || Math.hypot(nest.x - ship.x, nest.y - ship.y) > def.range)) nest = null;
+    if (!nest) {
+      let bd = def.range;
+      for (let i = 0; i < state.nests.length; i++) {
+        const o = state.nests[i], d = Math.hypot(o.x - ship.x, o.y - ship.y);
+        if (!o.dead && d <= bd) { bd = d; nest = o; }
+      }
+    }
+    if (nest && fireShot(state, ship.x, ship.y, nest.x, nest.y, def.shotSpeed, dmg, "us", def.range, "warship")) ship.cd = def.cd;
   }
 
   function stepWarship(state, ship, dt, def) {
+    syncWarshipHp(state, ship, def);      // tech: Hardened hulls
     const mult = state.storms.length ? speedMult(state, ship.x, ship.y) : 1;
     if (ship.cd > 0) ship.cd = Math.max(0, ship.cd - dt);
     if (ship.st === MANUAL) { stepManual(state, ship, dt, mult, def); warFire(state, ship, def); return; }
@@ -1417,8 +1730,9 @@
       if (!t || t.dead) { ship.wo = "patrol"; ship.wx = ship.x; ship.wy = ship.y; ship.wt = -1; ship.mv = 0; }
       else moveNear(ship, t.x, t.y, def.follow, dt, mult);
     } else if (ship.wo === "attack") {
-      const a = alienById(state, ship.wt);
-      if (!a) { ship.wo = "patrol"; ship.wx = ship.x; ship.wy = ship.y; ship.wt = -1; ship.mv = 0; }
+      const nestTarget = ship.wt >= NEST_ORDER;
+      const a = nestTarget ? nestById(state, ship.wt - NEST_ORDER) : alienById(state, ship.wt);
+      if (!a || a.dead) { ship.wo = "patrol"; ship.wx = ship.x; ship.wy = ship.y; ship.wt = -1; ship.mv = 0; }
       else moveNear(ship, a.x, a.y, def.range * def.standoff, dt, mult);
     } else ship.mv = 0;
     warFire(state, ship, def);
@@ -1458,9 +1772,21 @@
     return { ok: true };
   }
 
-  function orderAttack(state, shipId, alienId) {
+  // target: an alien id (a number), {kind: "alien", id} or {kind: "nest", id} (a nest or the sector 2 beacon).
+  function orderAttack(state, shipId, target) {
     const g = warOrderGuard(state, shipId);
     if (!g.ok) return g;
+    let kind = "alien", alienId = target;
+    if (target && typeof target === "object") { kind = target.kind === "nest" ? "nest" : "alien"; alienId = target.id; }
+    if (kind === "nest") {
+      const nest = nestById(state, alienId);
+      if (!nest) return { ok: false, reason: "No such nest." };
+      if (nest.dead) return { ok: false, reason: "That " + nest.kind + " is already destroyed." };
+      const ship = g.ship;
+      clearManual(ship);
+      ship.st = IDLE; ship.wo = "attack"; ship.wt = NEST_ORDER + nest.id;
+      return { ok: true };
+    }
     if (!alienById(state, alienId)) return { ok: false, reason: "No such alien." };
     const ship = g.ship;
     clearManual(ship);
@@ -1752,7 +2078,7 @@
           vx: Math.min(500, Math.max(-500, num(a.vx, 0))), vy: Math.min(500, Math.max(-500, num(a.vy, 0))), hp, maxHp,
           dmg: Math.min(999, Math.max(0, num(a.dmg, alienDmg(sector)))), cd: Math.min(60, Math.max(0, num(a.cd, 0))),
           tgtKind: kind, tgt: kind ? intIn(a.tgt, -1, 1e9, -1) : -1, age: Math.min(3600, Math.max(0, num(a.age, 0))),
-          wave: intIn(a.wave, -1, 1e9, -1), nest: intIn(a.nest, -1, 99, -1) });
+          wave: intIn(a.wave, -1, 1e9, -1), nest: intIn(a.nest, -1, NEST_ID_MAX, -1) });
       }
       const seen = Object.create(null);
       let topId = -1;
@@ -2534,6 +2860,7 @@
     // science, tech and lose-rule plumbing (see "contract" above)
     END_REASONS, emit, drainEvents, endRun, hasTech, techMult, techAdd,
     scienceFor, awardScience, onAlienKilled, generateNests, stepNests, damageNest, techState, unlockTech, scienceOnWarp,
+    raidScienceCap, techCost, cargoCap, unloadRate, dockRange, nestById, liveNests, orderTarget, NEST_ORDER, NEST_GEO,
     econScale, econRates, stepEconomy, payDebt, sellStock, buyStock, setMothball, econWarpBlock, econOnWarp, timeLimit, econWarnings,
   };
   return api;
