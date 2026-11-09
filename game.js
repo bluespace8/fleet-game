@@ -789,18 +789,275 @@
     return ship.wt >= NEST_ORDER ? { kind: "nest", id: ship.wt - NEST_ORDER } : { kind: "alien", id: ship.wt };
   }
 
-  // ---- stubs for slice b: neutral until its owner fills them in. Names, arguments and returns are the contract.
-  function econScale(n) { return 1; }                                               // owner: slice b
-  function econRates(state) { return { maint: 0, upkeep: 0, interest: 0, net: 0 }; }   // owner: slice b (credits per minute)
-  function stepEconomy(state, dt) { }                                               // owner: slice b
-  function payDebt(state, amount) { return { ok: false, paid: 0, reason: "Credits are not ready yet." }; }   // owner: slice b
-  function sellStock(state, res, n) { return { ok: false, reason: "Credits are not ready yet." }; }           // owner: slice b
-  function buyStock(state, res, n) { return { ok: false, reason: "Credits are not ready yet." }; }            // owner: slice b
-  function setMothball(state, shipId, on) { return { ok: false, reason: "Credits are not ready yet." }; }     // owner: slice b
-  function econWarpBlock(state) { return ""; }                                      // owner: slice b ("" or the reason a warp is refused)
-  function econOnWarp(state) { }                                                    // owner: slice b (auto-pays the debt at its due point)
-  function timeLimit(state) { return 0; }                                           // owner: slice b (seconds, 0 when the timer is off)
-  function econWarnings(state) { return []; }                                       // owner: slice b ([{cause, level, secsLeft, text}])
+  // ---------------------------------------------------------------- economy and lose rules (slice b)
+  // Credits are a separate currency: earned on delivery (deliver), spent on maintenance and base upkeep every tick, on the
+  // starting debt, and on buying ore or ice. state.rules switches each lose rule on or off. Softener nodes reach in only
+  // through techMult(state, "shipMaint" | "warshipMaint" | "baseUpkeep" | "interest") and techAdd(state, "overdraft").
+
+  const NET_WARM = 30;         // seconds into the run before the "net is negative" clock may run
+  const DEBT_RED = 60;         // the debt warning turns red this many seconds before the backstop
+
+  // Which warnings were already announced; lives only while the game runs (never saved), so a loaded game announces them again.
+  const econRun = new WeakMap();
+  function econRt(state) {
+    let r = econRun.get(state);
+    if (!r) { r = { marks: Object.create(null) }; econRun.set(state, r); }
+    return r;
+  }
+
+  // Credits per minute earned so far, averaged over the whole run (score.mat is every unit delivered at its credit value, so
+  // old saves have it too). It is worked out from saved numbers only, so a saved and reloaded game plays on identically.
+  function econIncome(state) { return state.score.mat / Math.max(1, state.time) * 60; }
+
+  function econClock(secs) { const s = Math.max(0, Math.ceil(secs - 1e-9)); return Math.floor(s / 60) + ":" + (s % 60 < 10 ? "0" : "") + (s % 60); }
+  function econFmt(n) { return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
+
+  // Running costs grow at half the rate of build costs, capped (see the design note).
+  function econScale(n) { const E = T.econ; return Math.min(E.scaleMax, 1 + E.scalePerSector * (Math.max(1, n) - 1)); }
+
+  // Credits per minute a ship costs now: its type's rate, scaled by sector and softeners, 20% when mothballed. Lost ships cost nothing.
+  function shipMaintRate(state, ship) {
+    if (ship.dead) return 0;
+    const E = T.econ, war = !!SHIP_TYPES[ship.type].war;
+    let r = (E.maint[ship.type] || 0) * econScale(state.sector) * techMult(state, war ? "warshipMaint" : "shipMaint");
+    if (ship.mothballed) r *= E.maint.mothball;
+    return r;
+  }
+
+  // Credits per minute a base costs: 0 for a home base itself, 35 for others, plus tiers and add-ons (home too). A base that is down pays nothing.
+  function baseUpkeepRate(state, base) {
+    if (base.down) return 0;
+    const U = T.econ.upkeep;
+    const r = (base.home ? U.home : U.base) + (base.tier | 0) * U.perTier + (base.shield ? U.shield : 0) + (base.turret ? U.turret : 0);
+    return r * econScale(state.sector) * techMult(state, "baseUpkeep");
+  }
+
+  // Credits per minute: maint and upkeep (what is being paid now), interest (what the debt grows by, not paid from credits),
+  // net = average income so far - maint - upkeep.
+  function econRates(state) {
+    const rules = state.rules || {}, E = T.econ;
+    let maint = 0, upkeep = 0, interest = 0;
+    if (rules.maintenance) for (let i = 0; i < state.ships.length; i++) maint += shipMaintRate(state, state.ships[i]);
+    if (rules.upkeep) for (let i = 0; i < state.bases.length; i++) upkeep += baseUpkeepRate(state, state.bases[i]);
+    if (rules.debt && state.debt > 0) interest = state.debt * E.debt.rate * techMult(state, "interest");
+    return { maint, upkeep, interest, net: econIncome(state) - maint - upkeep };
+  }
+
+  // The lowest credits may go before the bankruptcy clock runs (-250, or -500 with the credit line).
+  function econFloor(state) { return T.econ.bankrupt.floor + techAdd(state, "overdraft"); }
+
+  // Credits that the cargo still in holds will pay once it is handed in.
+  function carriedCredits(state) {
+    let c = 0;
+    for (let i = 0; i < state.ships.length; i++) {
+      const s = state.ships[i];
+      if (!s.dead && s.cargo > 0 && s.res) c += s.cargo * (T.econ.credit[s.res] || 0);
+    }
+    return c;
+  }
+
+  // The run ends for money reasons, unless it is also stranded: then it is "stranded".
+  function econEnd(state, cause) { endRun(state, isStranded(state) ? "stranded" : cause); }
+
+  // Seconds allowed in this sector, or 0 when the timer rule is off or the sector is exempt.
+  function timeLimit(state) {
+    const E = T.econ.timer;
+    if (!state.rules || !state.rules.timer || state.sector < E.firstSector) return 0;
+    return E.parMult * parTime(Math.min(state.sector, E.capSector));
+  }
+
+  function stepEconomy(state, dt) {
+    if (state.over || !(dt > 0)) return;
+    const E = T.econ, rules = state.rules, stats = state.econStats;
+
+    // maintenance and upkeep
+    const rates = econRates(state);
+    const m = rates.maint * dt / 60, u = rates.upkeep * dt / 60;
+    if (m || u) { state.credits -= m + u; stats.maint += m; stats.upkeep += u; }
+
+    // debt interest, compounded every 60 s of game time
+    if (rules.debt && state.debt > 0) {
+      state.debtTick -= dt;
+      while (state.debtTick <= 1e-7) {
+        const add = state.debt * E.debt.rate * techMult(state, "interest");
+        state.debt += add; stats.interest += add; state.debtTick += E.debt.every;
+      }
+    }
+
+    // bankruptcy: below the floor for the grace period ends the run; off, credits stop at the floor
+    const floor = econFloor(state);
+    if (rules.bankruptcy) {
+      if (state.credits < floor) state.brokeFor += dt; else state.brokeFor = 0;
+    } else {
+      state.brokeFor = 0;
+      if (state.credits < floor) state.credits = floor;
+    }
+
+    // the net-negative clock only runs once the income average has had time to settle
+    if (state.time >= NET_WARM) { if (rates.net < 0) state.netNegFor += dt; else state.netNegFor = 0; }
+
+    // debt backstop
+    if (rules.debt && state.debt > 0 && state.time + 1e-6 >= E.debt.dueTime) {
+      if (state.credits + 1e-9 >= state.debt) payDebt(state); else econEnd(state, "debt");
+    }
+    if (rules.bankruptcy && state.brokeFor + 1e-6 >= E.bankrupt.grace) econEnd(state, "bankrupt");
+    const lim = timeLimit(state);
+    if (lim > 0 && !state.won && state.sectorTime > lim) endRun(state, "timeout");
+
+    if (!state.over) econAnnounce(state, econRt(state));
+  }
+
+  // Tell the UI when a warning starts, changes level (or passes 60/30/10 s for bankruptcy) and when it goes.
+  function econAnnounce(state, rt) {
+    const list = econWarnings(state), seen = Object.create(null);
+    for (let i = 0; i < list.length; i++) {
+      const w = list[i];
+      seen[w.cause] = true;
+      const mark = w.level + (w.cause === "bankrupt" ? ":" + (w.secsLeft <= 10 ? 10 : w.secsLeft <= 30 ? 30 : 60) : "");
+      if (rt.marks[w.cause] !== mark) {
+        rt.marks[w.cause] = mark;
+        emit(state, "econ:warn", { cause: w.cause, level: w.level, secsLeft: w.secsLeft, text: w.text });
+      }
+    }
+    for (const cause of Object.keys(rt.marks)) {
+      if (!seen[cause]) { delete rt.marks[cause]; emit(state, "econ:clear", { cause }); }
+    }
+  }
+
+  // The warnings to show now, pure: [{cause, level: "warn" | "danger", secsLeft, text}]. Causes: bankrupt, overdrawn, debt, timer, net.
+  function econWarnings(state) {
+    const out = [], E = T.econ, rules = state.rules || {};
+    if (rules.bankruptcy && state.credits < econFloor(state)) {
+      const left = Math.max(0, Math.ceil(E.bankrupt.grace - state.brokeFor - 1e-9));
+      out.push({ cause: "bankrupt", level: "danger", secsLeft: left,
+        text: "Bankrupt in " + econClock(left) + ": sell stock, mothball ships, or pay less upkeep." });
+    } else if (state.credits < E.bankrupt.blockShipsBelow) {
+      out.push({ cause: "overdrawn", level: "warn", secsLeft: 0, text: "Overdrawn: new ships and add-ons are blocked until credits are above 0." });
+    }
+    if (rules.debt && state.debt > 0) {
+      const need = Math.ceil(state.debt - state.credits - carriedCredits(state) - 1e-9);
+      const left = Math.max(0, Math.ceil(E.debt.dueTime - state.time - 1e-9));
+      if (need > 0) {
+        if (left <= DEBT_RED) out.push({ cause: "debt", level: "danger", secsLeft: left,
+          text: "Loan due in " + econClock(left) + ": " + econFmt(need) + " more credits needed, or the run ends." });
+        else if (state.sector >= E.debt.dueSector) out.push({ cause: "debt", level: "warn", secsLeft: left,
+          text: "Need " + econFmt(need) + " more credits to warp." });
+        else if (left <= E.debt.warnSecs) out.push({ cause: "debt", level: "warn", secsLeft: left,
+          text: "Loan due in " + econClock(left) + ": " + econFmt(need) + " more credits needed." });
+      }
+    }
+    const lim = timeLimit(state);
+    if (lim > 0 && !state.won) {
+      const left = Math.max(0, Math.ceil(lim - state.sectorTime - 1e-9));
+      if (left <= E.timer.warnSecs) out.push({ cause: "timer", level: "danger", secsLeft: left, text: "Time left " + econClock(left) + " to clear this sector." });
+      else if (left <= lim * E.timer.warnShare) out.push({ cause: "timer", level: "warn", secsLeft: left, text: "Time left " + econClock(left) + " to clear this sector." });
+    }
+    if (state.netNegFor >= E.netWarnSecs) {
+      out.push({ cause: "net", level: "warn", secsLeft: 0,
+        text: "Spending more than you earn: -" + econFmt(-econRates(state).net) + " cr/min. Mothball idle ships or sell stock." });
+    }
+    return out;
+  }
+
+  // Pay debt from credits: all that can be paid, or amount if given. {ok, paid, reason?}
+  function payDebt(state, amount) {
+    if (state.over) return { ok: false, paid: 0, reason: "This run is over." };
+    if (!state.rules || !state.rules.debt || !(state.debt > 0)) return { ok: false, paid: 0, reason: "There is no debt to pay." };
+    if (!(state.credits > 0)) return { ok: false, paid: 0, reason: "No credits to pay with." };
+    let pay = Math.min(state.debt, state.credits);
+    if (amount !== undefined && amount !== null) {
+      if (!(amount > 0) || !isFinite(amount)) return { ok: false, paid: 0, reason: "Enter an amount above 0." };
+      pay = Math.min(pay, amount);
+    }
+    state.credits -= pay; state.debt -= pay; state.econStats.repaid += pay;
+    if (state.debt < 0.005) state.debt = 0;
+    emit(state, "debt:paid", { amount: pay, left: state.debt });
+    return { ok: true, paid: pay };
+  }
+
+  // Sell up to n units of stock for credits (as many as there are if fewer). {ok, credits, sold} or {ok:false, reason}
+  function sellStock(state, res, n) {
+    if (state.over) return { ok: false, reason: "This run is over." };
+    if (RES.indexOf(res) < 0) return { ok: false, reason: "Unknown material." };
+    n = Math.floor(Number(n));
+    if (!(n > 0)) return { ok: false, reason: "Choose an amount above 0." };
+    const sold = Math.min(n, Math.floor(state.stock[res] + 1e-9));
+    if (sold < 1) return { ok: false, reason: "No " + res + " in stock to sell." };
+    state.stock[res] -= sold;
+    if (state.stock[res] < 0) state.stock[res] = 0;
+    state.credits += sold * T.econ.exchange.sell[res];
+    return { ok: true, credits: state.credits, sold };
+  }
+
+  // Buy up to n units of ore or ice with credits (as many as the credits cover). Crystal cannot be bought.
+  function buyStock(state, res, n) {
+    const X = T.econ.exchange;
+    if (state.over) return { ok: false, reason: "This run is over." };
+    if (RES.indexOf(res) < 0) return { ok: false, reason: "Unknown material." };
+    if (!X.buyOn) return { ok: false, reason: "Buying is switched off." };
+    if (!X.buy[res]) return { ok: false, reason: "Crystal cannot be bought. Mine it." };
+    n = Math.floor(Number(n));
+    if (!(n > 0)) return { ok: false, reason: "Choose an amount above 0." };
+    const price = X.buy[res], bought = Math.min(n, Math.floor(Math.max(0, state.credits) / price + 1e-9));
+    if (bought < 1) return { ok: false, reason: "Need " + price + " credits for 1 " + res + "." };
+    state.credits -= bought * price;
+    state.stock[res] += bought;
+    return { ok: true, credits: state.credits, bought };
+  }
+
+  // Mothball a ship or wake it. Mothballing teleports it to its home base (cargo is handed in first, orders are dropped) and
+  // it then costs 20% upkeep; waking takes wakeSecs before it works again. Allowed with every rule off.
+  function setMothball(state, shipId, on) {
+    const ship = state.ships[shipId];
+    if (!ship) return { ok: false, reason: "No such ship." };
+    if (state.over) return { ok: false, reason: "This run is over." };
+    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    if (on) {
+      if (ship.mothballed) return { ok: false, reason: ship.name + " is already mothballed." };
+      if (ship.cargo > 0 && ship.res) deliver(state, ship.res, ship.cargo);
+      clearManual(ship);
+      ship.cargo = 0; ship.res = ""; ship.st = IDLE; ship.target = -1; ship.dest = -1; ship.star = -1;
+      ship.wait = 0; ship.mv = 0; ship.wo = ""; ship.wt = -1; ship.wake = 0;
+      ship.mothballed = true;
+      parkShip(state, ship);
+      return { ok: true };
+    }
+    if (!ship.mothballed) return { ok: false, reason: ship.name + " is not mothballed." };
+    ship.mothballed = false;
+    ship.wake = T.econ.maint.wakeSecs;
+    return { ok: true };
+  }
+
+  // "" or why the warp is refused: the starting loan must be covered by credits plus the cargo still aboard (it is handed in
+  // after this check) once the sector is the due one.
+  function econWarpBlock(state) {
+    const rules = state.rules || {}, E = T.econ.debt;
+    if (!rules.debt || !(state.debt > 0) || state.sector < E.dueSector) return "";
+    const short = Math.ceil(state.debt - state.credits - carriedCredits(state) - 1e-9);
+    if (short <= 0) return "";
+    emit(state, "debt:refused", { need: short });
+    return "The starting loan (" + econFmt(state.debt) + " cr) is due before you leave sector " + E.dueSector + ". You need " + econFmt(short) + " more credits. Sell stock or deliver more.";
+  }
+
+  // Called once the cargo is in: pays the loan at its due point.
+  function econOnWarp(state) {
+    const rules = state.rules || {};
+    if (rules.debt && state.debt > 0 && state.sector >= T.econ.debt.dueSector) payDebt(state);
+  }
+
+  // Can this cost be met from stock plus credits at the Buy prices? Crystal comes from stock only.
+  function canAffordWithCredits(state, cost) {
+    const X = T.econ.exchange;
+    let cr = Math.max(0, state.credits);
+    for (let i = 0; i < RES.length; i++) {
+      const r = RES[i], need = (cost[r] || 0) - state.stock[r];
+      if (need <= 1e-9) continue;
+      if (!X.buyOn || !X.buy[r]) return false;
+      cr -= Math.ceil(need - 1e-9) * X.buy[r];
+      if (cr < -1e-9) return false;
+    }
+    return true;
+  }
 
   // ---------------------------------------------------------------- costs and building
 
@@ -858,6 +1115,7 @@
     const def = SHIP_TYPES[type];
     if (!def) return { ok: false, reason: "Unknown ship type." };
     if (state.over) return { ok: false, reason: "This run is over." };
+    if (state.credits < T.econ.bankrupt.blockShipsBelow) return { ok: false, reason: "Overdrawn: new ships and add-ons are blocked until credits are above 0." };
     const cost = shipCost(state, type);
     if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials for " + an(lc(labels && labels.ship[type] || def.label)) + "." };
     pay(state, cost);
@@ -947,8 +1205,13 @@
   function warReason(ship) { return SHIP_TYPES[ship.type].war ? ship.name + " is a warship. It cannot mine. Give it a patrol, escort or attack order." : ""; }
 
   // Slice b decides when a ship is out of reach of orders (mothballed, waking); both go through api so a test can swap them.
-  function shipAvailable(state, ship) { return !ship.dead; }                         // owner: slice b
-  function shipUnavailableReason(state, ship) { return lostReason(ship); }           // owner: slice b
+  function shipAvailable(state, ship) { return !ship.dead && !ship.mothballed && !(ship.wake > 0); }   // owner: slice b
+  function shipUnavailableReason(state, ship) {                                                          // owner: slice b
+    if (ship.dead) return lostReason(ship);
+    if (ship.mothballed) return ship.name + " is mothballed. Wake it first (it takes " + T.econ.maint.wakeSecs + " seconds).";
+    if (ship.wake > 0) return ship.name + " is waking up. " + Math.ceil(ship.wake - 1e-9) + " more seconds.";
+    return "";
+  }
   function unavailable(state, ship) { return api.shipAvailable(state, ship) ? null : { ok: false, reason: api.shipUnavailableReason(state, ship) }; }
 
   function orderShip(state, shipId, bodyId, labels) {
@@ -1180,6 +1443,8 @@
 
   function deliver(state, res, amount) {
     state.stock[res] += amount;
+    const cr = amount * (T.econ.credit[res] || 0);       // slice b: the same units also pay credits
+    state.credits += cr; state.econStats.earned += cr;
     state.score.mat += amount * T.score.value[res];
     state.delivered[res] += amount;
   }
@@ -1805,6 +2070,7 @@
     if (state.over) return { ok: false, reason: "This run is over." };
     if (base.down) return { ok: false, reason: "This " + bw + " is down. Repair it first." };
     if (base[kind]) return { ok: false, reason: "This " + bw + " already has " + an(lc(def.label)) + "." };
+    if (state.credits < T.econ.bankrupt.blockShipsBelow) return { ok: false, reason: "Overdrawn: new ships and add-ons are blocked until credits are above 0." };
     const cost = addonCost(state, kind);
     if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials for " + an(lc(def.label)) + "." };
     pay(state, cost);
@@ -1866,15 +2132,16 @@
   }
 
   // Stranded: no material left anywhere to mine, nothing in a hold, and not enough for another base.
-  // (A new ship would have nothing to mine, so being able to afford one does not count.)
+  // (A new ship would have nothing to mine, so being able to afford one does not count.) Credits count at the Buy prices for ore
+  // and ice; crystal is stock only.
   function isStranded(state) {
     if (state.over || state.won) return false;
     let crew = false;      // every miner and hauler lost and no stock for a new miner: nothing can ever be mined again
     for (let i = 0; i < state.ships.length && !crew; i++) crew = !state.ships[i].dead && !SHIP_TYPES[state.ships[i].type].war;
-    if (!crew && !canAfford(state, shipCost(state, "miner"))) return true;
+    if (!crew && !canAffordWithCredits(state, shipCost(state, "miner"))) return true;
     for (let i = 0; i < state.bodies.length; i++) if (state.bodies[i].amount > 1e-6) return false;
     for (let i = 0; i < state.ships.length; i++) if (state.ships[i].cargo > 1e-9) return false;
-    return !canAfford(state, baseCost(state));
+    return !canAffordWithCredits(state, baseCost(state));
   }
 
   function retire(state) {

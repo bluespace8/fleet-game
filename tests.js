@@ -2388,7 +2388,8 @@ console.log("hazards and defense: events, fog, flares, showers");
 const HDT = 1 / 30;
 function hrun(s, secs) { for (let i = 0; i < Math.round(secs / HDT); i++) G.step(s, HDT); }
 function quiet(s) { s.showerIn = 3000; s.eventIn = 3000; s.nests = []; return s; }       // no new showers or events, and no nests (so no guards)
-function hgame(seed, sector) { return quiet(G.newGame(seed, sector)); }
+// The hazards tests play without money: every lose rule off and no credits, as before credits existed (the economy has its own tests).
+function hgame(seed, sector) { const s = quiet(G.newGame(seed, sector)); for (const k of Object.keys(s.rules)) s.rules[k] = false; s.credits = 0; return s; }
 function liveEvent(s, kind, o) {   // an event already past its warning
   const e = Object.assign({ kind, x: s.w / 2, y: s.h / 2, r: 150, age: G.TUNING.events.warn, warn: G.TUNING.events.warn, dur: 30, power: 1 }, o || {});
   s.events.push(e); return e;
@@ -3335,7 +3336,7 @@ test("VERSION is 3 and a new game has every contract field, in front of delivere
 test("a version 3 save round-trips every contract field exactly", () => {
   const s = hgame(5, 3);
   Object.assign(s, { science: 12, sciTotal: 30, sciSector: 4, tech: ["ind_drills", "log_credit"], credits: -100, debt: 900, debtTick: 33, brokeFor: 5, netNegFor: 2, waveSeq: 3 });
-  s.rules.timer = true; s.rules.upkeep = false; s.econStats.earned = 7; s.econStats.repaid = 600.5;
+  s.rules.timer = true; s.rules.upkeep = false; s.rules.debt = true; s.econStats.earned = 7; s.econStats.repaid = 600.5;
   s.nests = [{ id: 0, kind: "nest", x: 400, y: 300, hp: 120, max: 390, dead: false, guardIn: [0, 12.5, 3] }, { id: 1, kind: "beacon", x: 50, y: 60, hp: 0, max: 150, dead: true, guardIn: [] }];
   s.waves = { 2: { alive: 0, escaped: 1 } };
   s.ships[1].mothballed = true; s.ships[1].wake = 4;
@@ -3727,7 +3728,7 @@ test("step calls stepNests with dt, and stepEconomy after the ships have moved",
 });
 test("buildSector asks generateNests for this sector's map seed; the stub leaves no nests", () => {
   withSpy("generateNests", st => { st.nests = []; }, calls => {
-    const s = G.newGame(9, 3);
+    const s = G.newGame(9, 3); s.rules.debt = false;
     assert.strictEqual(calls.length, 1); assert.strictEqual(calls[0][0], s); assert.strictEqual(calls[0][1], G.mapSeed(9, 3));
     s.nests = [{ id: 0 }]; s.waves = { 4: { alive: 1, escaped: 0 } }; s.sciSector = 7;
     buildGoal(s);
@@ -3776,23 +3777,23 @@ test("every stub is exported with the contract's signature and returns a neutral
     emit: 3, drainEvents: 1, endRun: 2, hasTech: 2, techMult: 2, techAdd: 2 };
   for (const k of Object.keys(sig)) { assert.strictEqual(typeof G[k], "function", k); assert.strictEqual(G[k].length, sig[k], k + " takes " + sig[k]); }
   const s = hgame(4, 3), before = G.serialize(s);
-  // slice a's functions are real now (see the science-tree tests); slice b's are still stubs here
+  // every contract function exists with its agreed arity; slice a and b have their own tests, this one pins the neutral behaviour with all rules off
   G.stepEconomy(s, 1); G.econOnWarp(s);
-  assert.strictEqual(G.econScale(5), 1);
+  assert.strictEqual(G.econScale(1), 1);
   assert.deepStrictEqual(G.econRates(s), { maint: 0, upkeep: 0, interest: 0, net: 0 });
   assert.strictEqual(G.payDebt(s, 10).ok, false); assert.strictEqual(G.payDebt(s, 10).paid, 0);
-  assert.strictEqual(G.sellStock(s, "ore", 10).ok, false); assert.strictEqual(G.buyStock(s, "ore", 10).ok, false); assert.strictEqual(G.setMothball(s, 0, true).ok, false);
+  assert.strictEqual(G.sellStock(s, "gold", 10).ok, false); assert.strictEqual(G.buyStock(s, "crystal", 10).ok, false); assert.strictEqual(G.setMothball(s, 99, true).ok, false);
   assert.strictEqual(G.econWarpBlock(s), ""); assert.strictEqual(G.timeLimit(s), 0); assert.deepStrictEqual(G.econWarnings(s), []);
   assert.strictEqual(G.serialize(s), before, "no stub changes the game");
 });
 test("with the stubs the game plays as before: no credits drain, no science, no nests, no deaths from money", () => {
-  const s = G.newGame(12, 3);
+  const s = G.newGame(12, 3); for (const k of Object.keys(s.rules)) s.rules[k] = false;   // every money rule off: only deliveries pay
   s.showerIn = 3000; s.eventIn = 3000;
   const b = nearBody(s); G.orderShip(s, 0, b.id); G.orderShip(s, 1, b.id);
   for (let i = 0; i < 30 * 600; i++) G.step(s, HDT);
   assert.ok(!s.over);
-  assert.strictEqual(s.credits, 250); assert.strictEqual(s.debt, 1500); assert.strictEqual(s.debtTick, 60);
   assert.strictEqual(s.science, 0); assert.strictEqual(s.sciTotal, 0); assert.ok(s.nests.every(n => !n.dead && n.hp === n.max), "nothing touched the nests"); assert.deepStrictEqual(s.tech, []);
+  assert.ok(s.credits > 250); assert.strictEqual(s.debt, 1500); assert.strictEqual(s.debtTick, 60);
   assert.strictEqual(s.msgs.length, 0);
   assert.ok(s.stats.ore > 0, "and the miners worked");
 });
@@ -3805,7 +3806,7 @@ test("main.js has the contract's placeholders: pins in index.html, hook function
   assert.ok(/id="t-body"><\/div>/.test(html) && /id="econ-body"><\/div>/.test(html), "and empty");
   assert.ok(/id="tech" role="dialog" aria-modal="true"/.test(html));
   for (const f of ["openTech", "focusEcon", "toggleMothball", "shipRowExtra", "drawNests", "closeTech"]) assert.ok(new RegExp("function " + f + "\\(").test(js), f);
-  assert.ok(/function shipRowExtra\(ship\) \{ return null; \}/.test(js) && /shipRowExtra\(s\)/.test(js), "the board row asks for its extra");
+  assert.ok(/function shipRowExtra\(ship\) \{/.test(js) && /shipRowExtra\(s\)/.test(js), "the board row asks for its extra");
   assert.ok(/function frame\(dt\)[\s\S]*?drawNests\(\);[\s\S]*?\n  \}/.test(js), "frame draws the nests");
   const g = /function keyActive\(ev\) \{[\s\S]*?\n  \}/.exec(js);
   assert.ok(g && g[0].indexOf("ui.tech") >= 0, "keyActive stops for the tech window");
@@ -4581,6 +4582,321 @@ test("nests shorten only the raid gap: fog and flare timing is the same with nes
 
 // ---- economy-lose tests ----
 // (slice b adds its tests here, and only here)
+console.log("economy and lose rules");
+const ET = G.TUNING.econ;
+// A game with every lose rule off except the ones named; ample plain credits unless given.
+function egame(seed, sector, on, credits) {
+  const s = hgame(seed, sector);
+  for (const k of (on || [])) s.rules[k] = true;
+  s.credits = credits === undefined ? 1000 : credits; s.debt = 0;
+  return s;
+}
+function erun(s, secs) { const n = Math.round(secs * 30); for (let i = 0; i < n; i++) G.step(s, HDT); }
+function near(a, b, tol, msg) { assert.ok(Math.abs(a - b) <= (tol || 0.01), (msg || "") + " got " + a + " want " + b); }
+function hasMsg(s, type) { return s.msgs.some(m => m.type === type); }
+function dropOff(s, ship, res, n) {   // a loaded ship right at home, heading in
+  const h = s.bases[0];
+  ship.x = h.x + 30; ship.y = h.y; ship.cargo = n; ship.res = res; ship.st = G.TO_BASE; ship.dest = -1;
+}
+
+test("credits are paid on delivery: 20 ore pays 20, then 10 crystal pays 50", () => {
+  const s = egame(3, 1, [], 0);
+  dropOff(s, s.ships[0], "ore", 20); erun(s, 3);
+  near(s.credits, 20, 1e-6); near(s.econStats.earned, 20, 1e-6);
+  dropOff(s, s.ships[0], "crystal", 10); erun(s, 3);
+  near(s.credits, 70, 1e-6);
+});
+test("maintenance: two idle miners cost 60 a minute, scaled by sector (x1.16 at sector 5)", () => {
+  const s = egame(3, 1, ["maintenance"]); erun(s, 60);
+  near(s.credits, 1000 - 60, 0.05);
+  const t = egame(3, 5, ["maintenance"]); erun(t, 60);
+  near(t.credits, 1000 - 60 * 1.16, 0.05);
+  assert.strictEqual(G.econScale(1), 1); near(G.econScale(5), 1.16, 1e-9); near(G.econScale(50), 1.36, 1e-9);
+});
+test("a mothballed warship costs 20% (18 a minute), parks at home, and takes 10 s to wake", () => {
+  const s = egame(3, 1, ["maintenance"]);
+  s.ships.length = 0; G.addShip(s, "warship");
+  assert.strictEqual(G.setMothball(s, 0, true).ok, true);
+  assert.strictEqual(G.shipAvailable(s, s.ships[0]), false);
+  assert.ok(/mothballed/.test(G.shipUnavailableReason(s, s.ships[0])));
+  assert.strictEqual(G.orderPatrol(s, 0, 100, 100).ok, false);
+  const p = [s.ships[0].x, s.ships[0].y];
+  erun(s, 60); near(s.credits, 1000 - 18, 0.05);
+  assert.deepStrictEqual([s.ships[0].x, s.ships[0].y], p);
+  assert.strictEqual(G.setMothball(s, 0, false).ok, true);
+  erun(s, 5); assert.strictEqual(G.shipAvailable(s, s.ships[0]), false);
+  assert.ok(/waking/.test(G.shipUnavailableReason(s, s.ships[0])));
+  erun(s, 5.5); assert.strictEqual(G.shipAvailable(s, s.ships[0]), true);
+  assert.strictEqual(G.setMothball(s, 0, false).ok, false, "not mothballed any more");
+});
+test("mothballing hands in cargo and drops the order; a lost ship cannot be mothballed", () => {
+  const s = egame(3, 1, [], 0);
+  const ship = s.ships[0]; ship.cargo = 12; ship.res = "ice"; ship.st = G.TO_BASE;
+  assert.ok(G.setMothball(s, 0, true).ok);
+  near(s.credits, 24, 1e-6); assert.strictEqual(ship.cargo, 0); assert.strictEqual(ship.st, G.IDLE);
+  s.ships[1].dead = true;
+  const r = G.setMothball(s, 1, true); assert.strictEqual(r.ok, false); assert.ok(/lost/.test(r.reason));
+});
+test("base upkeep: two outposts, one at tier 1 with a shield, cost 100 a minute; a home base costs nothing", () => {
+  const s = egame(3, 1, ["upkeep"]); s.ships.length = 0;
+  s.stock.ore = s.stock.ice = s.stock.crystal = 99999;
+  const a = legalSpot(s, 0); assert.ok(G.placeBase(s, a.x, a.y).ok);
+  const b = legalSpot(s, 0); assert.ok(G.placeBase(s, b.x, b.y).ok);
+  s.won = true;   // no matter
+  s.bases[1].tier = 1; s.bases[1].shield = true;
+  const c0 = s.credits; erun(s, 60);
+  near(c0 - s.credits, 35 + 35 + 10 + 20, 0.1);
+  const r = G.econRates(s); near(r.upkeep, 100, 1e-9);
+  s.bases[1].down = true; near(G.econRates(s).upkeep, 35, 1e-9);
+});
+test("debt interest compounds every 60 s: 1500 -> 1500 at 59.9 s, 1522.5 at 60 s, 1740.81 at 600 s", () => {
+  const s = egame(3, 1, ["debt"], 0); s.debt = 1500; s.debtTick = 60;
+  erun(s, 59.9); near(s.debt, 1500, 1e-6);
+  erun(s, 0.1); near(s.debt, 1522.5, 0.01);
+  const t = egame(3, 1, ["debt"], 0); t.debt = 1500; t.debtTick = 60; erun(t, 600);
+  near(t.debt, 1500 * Math.pow(1.015, 10), 0.05); near(t.debt, 1740.81, 0.05);
+});
+test("debt due at the sector 3 warp: refused with the shortfall, auto-paid when covered, cargo counts", () => {
+  const s = egame(3, 3, ["debt"], 1000); s.debt = 1500; s.won = true;
+  const r = G.warpToNextSector(s);
+  assert.strictEqual(r.ok, false); assert.ok(/500/.test(r.reason), r.reason); assert.strictEqual(s.sector, 3);
+  assert.strictEqual(G.econWarpBlock(s) !== "", true);
+  s.ships[0].cargo = 200; s.ships[0].res = "ore";            // 200 cr aboard: still 300 short
+  assert.ok(/300/.test(G.econWarpBlock(s)));
+  s.ships[0].cargo = 500;                                    // exactly enough with the cargo
+  assert.strictEqual(G.econWarpBlock(s), "");
+  const w = G.warpToNextSector(s); assert.ok(w.ok, w.reason);
+  assert.strictEqual(s.debt, 0); assert.strictEqual(s.sector, 4); near(s.credits, 1000 + 500 - 1500, 1e-6);
+  const t = egame(3, 3, ["debt"], 2000); t.debt = 1500; t.won = true;
+  assert.ok(G.warpToNextSector(t).ok); assert.strictEqual(t.debt, 0); near(t.credits, 500, 1e-6);
+  const u = egame(3, 2, ["debt"], 0); u.debt = 1500; u.won = true;
+  assert.strictEqual(G.econWarpBlock(u), "", "before sector 3 the warp is free");
+  const v = egame(3, 3, [], 0); v.debt = 1500; v.won = true;
+  assert.strictEqual(G.econWarpBlock(v), "", "rule off");
+});
+test("debt backstop at 2,700 s ends the run as debt; a warning fires at 2,400 s", () => {
+  const s = egame(3, 2, ["debt"], 100); s.debt = 1500; s.debtTick = 1e9; s.time = 2390;
+  s.stock.ore = 9999;        // so it is not stranded
+  erun(s, 5);
+  assert.ok(!s.over); s.msgs.length = 0; erun(s, 6);
+  assert.ok(hasMsg(s, "econ:warn"), "warned");
+  s.time = 2690; erun(s, 10.1);
+  assert.ok(s.over); assert.strictEqual(s.endReason, "debt");
+  const t = egame(3, 2, ["debt"], 5000); t.debt = 1500; t.debtTick = 1e9; t.time = 2695; erun(t, 6);
+  assert.ok(!t.over); assert.strictEqual(t.debt, 0, "paid automatically when it can be");
+});
+test("bankruptcy: -251 for 59 s lives, 60 s ends; recovering above the floor resets the clock", () => {
+  const s = egame(3, 1, ["bankruptcy"], -251); s.stock.ore = 9999;
+  erun(s, 59); assert.ok(!s.over); assert.ok(s.brokeFor > 58);
+  erun(s, 1.1); assert.ok(s.over); assert.strictEqual(s.endReason, "bankrupt");
+  const t = egame(3, 1, ["bankruptcy"], -251); t.stock.ore = 9999;
+  erun(t, 30); assert.ok(t.brokeFor > 29); t.credits = -200; erun(t, 0.2);
+  assert.strictEqual(t.brokeFor, 0); erun(t, 100); assert.ok(!t.over);
+  const w = G.econWarnings(egame(3, 1, ["bankruptcy"], -300));
+  assert.ok(w.some(x => x.cause === "bankrupt" && x.level === "danger"));
+});
+test("bankruptcy warnings and clears are announced once per step, and the toast marks are 60, 30, 10 s", () => {
+  const s = egame(3, 1, ["bankruptcy"], -300); s.stock.ore = 9999; s.msgs.length = 0;
+  erun(s, 1); assert.strictEqual(s.msgs.filter(m => m.type === "econ:warn" && m.cause === "bankrupt").length, 1);
+  erun(s, 30); assert.strictEqual(s.msgs.filter(m => m.type === "econ:warn" && m.cause === "bankrupt").length, 2);
+  erun(s, 20); assert.strictEqual(s.msgs.filter(m => m.type === "econ:warn" && m.cause === "bankrupt").length, 3);
+  s.credits = 0; s.msgs.length = 0; erun(s, 1);
+  assert.ok(hasMsg(s, "econ:clear"));
+});
+test("overdrawn (credits < 0) blocks new ships and add-ons but not new bases", () => {
+  const s = egame(3, 1, [], -1); s.stock.ore = s.stock.ice = s.stock.crystal = 5000;
+  const r = G.buildShip(s, "miner"); assert.strictEqual(r.ok, false); assert.ok(/Overdrawn/.test(r.reason));
+  const a = G.buildAddon(s, 0, "shield"); assert.strictEqual(a.ok, false); assert.ok(/Overdrawn/.test(a.reason));
+  const sp = legalSpot(s, 0); assert.ok(G.placeBase(s, sp.x, sp.y).ok);
+  s.credits = 0; assert.ok(G.buildShip(s, "miner").ok, "0 is not overdrawn");
+});
+test("timer: off by default; from sector 2, 1.5 x parTime (capped at sector 10); times out only when not won", () => {
+  const s = egame(3, 2, ["timer"]); s.stock.ore = 9999;
+  near(G.timeLimit(s), 1.5 * G.parTime(2), 1e-9); near(G.timeLimit(s), 810, 1e-9);
+  assert.strictEqual(G.timeLimit(G.newGame(1, 1)), 0, "sector 1 is exempt");
+  const d = G.newGame(3, 2); assert.strictEqual(G.timeLimit(d), 0, "off by default");
+  const hi = egame(3, 12, ["timer"]); near(G.timeLimit(hi), 1.5 * G.parTime(10), 1e-9);
+  s.sectorTime = 800; erun(s, 5); assert.ok(!s.over);
+  s.sectorTime = 809; erun(s, 2); assert.ok(s.over); assert.strictEqual(s.endReason, "timeout");
+  const w = egame(3, 2, ["timer"]); w.stock.ore = 9999; w.won = true; w.sectorTime = 800; erun(w, 20); assert.ok(!w.over, "won in time");
+  const off = egame(3, 2, []); off.stock.ore = 9999; off.sectorTime = 8100; erun(off, 5); assert.ok(!off.over);
+});
+test("toggles: each rule off never ends the run; bankruptcy off clamps credits at the floor", () => {
+  const a = egame(3, 1, ["maintenance"], -251); a.stock.ore = 9999; erun(a, 120); assert.ok(!a.over);
+  const b = egame(3, 1, ["maintenance"], 0); b.stock.ore = 9999; erun(b, 300);
+  assert.ok(!b.over); assert.strictEqual(b.credits, -250, "clamped");
+  const c = egame(3, 2, [], 0); c.debt = 1500; c.time = 5000; c.stock.ore = 9999; erun(c, 5); assert.ok(!c.over);
+  const d = egame(3, 2, [], 0); d.stock.ore = 9999; d.sectorTime = 99999; erun(d, 5); assert.ok(!d.over);
+  const e = egame(3, 1, ["maintenance", "upkeep"], 0); e.stock.ore = 9999;
+  e.rules.maintenance = false; erun(e, 60); assert.strictEqual(e.credits, 0, "no maintenance when its rule is off");
+});
+test("stranded wins over bankrupt and debt", () => {
+  const s = egame(3, 1, ["bankruptcy"], -300);
+  s.stock.ore = s.stock.ice = s.stock.crystal = 0; s.ships.length = 0;
+  s.endTimer = 1e9; erun(s, 61);
+  assert.ok(s.over); assert.strictEqual(s.endReason, "stranded");
+  const t = egame(3, 2, ["debt"], 0); t.debt = 1500; t.time = 2699; t.debtTick = 1e9;
+  t.stock.ore = t.stock.ice = t.stock.crystal = 0; t.ships.length = 0; t.endTimer = 1e9; erun(t, 2);
+  assert.strictEqual(t.endReason, "stranded");
+});
+test("isStranded counts credits at the Buy prices for ore and ice; crystal is stock only", () => {
+  const s = egame(3, 1, [], 0); s.ships.length = 0;
+  for (const b of s.bodies) b.amount = 0;
+  s.stock.ore = s.stock.ice = s.stock.crystal = 0;
+  assert.strictEqual(G.isStranded(s), true);
+  s.stock.crystal = 15; s.stock.ore = 0; s.stock.ice = 0;
+  s.credits = 120 * 3 + 40 * 6 - 1; assert.strictEqual(G.isStranded(s), true, "a credit short for the new base");
+  s.credits = 120 * 3 + 40 * 6; s.ships.push(G.addShip(s, "miner")); s.ships.length = 1;
+  s.ships[0].dead = true;                       // all the crew lost: needs a new miner too
+  s.credits = 120 * 3 + 40 * 6 + 40 * 3; assert.strictEqual(G.isStranded(s), false);
+  s.credits = 5000; s.stock.crystal = 0; assert.strictEqual(G.isStranded(s), true, "no crystal, no credits can buy it");
+});
+test("sell and buy stock: sell at 1/2/5, buy ore 3 and ice 6, never crystal; short supplies sell or buy what they can", () => {
+  const s = egame(3, 1, [], 0); s.stock.ore = 25; s.stock.ice = 4; s.stock.crystal = 3;
+  let r = G.sellStock(s, "ore", 10); assert.ok(r.ok); assert.strictEqual(s.stock.ore, 15); assert.strictEqual(s.credits, 10);
+  r = G.sellStock(s, "ice", 10); assert.ok(r.ok); assert.strictEqual(r.sold, 4); assert.strictEqual(s.credits, 18);
+  r = G.sellStock(s, "crystal", 10); assert.strictEqual(r.sold, 3); assert.strictEqual(s.credits, 33);
+  assert.strictEqual(G.sellStock(s, "ice", 10).ok, false);
+  assert.strictEqual(G.sellStock(s, "gold", 10).ok, false);
+  assert.strictEqual(G.sellStock(s, "ore", 0).ok, false);
+  s.credits = 100; r = G.buyStock(s, "ore", 10); assert.ok(r.ok); assert.strictEqual(s.credits, 70); assert.strictEqual(s.stock.ore, 25);
+  r = G.buyStock(s, "ice", 100); assert.strictEqual(r.bought, 11); assert.strictEqual(s.credits, 4);
+  const c = G.buyStock(s, "crystal", 1); assert.strictEqual(c.ok, false); assert.ok(/Crystal/.test(c.reason));
+  assert.strictEqual(G.buyStock(s, "ore", 10).ok, true); assert.strictEqual(s.credits, 1);
+  assert.strictEqual(G.buyStock(s, "ore", 10).ok, false, "cannot pay");
+  s.credits = -5; assert.strictEqual(G.buyStock(s, "ore", 1).ok, false);
+});
+test("payDebt pays what it can, or the amount; refuses with no debt or no credits", () => {
+  const s = egame(3, 1, ["debt"], 400); s.debt = 1500;
+  let r = G.payDebt(s, 100); assert.ok(r.ok); assert.strictEqual(r.paid, 100); assert.strictEqual(s.debt, 1400); assert.strictEqual(s.credits, 300);
+  r = G.payDebt(s); assert.strictEqual(r.paid, 300); assert.strictEqual(s.debt, 1100); assert.strictEqual(s.credits, 0);
+  assert.strictEqual(G.payDebt(s).ok, false);
+  s.credits = 5000; r = G.payDebt(s); assert.strictEqual(r.paid, 1100); assert.strictEqual(s.debt, 0);
+  assert.strictEqual(G.payDebt(s).ok, false);
+  s.credits = 10; s.debt = 50; assert.strictEqual(G.payDebt(s, -4).ok, false);
+  assert.strictEqual(egame(3, 1, [], 500).debt, 0);
+});
+test("softeners through state.tech: lean crews, navy contracts, modular bases, credit line", () => {
+  const s = egame(3, 1, ["maintenance", "upkeep", "debt", "bankruptcy"]);
+  G.addShip(s, "warship"); s.stock.ore = 9999;
+  s.tech = ["ind_crews"]; near(G.econRates(s).maint, 21 * 2 + 90, 1e-9);
+  s.tech = ["ind_crews", "mil_contracts"]; near(G.econRates(s).maint, 21 * 2 + 54, 1e-9);
+  s.tech = [];
+  s.bases.push({ id: 1, x: 0, y: 0, home: false, tier: 1, shield: true, turret: false, down: false });
+  near(G.econRates(s).upkeep, 65, 1e-9);
+  s.tech = ["ind_modular"]; near(G.econRates(s).upkeep, 65 * 0.65, 1e-9);
+  s.tech = ["log_credit"]; s.debt = 1500; s.debtTick = 60;
+  near(G.econRates(s).interest, 1500 * 0.015 * 0.5, 1e-9);
+  s.credits = -400; erun(s, 61); near(s.debt, 1511.25, 0.01);
+  assert.ok(!s.over, "floor is -500 with the credit line");
+  s.tech = []; s.credits = -400; s.brokeFor = 0; erun(s, 60.5);
+  assert.ok(s.over || s.credits < -250 || s.brokeFor > 0);
+  assert.strictEqual(s.endReason, "bankrupt");
+});
+test("a lost ship costs nothing; a lost home base's other effects are untouched", () => {
+  const s = egame(3, 1, ["maintenance"]); s.ships[0].dead = true; s.stock.ore = 9999;
+  near(G.econRates(s).maint, 30, 1e-9);
+});
+test("old saves: a hazards-version save loads with 500 credits, no debt, debt rule off; stress has every rule off", () => {
+  const s = G.newGame(8, 3), raw = JSON.parse(G.serialize(s));
+  for (const k of ["science", "sciTotal", "sciSector", "tech", "nests", "waveSeq", "waves", "credits", "debt", "debtTick", "brokeFor", "netNegFor", "rules", "econStats"]) delete raw[k];
+  raw.ver = 2;
+  for (const sh of raw.ships) { delete sh.mothballed; delete sh.wake; }
+  const r = G.deserialize(JSON.stringify(raw));
+  assert.ok(r.ok, r.reason);
+  assert.strictEqual(r.state.credits, 500); assert.strictEqual(r.state.debt, 0); assert.strictEqual(r.state.rules.debt, false);
+  assert.strictEqual(r.state.science, 0); assert.deepStrictEqual(r.state.tech, []);
+  erun(r.state, 5); assert.ok(!r.state.over);
+  const st = G.newGame(4, 1); G.spawnStress(st, 40, 5);
+  for (const k of Object.keys(st.rules)) assert.strictEqual(st.rules[k], false, k);
+  const back = G.deserialize(G.serialize(st)).state;
+  for (const k of Object.keys(back.rules)) assert.strictEqual(back.rules[k], false, "reloaded " + k);
+  assert.deepStrictEqual(G.econWarnings(st).filter(w => w.cause !== "overdrawn"), []);
+});
+test("save round trip: mid-grace, mid-interest, with tech; the next steps match a game that never saved", () => {
+  const a = egame(5, 3, ["debt", "bankruptcy", "maintenance"], -300); a.debt = 1500; a.debtTick = 12; a.brokeFor = 30; a.tech = ["log_credit"];
+  a.stock.ore = 9999;
+  const b = G.deserialize(G.serialize(a)).state;
+  assert.strictEqual(b.brokeFor, 30); assert.strictEqual(b.debtTick, 12); assert.deepStrictEqual(b.tech, ["log_credit"]);
+  erun(a, 20); erun(b, 20);
+  assert.strictEqual(G.serialize(a), G.serialize(b));
+  assert.deepStrictEqual(a.msgs.map(m => m.type), b.msgs.map(m => m.type), "same messages");
+  assert.ok(!JSON.stringify(JSON.parse(G.serialize(a))).includes("econ:warn"), "events are not saved");
+});
+test("determinism: the same seed and inputs twice give the same save after 600 s", () => {
+  const mk = () => { const s = G.newGame(21, 3); const b = nearBody(s); G.orderShip(s, 0, b.id); G.orderShip(s, 1, b.id); return s; };
+  const a = mk(), b = mk(); erun(a, 600); erun(b, 600);
+  assert.strictEqual(G.serialize(a), G.serialize(b));
+});
+test("net is average income minus running costs; the net warning needs 10 s of negative net", () => {
+  const s = egame(3, 1, ["maintenance"], 1000); s.stock.ore = 9999;
+  erun(s, 40); assert.ok(G.econRates(s).net < 0);
+  assert.ok(!G.econWarnings(s).some(w => w.cause === "net") || s.netNegFor >= 10);
+  erun(s, 12); assert.ok(G.econWarnings(s).some(w => w.cause === "net"));
+});
+test("debt warnings: quiet early, amber from 300 s before the backstop, red in the last 60 s; none when covered", () => {
+  const s = egame(3, 2, ["debt"], 0); s.debt = 1500; s.time = 100;
+  assert.deepStrictEqual(G.econWarnings(s).filter(w => w.cause === "debt"), []);
+  s.time = 2450; let w = G.econWarnings(s).find(x => x.cause === "debt"); assert.ok(w && w.level === "warn");
+  s.time = 2650; w = G.econWarnings(s).find(x => x.cause === "debt"); assert.ok(w && w.level === "danger" && w.secsLeft === 50);
+  s.credits = 1600; assert.ok(!G.econWarnings(s).some(x => x.cause === "debt"));
+  const t = egame(3, 3, ["debt"], 0); t.debt = 1500; t.time = 100;
+  w = G.econWarnings(t).find(x => x.cause === "debt"); assert.ok(w && w.level === "warn" && /warp/.test(w.text), "from sector 3");
+});
+
+// The survival bot (the sim's average policy, simplified): mine whatever is short, build bases as soon as they are affordable,
+// add a miner when rich, keep one warship from sector 3, and warp when the sector is won. Real hazards, all rules default.
+function botPlay(seed) {
+  const s = G.newGame(seed, 1);
+  let low = s.credits, warps = 0, debtAfter3 = null;
+  const tick = 30 * 5;
+  for (let step = 0; step < 30 * 3600 && !s.over && s.sector <= 3; step++) {
+    G.step(s, HDT);
+    if (step % tick) continue;
+    low = Math.min(low, s.credits);
+    const free = s.ships.filter(x => !x.dead && !x.mothballed && x.wake <= 0 && x.st === G.IDLE && !G.SHIP_TYPES[x.type].war);
+    for (const sh of free) {
+      const want = s.stock.crystal < 30 ? "crystal" : s.stock.ice < 60 ? "ice" : "ore";
+      const cands = s.bodies.filter(b => b.amount > 1 && (b.res === want || (want === "crystal" && false)));
+      const pool = cands.length ? cands : s.bodies.filter(b => b.amount > 1);
+      const h = s.bases[0];
+      pool.sort((p, q) => Math.hypot(p.x - h.x, p.y - h.y) - Math.hypot(q.x - h.x, q.y - h.y));
+      const k = (sh.id % Math.max(1, Math.min(3, pool.length)));
+      if (pool[k]) G.orderShip(s, sh.id, pool[k].id);
+    }
+    if (s.won) {
+      const r = G.warpToNextSector(s);
+      if (r.ok) { warps++; if (s.sector === 4) debtAfter3 = s.debt; }
+      continue;
+    }
+    if (s.sector >= 3 && s.ships.filter(x => !x.dead && G.SHIP_TYPES[x.type].war).length < 2) {   // defence first, topped up from credits
+      const c = G.shipCost(s, "warship");
+      if (s.stock.ore < c.ore) G.buyStock(s, "ore", Math.ceil(c.ore - s.stock.ore));
+      if (s.stock.ice < c.ice) G.buyStock(s, "ice", Math.ceil(c.ice - s.stock.ice));
+      if (G.buildShip(s, "warship").ok) { const w = s.ships[s.ships.length - 1]; G.orderPatrol(s, w.id, s.bases[0].x + 120, s.bases[0].y); }
+    }
+    if (G.canAfford(s, G.baseCost(s))) {
+      let done = false;
+      for (let x = 80; x < s.w - 80 && !done; x += 40) for (let y = 80; y < s.h - 80 && !done; y += 40) if (G.placeBase(s, x, y).ok) done = true;
+    }
+    const miners = s.ships.filter(x => !x.dead && !G.SHIP_TYPES[x.type].war).length;
+    if (miners < 8 && s.stock.ore > 100 && s.credits > 300) G.buildShip(s, s.stock.ice > 40 && miners % 2 ? "hauler" : "miner");
+  }
+  return { s, low, warps, debtAfter3 };
+}
+test("survival: the average bot with every default rule on, seeds 1-3, sectors 1 to 3, never goes over and clears the debt", () => {
+  const out = [];
+  for (let seed = 1; seed <= 3; seed++) {
+    const r = botPlay(seed);
+    out.push("seed " + seed + " end=" + (r.s.endReason || "-") + " sector=" + r.s.sector + " low=" + Math.round(r.low) + " debt=" + (r.debtAfter3 === null ? "n/a" : r.debtAfter3) + " raids=" + (r.s.waveSeq || 0));
+    assert.ok(!r.s.over, out[out.length - 1]);
+    assert.ok(r.s.sector >= 4, "reached sector 4: " + out[out.length - 1]);
+    assert.strictEqual(r.debtAfter3, 0, out[out.length - 1]);
+    assert.ok(r.s.waveSeq > 0, "raids happened (real hazards code): " + out[out.length - 1]);
+    assert.ok(r.low > G.TUNING.econ.bankrupt.floor, out[out.length - 1]);
+  }
+  console.log("       " + out.join("\n       "));
+});
 
 console.log("\n" + passed + " passed, " + failed + " failed");
 process.exit(failed ? 1 : 0);

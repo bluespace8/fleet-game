@@ -208,3 +208,19 @@ button:focus-visible, .grid th.sortable:focus-visible, .grid tr.click:focus-visi
 #board .hp { color: #f0a0a0; }
 #board li button.fix { padding: 2px 6px; font-size: 11px; border-color: #4a9a70; flex: none; }
 #board li button.fix[hidden] { display: none; }
+/* credits, debt, time left and the credits panel (slice b) */
+.goal.amber { color: #ffd27a; box-shadow: inset 0 0 0 1px #f0b020; }
+.goal.red { color: #ffb0b0; box-shadow: inset 0 0 0 1px #ee6b6b; }
+#warnbar div + div { margin-top: 2px; }
+#econ-body .eco-line { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: #c8d0f0; }
+#econ-body .eco-line b { font-variant-numeric: tabular-nums; color: #fff; }
+#econ-body .eco-ex { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+#econ-body .eco-row { display: flex; gap: 6px; align-items: center; }
+#econ-body .eco-row > span { flex: 1; font-size: 12px; }
+#econ-body button { font-size: 12px; padding: 3px 8px; }
+#econ-body button small { display: block; font-size: 10px; opacity: 0.8; }
+#board li .rowx { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex: none; }
+#board li .rowx[hidden] { display: none; }
+#board li .mtag { color: #9fb0ff; font-size: 10px; }
+#board li .mtag:empty { display: none; }
+#board li button.moth { padding: 2px 6px; font-size: 11px; }

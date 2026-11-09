@@ -1907,9 +1907,6 @@
   // so a click never lands on a row that has just been thrown away.
   let boardRows = [];
 
-  // An extra control for a ship's row in the Mission board (a node), or null. Called once when the row is built. owner: slice b
-  function shipRowExtra(ship) { return null; }
-  function updateShipRowExtra(ship, node) { }   // owner: slice b (called on every board refresh for each ship row)
   // The science readout and the Tech button. They show from the first sector that can pay science (or once any is earned).
   let sciShown = "", sciPulse = 0;
   function renderScience() {
@@ -1928,7 +1925,6 @@
     clearTimeout(sciPulse);
     sciPulse = setTimeout(() => el.classList.remove("pulse"), 700);
   }
-  function renderEcon() { }   // owner: slice b
   const SCI_SOURCE = { raider: "raider", turret: "turret kill", guard: "guard", wave: "wave repelled", beacon: "beacon", nest: "nest", secured: "sector secured" };
   let sciToastAt = 0, sciToastText = "", sciToastParts = 0;   // the text last shown by sciToast, so only a science toast is merged into
   function sciToast(msg) {   // events from one tick share one toast, so a nest kill shows its points and its name
@@ -1952,7 +1948,114 @@
     } else if (e.type === "nest:destroyed") sciToast(e.kind === "beacon" ? "Beacon destroyed" : "Nest destroyed");
     else if (e.type === "wave:repelled") sciToast("Raid wave repelled");
   }
-  function onEconMsg(e) { }   // owner: slice b (one event from G.drainEvents)
+  // ---- credits, debt, warnings, the credits panel and the Mothball button (slice b)
+  const fmtCr = n => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const signedCr = n => (Math.round(n) < 0 ? "-" : "+") + fmtCr(Math.abs(n));
+  function pumpMsgs() { for (const e of G.drainEvents(game)) { onScienceMsg(e); onEconMsg(e); } }   // after a click: toast now, not later
+
+  // A Mothball / Wake button and a status tag, on the right of the ship's row. A click on it never selects the row.
+  function shipRowExtra(ship) {
+    const box = document.createElement("span"); box.className = "rowx";
+    const tag = document.createElement("small"); tag.className = "mtag";
+    const btn = document.createElement("button"); btn.type = "button"; btn.className = "moth";
+    btn.addEventListener("click", ev => { ev.stopPropagation(); mothballShip(ship.id); });
+    box.append(tag, btn);
+    return box;
+  }
+
+  function updateShipRowExtra(ship, node) {
+    const box = node.querySelector(".rowx");
+    if (!box) return;
+    box.hidden = ship.dead;
+    if (ship.dead) return;
+    const tag = box.firstChild, btn = box.lastChild, W = G.TUNING.econ.maint.wakeSecs;
+    const t = ship.mothballed ? "Mothballed" : ship.wake > 0 ? "Waking " + Math.ceil(ship.wake) + " s" : "";
+    const b = ship.mothballed || ship.wake > 0 ? "Wake" : "Mothball";
+    const title = ship.mothballed ? `Wake it. It works again after ${W} seconds (M)`
+      : ship.wake > 0 ? "Waking up" : `Park it at home on ${Math.round(G.TUNING.econ.maint.mothball * 100)}% running costs (M)`;
+    if (tag.textContent !== t) tag.textContent = t;
+    if (btn.textContent !== b) btn.textContent = b;
+    if (btn.title !== title) btn.title = title;
+    btn.disabled = game.over || (ship.wake > 0 && !ship.mothballed);
+  }
+
+  function mothballShip(id) {
+    const s = game && game.ships[id];
+    if (!s) return;
+    const r = G.setMothball(game, id, !s.mothballed);
+    if (!r.ok) toast(r.reason);
+    else { toast(shipName(s) + (s.mothballed ? " is mothballed at home." : ` is waking up (${G.TUNING.econ.maint.wakeSecs} s).`)); saveNow(); }
+    boardKey = ""; refresh();
+  }
+
+  const econCache = { credits: "", debt: "", time: "", bar: "", body: "" };
+  function setCached(key, el, html) { if (econCache[key] !== html) { econCache[key] = html; el.innerHTML = html; } }
+
+  function renderEcon() {
+    const E = G.TUNING.econ, L = LB(), r = game.rules || {}, rates = G.econRates(game), by = {};
+    for (const w of G.econWarnings(game)) by[w.cause] = w;
+    const level = c => by[c] ? (by[c].level === "danger" ? "red" : "amber") : "";
+    const cr = $("credits"), dbt = $("debt"), tl = $("timeleft"), bar = $("warnbar");
+    cr.hidden = false; $("econ").hidden = false;
+    setCached("credits", cr, `<b>${fmtCr(game.credits)}</b> cr (${signedCr(rates.net)}/min)${game.credits < 0 ? " overdrawn" : ""}`);
+    cr.title = by.overdrawn ? by.overdrawn.text : by.net ? by.net.text : "Credits: earned on delivery, spent on running costs";
+    cr.classList.toggle("amber", game.credits < 0 || game.netNegFor >= E.netWarnSecs);
+    cr.classList.toggle("red", !!by.bankrupt);
+    const showDebt = !!r.debt && game.debt > 0;
+    dbt.hidden = !showDebt;
+    if (showDebt) {
+      const pct = +(E.debt.rate * 100 * G.techMult(game, "interest")).toFixed(2);
+      setCached("debt", dbt, `Debt <b>${fmtCr(game.debt)}</b> (+${pct}%/min), due leaving ${lc(L.sector)} ${E.debt.dueSector}`);
+      dbt.classList.toggle("amber", level("debt") === "amber"); dbt.classList.toggle("red", level("debt") === "red");
+    }
+    const lim = G.timeLimit(game), showTime = lim > 0 && !game.won;
+    tl.hidden = !showTime;
+    if (showTime) {
+      setCached("time", tl, `Time left <b>${fmtSecs(Math.ceil(lim - game.sectorTime))}</b>`);
+      tl.classList.toggle("amber", level("timer") === "amber"); tl.classList.toggle("red", level("timer") === "red");
+    }
+    const banners = ["bankrupt", "debt", "timer"].filter(c => by[c]).map(c => by[c]);
+    bar.hidden = !banners.length;
+    bar.classList.toggle("danger", banners.some(w => w.level === "danger"));
+    bar.style.top = (topH + 6) + "px";
+    const barKey = banners.map(w => w.text).join("\n");
+    if (econCache.bar !== barKey) {
+      econCache.bar = barKey; bar.textContent = "";
+      for (const w of banners) { const d = document.createElement("div"); d.textContent = w.text; bar.appendChild(d); }
+    }
+    // the credits panel
+    const X = E.exchange, n = X.step, can = !game.over;
+    const income = rates.net + rates.maint + rates.upkeep;
+    const line = (a, b) => `<div class="eco-line"><span>${a}</span><b>${b}</b></div>`;
+    let html = line("Income (run average)", signedCr(income) + "/min") + line("Ships", signedCr(-rates.maint) + "/min") +
+      line(L.bases, signedCr(-rates.upkeep) + "/min") + line("Net", signedCr(rates.net) + "/min");
+    if (showDebt) {
+      const payable = Math.min(game.debt, Math.max(0, game.credits));
+      html += line("Debt interest", "+" + fmtCr(rates.interest) + "/min (adds to the debt)") +
+        `<button type="button" data-eco="pay"${can && payable > 0 ? "" : " disabled"} title="Pay the debt from your credits">Pay debt<small>${fmtCr(payable)} of ${fmtCr(game.debt)} cr</small></button>`;
+    }
+    html += `<div class="eco-ex">` + G.RES.map(res => {
+      const have = Math.floor(game.stock[res] + 1e-9), sell = Math.min(n, have) * X.sell[res], price = X.buy[res];
+      const buy = X.buyOn && price ? `<button type="button" data-eco="buy:${res}"${can && game.credits >= price ? "" : " disabled"} title="Buy up to ${n} for ${price} cr each">Buy ${n}<small>-${fmtCr(Math.min(n, Math.floor(Math.max(0, game.credits) / price)) * price || price)} cr</small></button>` : "";
+      return `<div class="eco-row"><span>${L.res[res]} <b>${have}</b></span><button type="button" data-eco="sell:${res}"${can && have >= 1 ? "" : " disabled"} title="Sell up to ${n} for ${X.sell[res]} cr each">Sell ${n}<small>+${fmtCr(sell || X.sell[res])} cr</small></button>${buy}</div>`;
+    }).join("") + `</div>`;
+    if (econCache.body !== html) { econCache.body = html; setHtml($("econ-body"), html, "data-eco"); }
+  }
+
+  $("econ-body").addEventListener("click", ev => {
+    const btn = ev.target.closest("[data-eco]");
+    if (!btn || !game) return;
+    const [act, res] = btn.dataset.eco.split(":"), n = G.TUNING.econ.exchange.step;
+    const r = act === "pay" ? G.payDebt(game) : act === "sell" ? G.sellStock(game, res, n) : G.buyStock(game, res, n);
+    if (!r.ok) toast(r.reason); else saveNow();
+    pumpMsgs(); econCache.body = ""; buildHtml = ""; refresh();
+  });
+
+  // One message from the game: a warning is shown as a toast when it starts or changes (the banner and the top bar stay up on their own).
+  function onEconMsg(e) {
+    if (e.type === "econ:warn" && e.text) toast(e.text, true);
+    else if (e.type === "debt:paid") toast(e.left > 0 ? `Paid ${fmtCr(e.amount)} cr of the loan. ${fmtCr(e.left)} cr left.` : "The starting loan is paid off.");
+  }
 
   function renderBoard() {
     const list = $("board");
@@ -2105,15 +2208,15 @@
   }
 
   // Title and opening sentence of the run-end card, by game.endReason (L: the labels in use; crew: a miner or hauler is still
-  // afloat). The three economy causes are placeholders. owner: slice b
+  // afloat). The three economy causes are slice b's.
   const END_TEXT = {
     retired: { title: () => "Run over", text: () => "You retired the fleet. " },
     stranded: { title: () => "Stranded", text: (L, crew) => crew ? "Nothing left to mine and not enough to build with. "
       : `Every ${shipWord()} was lost and there is not enough left to build another. `},
     destroyed: { title: L => (themed() ? L.home : "Home base") + " destroyed", text: L => `Your ${lc(L.home)} was destroyed. ` },
-    bankrupt: { title: () => "Run over", text: () => "" },
-    debt: { title: () => "Run over", text: () => "" },
-    timeout: { title: () => "Run over", text: () => "" },
+    bankrupt: { title: () => "Bankrupt", text: () => `Bankrupt: credits stayed below ${fmtCr(G.TUNING.econ.bankrupt.floor + G.techAdd(game, "overdraft"))} for ${G.TUNING.econ.bankrupt.grace} seconds. ` },
+    debt: { title: () => "Defaulted", text: () => `Defaulted: the starting loan wasn't repaid by the ${Math.round(G.TUNING.econ.debt.dueTime / 60)}-minute deadline. ` },
+    timeout: { title: () => "Out of time", text: L => `Out of time: ${lc(L.sector)} ${game.sector}'s goal wasn't met within ${fmtSecs(G.timeLimit(game))}. ` },
   };
 
   function showEnd() {
@@ -2237,7 +2340,7 @@
     const r = G.unlockTech(game, id);
     if (!r.ok) { techMsg(r.reason || "Cannot buy that.", true); return; }
     techMsg(`${node.name} unlocked for ${r.cost} science.`);
-    for (const e of G.drainEvents(game)) { onScienceMsg(e); onEconMsg(e); }   // the game is paused here, so the loop would not
+    pumpMsgs();   // the game is paused here, so the loop would not
     saveNow();
     renderTech(); renderScience();
   }
@@ -2274,9 +2377,17 @@
     techOpener = null;
   }
 
-  // C focuses the credits panel (slice b fills it). M mothballs or wakes the selected ship (slice b).
-  function focusEcon() { }
-  function toggleMothball() { }
+  // C moves focus to the first button in the credits panel (Pay debt, Sell, Buy). M mothballs or wakes the selected ship.
+  function focusEcon() {
+    const b = $("econ-body").querySelector("button:not([disabled])");
+    if (b) b.focus(); else toast(`Credits ${fmtCr(game.credits)}. Nothing to press in the credits panel yet.`);
+  }
+  function toggleMothball() {
+    const s = needShip();
+    if (!s) return;
+    if (s.wake > 0 && !s.mothballed) return toast(shipName(s) + " is waking up.");
+    mothballShip(s.id);
+  }
 
   function closeHangar() {
     ui.hangar = false;
