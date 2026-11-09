@@ -795,6 +795,7 @@
   // through techMult(state, "shipMaint" | "warshipMaint" | "baseUpkeep" | "interest") and techAdd(state, "overdraft").
 
   const NET_WARM = 30;         // seconds into the run before the "net is negative" clock may run
+  const OVERDRAWN_CALM = 10;   // the overdrawn warning may fire again only after credits stayed at 0 or more for this many seconds
   const DEBT_RED = 60;         // the debt warning turns red this many seconds before the backstop
 
   // Which warnings were already announced; lives only while the game runs (never saved), so a loaded game announces them again.
@@ -904,11 +905,12 @@
     const lim = timeLimit(state);
     if (lim > 0 && !state.won && state.sectorTime > lim) endRun(state, "timeout");
 
-    if (!state.over) econAnnounce(state, econRt(state));
+    if (!state.over) econAnnounce(state, econRt(state), dt);
   }
 
   // Tell the UI when a warning starts, changes level (or passes 60/30/10 s for bankruptcy) and when it goes.
-  function econAnnounce(state, rt) {
+  // The overdrawn warning is debounced: once announced it is only cleared (so it can fire again) after credits stayed >= 0 for OVERDRAWN_CALM s.
+  function econAnnounce(state, rt, dt) {
     const list = econWarnings(state), seen = Object.create(null);
     for (let i = 0; i < list.length; i++) {
       const w = list[i];
@@ -920,7 +922,13 @@
       }
     }
     for (const cause of Object.keys(rt.marks)) {
-      if (!seen[cause]) { delete rt.marks[cause]; emit(state, "econ:clear", { cause }); }
+      if (seen[cause]) { if (cause === "overdrawn") rt.calm = 0; continue; }
+      if (cause === "overdrawn" && state.credits >= 0) {
+        rt.calm = (rt.calm || 0) + (dt > 0 ? dt : 0);
+        if (rt.calm < OVERDRAWN_CALM) continue;
+      }
+      delete rt.marks[cause]; emit(state, "econ:clear", { cause });
+      if (cause === "overdrawn") rt.calm = 0;
     }
   }
 
@@ -935,16 +943,16 @@
       out.push({ cause: "overdrawn", level: "warn", secsLeft: 0, text: "Overdrawn: new ships and add-ons are blocked until credits are above 0." });
     }
     if (rules.debt && state.debt > 0) {
-      const need = Math.ceil(state.debt - state.credits - carriedCredits(state) - 1e-9);
+      // the backstop (and its warnings) counts credits only; the sector-3 warp check also counts cargo still aboard
+      const needDue = Math.ceil(state.debt - state.credits - 1e-9);
+      const needWarp = Math.ceil(state.debt - state.credits - carriedCredits(state) - 1e-9);
       const left = Math.max(0, Math.ceil(E.debt.dueTime - state.time - 1e-9));
-      if (need > 0) {
-        if (left <= DEBT_RED) out.push({ cause: "debt", level: "danger", secsLeft: left,
-          text: "Loan due in " + econClock(left) + ": " + econFmt(need) + " more credits needed, or the run ends." });
-        else if (state.sector >= E.debt.dueSector) out.push({ cause: "debt", level: "warn", secsLeft: left,
-          text: "Need " + econFmt(need) + " more credits to warp." });
-        else if (left <= E.debt.warnSecs) out.push({ cause: "debt", level: "warn", secsLeft: left,
-          text: "Loan due in " + econClock(left) + ": " + econFmt(need) + " more credits needed." });
-      }
+      if (needDue > 0 && left <= DEBT_RED) out.push({ cause: "debt", level: "danger", secsLeft: left,
+        text: "Loan due in " + econClock(left) + ": " + econFmt(needDue) + " more credits needed, or the run ends." });
+      else if (state.sector >= E.debt.dueSector && needWarp > 0) out.push({ cause: "debt", level: "warn", secsLeft: left,
+        text: "Need " + econFmt(needWarp) + " more credits to warp." });
+      else if (needDue > 0 && left <= E.debt.warnSecs) out.push({ cause: "debt", level: "warn", secsLeft: left,
+        text: "Loan due in " + econClock(left) + ": " + econFmt(needDue) + " more credits needed." });
     }
     const lim = timeLimit(state);
     if (lim > 0 && !state.won) {
@@ -1005,8 +1013,12 @@
     return { ok: true, credits: state.credits, bought };
   }
 
-  // Mothball a ship or wake it. Mothballing teleports it to its home base (cargo is handed in first, orders are dropped) and
-  // it then costs 20% upkeep; waking takes wakeSecs before it works again. Allowed with every rule off.
+  // Mothball a ship or wake it. Mothballing needs the ship at a base (within its dock range); it parks there, keeps its cargo
+  // and drops its orders, then costs 20% upkeep; waking takes wakeSecs before it works again. Allowed with every rule off.
+  function atBase(state, ship) {
+    const base = state.bases[nearestBase(state, ship.x, ship.y)], up = T.upgrades[base.tier | 0];
+    return Math.hypot(ship.x - base.x, ship.y - base.y) <= BASE_R + 10 + up.dock + MANUAL_SLACK;
+  }
   function setMothball(state, shipId, on) {
     const ship = state.ships[shipId];
     if (!ship) return { ok: false, reason: "No such ship." };
@@ -1014,12 +1026,11 @@
     if (ship.dead) return { ok: false, reason: lostReason(ship) };
     if (on) {
       if (ship.mothballed) return { ok: false, reason: ship.name + " is already mothballed." };
-      if (ship.cargo > 0 && ship.res) deliver(state, ship.res, ship.cargo);
+      if (!atBase(state, ship)) return { ok: false, reason: "Dock at a base first" };
       clearManual(ship);
-      ship.cargo = 0; ship.res = ""; ship.st = IDLE; ship.target = -1; ship.dest = -1; ship.star = -1;
+      ship.st = IDLE; ship.target = -1; ship.dest = -1; ship.star = -1;
       ship.wait = 0; ship.mv = 0; ship.wo = ""; ship.wt = -1; ship.wake = 0;
       ship.mothballed = true;
-      parkShip(state, ship);
       return { ok: true };
     }
     if (!ship.mothballed) return { ok: false, reason: ship.name + " is not mothballed." };

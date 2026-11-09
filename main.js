@@ -1972,7 +1972,7 @@
     const t = ship.mothballed ? "Mothballed" : ship.wake > 0 ? "Waking " + Math.ceil(ship.wake) + " s" : "";
     const b = ship.mothballed || ship.wake > 0 ? "Wake" : "Mothball";
     const title = ship.mothballed ? `Wake it. It works again after ${W} seconds (M)`
-      : ship.wake > 0 ? "Waking up" : `Park it at home on ${Math.round(G.TUNING.econ.maint.mothball * 100)}% running costs (M)`;
+      : ship.wake > 0 ? "Waking up" : `Park it at a base (dock first) on ${Math.round(G.TUNING.econ.maint.mothball * 100)}% running costs (M)`;
     if (tag.textContent !== t) tag.textContent = t;
     if (btn.textContent !== b) btn.textContent = b;
     if (btn.title !== title) btn.title = title;
@@ -1984,7 +1984,7 @@
     if (!s) return;
     const r = G.setMothball(game, id, !s.mothballed);
     if (!r.ok) toast(r.reason);
-    else { toast(shipName(s) + (s.mothballed ? " is mothballed at home." : ` is waking up (${G.TUNING.econ.maint.wakeSecs} s).`)); saveNow(); }
+    else { toast(shipName(s) + (ship.mothballed ? " is mothballed at the base." : ` is waking up (${G.TUNING.econ.maint.wakeSecs} s).`)); saveNow(); }
     boardKey = ""; refresh();
   }
 

@@ -132,8 +132,9 @@ material (you cannot buy crystal).
 - **Maintenance:** miner 30, hauler 50, warship 90 credits a minute. **Upkeep:** each base besides home 35, plus 10 per tier,
   20 for a shield and 20 for a turret; a home base costs nothing itself. A lost ship or a downed base costs nothing.
   Both grow 4% per sector (capped at x1.36).
-- **Mothball:** the Mothball button on a ship's row (or **M**) hands in its cargo, drops its orders and parks it at home
-  at once. It then costs 20% of its maintenance. Wake it to work again after 10 seconds. A mothballed or waking
+- **Mothball:** the Mothball button on a ship's row (or **M**) works only when the ship is at a base (within its dock
+  range); elsewhere it says "Dock at a base first". The ship parks there, keeps its cargo (nothing is delivered) and drops
+  its orders. It then costs 20% of its maintenance. Wake it to work again after 10 seconds. A mothballed or waking
   ship takes no orders.
 - **Debt:** you start with a loan of 1,500 that grows 1.5% a minute (compounded every 60 s). It is due when you leave sector 3:
   the warp is refused if credits plus the cargo still aboard fall short (the message says by how much), and paid
