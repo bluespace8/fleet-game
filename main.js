@@ -2017,7 +2017,7 @@
     const banners = ["bankrupt", "debt", "timer"].filter(c => by[c]).map(c => by[c]);
     bar.hidden = !banners.length;
     bar.classList.toggle("danger", banners.some(w => w.level === "danger"));
-    bar.style.top = (topH + 6) + "px";
+    bar.style.top = (topH + 16) + "px";
     const barKey = banners.map(w => w.text).join("\n");
     if (econCache.bar !== barKey) {
       econCache.bar = barKey; bar.textContent = "";
@@ -2062,6 +2062,7 @@
     const key = game.ships.map(s => s.id).join(",");
     if (key !== boardKey) {
       boardKey = key;
+      const keepTop = list.scrollTop;
       list.textContent = "";
       boardRows = game.ships.map(s => {
         const li = document.createElement("li");
@@ -2083,6 +2084,7 @@
         list.appendChild(li);
         return { li, dot, name, hp, job, fill, fix, last: "" };
       });
+      list.scrollTop = keepTop;   // a rebuild (selection, new ship) must not jump the list back to the top
     }
     let live = 0, busy = 0;
     for (let i = 0; i < game.ships.length; i++) {
@@ -2139,7 +2141,7 @@
     if (game.aliens.length) chips.push(`<div class="chip raid">Aliens: <b>${game.aliens.length}</b></div>`);
     const html = chips.join("");
     if (html !== alertsHtml) { alertsHtml = html; box.innerHTML = html; }
-    box.style.top = (topH + 6) + "px";
+    box.style.top = (topH + 16) + "px";
   }
 
   // Static page text that names things. Space keeps the HTML as written (saved on first use); a theme rewrites it.
@@ -3032,6 +3034,8 @@
     ui.placing = false;
     boardKey = ""; buildHtml = "";
     refresh();
+    const row = ui.selected != null && boardRows[ui.selected];   // keep the chosen ship's board row in view (no focus change)
+    if (row && row.li.scrollIntoView) row.li.scrollIntoView({ block: "nearest" });
   }
 
   function tryPlace(p) {
@@ -3271,9 +3275,7 @@
     let id = ui.selected == null ? (dir > 0 ? -1 : 0) : ui.selected, tries = 0;
     do { id = (((id + dir) % n) + n) % n; tries++; } while (game.ships[id].dead && tries <= n);   // lost ships are skipped
     if (game.ships[id].dead) return;                                                              // every ship is lost
-    select(id);
-    const row = boardRows[id];
-    if (row && row.li.scrollIntoView) row.li.scrollIntoView({ block: "nearest" });
+    select(id);   // select() scrolls the row into view
   }
 
   // Tab/Shift+Tab take over only on the map, or on a top-bar or panel button focused by the mouse. Never in a dialog

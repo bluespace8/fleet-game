@@ -5,9 +5,13 @@ html, body { margin: 0; height: 100%; background: #03040b; color: #e6e9ff; overf
 #stage { position: relative; flex: 1; min-width: 0; }
 #game { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: default; }
 #side { width: 300px; display: flex; flex-direction: column; gap: 10px; padding: 10px; background: #0a0b1d;
-  border-left: 1px solid rgba(160, 180, 255, 0.15); }
+  border-left: 1px solid rgba(160, 180, 255, 0.15); overflow-y: auto; overflow-x: hidden; }
+#side > .panel { flex: none; }
 .panel { background: rgba(20, 22, 50, 0.7); border: 1px solid rgba(160, 180, 255, 0.14); border-radius: 8px; padding: 10px; }
-.panel.grow { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#side > .panel.grow { flex: 1 0 auto; min-height: 260px; display: flex; flex-direction: column; }
+.help-wrap { display: block; }
+.help-wrap summary { cursor: pointer; color: #9aa4e0; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 700; }
+.help-wrap .help { margin-top: 6px; }
 .panel.small { display: flex; flex-direction: column; gap: 8px; }
 h2 { margin: 0 0 8px; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: #9aa4e0; font-weight: 700; }
 h2 span { float: right; color: #7f89c4; letter-spacing: 0; }
@@ -27,7 +31,7 @@ button.active { outline: 2px solid #8fd8ff; }
 .actions { margin-left: auto; display: flex; gap: 6px; }
 .build-btn { display: block; width: 100%; text-align: left; margin-bottom: 6px; }
 .build-btn small { display: block; color: #9aa4e0; }
-#board { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+#board { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1 1 0; min-height: 220px; }
 #board li { display: flex; gap: 8px; align-items: center; padding: 5px 4px; border-radius: 6px; cursor: pointer; }
 #board li:hover, #board li.sel { background: rgba(120, 140, 255, 0.14); }
 #board .name { font-weight: 600; }
