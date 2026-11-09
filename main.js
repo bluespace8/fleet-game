@@ -1600,7 +1600,7 @@
     if (dx * dx + dy * dy > 0.01) { ang = Math.atan2(dy, dx); alienAng.set(a.id, ang); }
     ctx.save();
     ctx.translate(a.x, a.y); ctx.rotate(ang);
-    if (!t) ctx.globalAlpha = 0.6;   // leaving the map
+    if (!t && !(a.nest >= 0)) ctx.globalAlpha = 0.6;   // leaving the map (nest guards idle at their nest and stay solid)
     ctx.drawImage(alienSprite(), -20, -20, 40, 40);
     ctx.restore();
     if (a.hp < a.maxHp) drawBar(a.x, a.y - 22, 26, a.hp / a.maxHp);
@@ -1802,8 +1802,12 @@
           if (k < alive) ctx.fill(); else ctx.stroke();
         }
         if (waiting) {
-          ctx.font = "600 10px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "rgba(255,196,226,0.9)";
-          ctx.fillText(Math.ceil(Math.min.apply(null, n.guardIn)) + "s", n.x, n.y + r + 24);
+          let soon = Infinity;
+          for (const v of n.guardIn) if (v > 0 && v < soon) soon = v;   // a timer stuck at 0 is a guard held back by the map alien limit: not counting down, so not shown
+          if (soon < Infinity) {
+            ctx.font = "600 10px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "rgba(255,196,226,0.9)";
+            ctx.fillText(Math.ceil(soon) + "s", n.x, n.y + r + 24);
+          }
         }
       } else {
         ctx.font = "600 10px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "rgba(190,250,255,0.9)";
@@ -1926,10 +1930,13 @@
   }
   function renderEcon() { }   // owner: slice b
   const SCI_SOURCE = { raider: "raider", turret: "turret kill", guard: "guard", wave: "wave repelled", beacon: "beacon", nest: "nest", secured: "sector secured" };
-  let sciToastAt = 0;
+  let sciToastAt = 0, sciToastText = "", sciToastParts = 0;   // the text last shown by sciToast, so only a science toast is merged into
   function sciToast(msg) {   // events from one tick share one toast, so a nest kill shows its points and its name
     const now = Date.now(), el = $("toast");
-    toast(now - sciToastAt < 150 && el.textContent ? el.textContent + " · " + msg : msg);
+    const merge = now - sciToastAt < 150 && sciToastText && el.textContent === sciToastText && sciToastParts < 3 && sciToastText.length + msg.length < 80;
+    sciToastText = merge ? sciToastText + " · " + msg : msg;
+    sciToastParts = merge ? sciToastParts + 1 : 1;
+    toast(sciToastText);
     sciToastAt = now;
   }
   function onScienceMsg(e) {   // one event from G.drainEvents
@@ -2075,7 +2082,7 @@
         : `Click ${an(lc(L.body.asteroid))} or ${an(lc(L.body.iceplanet))} to mine it, a star to collect it, or ${an(L.base)} to send it there (Esc to deselect)`)
       : ui.placing ? "Click empty space to place the base (Esc to cancel)"
       : "Click a planet or asteroid to mine it, a star to collect it, or a base to send this ship there (Esc to deselect)";
-    if (!ui.placing && isWar(chosenShip())) hint.textContent = "Warship: click an alien to attack, empty space to patrol there, Shift+click a ship to escort it (Esc to deselect)";
+    if (!ui.placing && isWar(chosenShip())) hint.textContent = "Warship: click an alien or nest to attack, empty space to patrol there, Shift+click a ship to escort it (Esc to deselect)";
     if (ui.keyboard && ui.placing) hint.textContent = `Arrow keys move the cursor (Shift: faster), Enter places the ${themed() ? L.base : "base"}, Esc cancels`;
     renderLegend();
     syncInert();
@@ -2236,6 +2243,7 @@
   }
   // Arrow keys walk the grid: left and right change branch at the same tier, up and down change tier.
   function techArrow(ev) {
+    if (ev.key === "Enter" && ev.repeat) { ev.preventDefault(); return; }   // holding Enter must not re-buy and wipe the "unlocked" message
     const dirs = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }, d = dirs[ev.key];
     const a = document.activeElement;
     if (!d || !a || !a.dataset || a.dataset.tech == null) return;

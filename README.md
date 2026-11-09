@@ -45,9 +45,9 @@ The mouse always works. These keys add to it.
   stops it); **E** within reach of a base unloads; **E** again while mining or unloading stops. **F** or **Esc** hands
   the ship back, idle, with its cargo still aboard. Turning keyboard mode off hands every ship back.
 - **Repair and warship keys:** **R** repairs the selected ship (it must be at a base); if the ship is fine it repairs the
-  base it is at (a ship at a downed base repairs that base first). **R** works with keyboard mode off. With a warship selected: **X** attacks the nearest alien (or, with none, the nearest nest or beacon), **T** opens the tech tree,
-  **P** patrols where the ship is now, **G** escorts the nearest miner or hauler. These work in keyboard mode, or
-  whenever a warship is selected. Like every game key they do nothing while a dialog or card is open, or while you
+  base it is at (a ship at a downed base repairs that base first). **R** works with keyboard mode off. **T** opens the tech tree. With a warship selected: **X** attacks the nearest alien (or, with none, the nearest nest or beacon),
+  **P** patrols where the ship is now, **G** escorts the nearest miner or hauler. These keys work in keyboard mode, or
+  whenever a warship is selected (T works any time). Like every game key they do nothing while a dialog or card is open, or while you
   type in a text box. Tab, the number keys and flying by hand skip lost ships.
 - **Esc** closes things in this order: feedback form, dialog, Hangar, hand-flown ship, base placement or selection.
 - **Base placement:** click the New base button, then the arrow keys move a cursor from the middle of the map
