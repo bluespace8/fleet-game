@@ -143,13 +143,18 @@
       <h2 id="bases-title">Bases <span id="bases-note">upgrade for speed and range</span></h2>
       <div id="bases"></div>
     </section>
+    <section class="panel" id="fleets" hidden>
+      <h2>Shield fleets <span id="fleets-note">fly through solar flares</span></h2>
+      <div id="fleets-body"></div>
+    </section>
     <section class="panel grow">
       <h2>Mission board <span id="board-count"></span></h2>
       <ul id="board"></ul>
     </section>
-    <section class="panel small">
+    <details class="panel small help-wrap">
+      <summary>Help</summary>
       <p class="help" id="help">Click a ship, then a planet or asteroid to mine it, a star to collect it, or a base to send it there. Build bases to clear the sector, then warp further out. Pause: Space. Esc cancels. R repairs. From sector 3, build Shields, Turrets and Warships against flares, meteors and alien raids. Add ?stress to the address for a 30-ship, 15-alien test (?stress&amp;sector=3 for hazards).</p>
-    </section>
+    </details>
   </aside>
 </div>
 <script src="game.js"></script>

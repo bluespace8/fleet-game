@@ -32,6 +32,11 @@
       warship: { label: "Warship", speed: 110, cap: 0, rate: 0, cost: { ore: 110, ice: 40, crystal: 0 }, hp: 90, war: true,
                  range: 170, dmg: 9, cd: 0.7, shotSpeed: 420, follow: 46, standoff: 0.7,
                  blurb: "Guards, escorts and hunts aliens. Carries nothing." },
+      // A shield ship has no gun. Its bubble keeps itself and the warships assigned to it moving and firing through a solar
+      // flare (see T.shipShield). It is a "war" ship for orders (patrol, escort, manual) and costs far more than a warship.
+      shieldship: { label: "Shield ship", speed: 90, cap: 0, rate: 0, cost: { ore: 260, ice: 140, crystal: 35 }, hp: 140, war: true, support: true,
+                    range: 0, dmg: 0, cd: 1, shotSpeed: 0, follow: 46, standoff: 0.7,
+                    blurb: "Shields itself and the warships assigned to it from solar flares. No gun." },
     },
     baseCost: { ore: 120, ice: 40, crystal: 15 },
     // difficulty by sector (n = 1 is the original game)
@@ -91,11 +96,23 @@
     // base add-ons, bought per base (costs scale with the sector like other costs)
     addons: {
       shield: { label: "Shield", range: 170, cost: { ore: 60, ice: 40, crystal: 0 }, blurb: "Ships near it ignore solar flares." },
+      generator: { label: "Generator", cost: { ore: 90, ice: 55, crystal: 10 }, baseCut: 0.45, fleetCut: 0.03,
+                   blurb: "Cuts this base's upkeep by 45% and every running cost a little." },
       turret: { label: "Turret", range: 190, dmg: 6, cd: 0.6, block: 0.7, shotSpeed: 460,
                 cost: { ore: 90, ice: 20, crystal: 0 }, blurb: "Shoots aliens and blocks meteor hits nearby." },
     },
     // repair: cost per HP restored (rounded up per resource), scaled with the sector's cost factor; seconds the ship is held
     repair: { ship: { ore: 0.5, ice: 0, crystal: 0 }, base: { ore: 0.5, ice: 0.15, crystal: 0 }, time: 1 },
+    // energy: the generator add-on (addons.generator) and field stations built on energy sites. Each live station cuts every
+    // running cost (ship maintenance and base upkeep) by cut; each live generator by addons.generator.fleetCut; the product
+    // never goes below floor. A station has HP, aliens go for it like a base, and at 0 HP it is down (no saving) until repaired.
+    energy: { sites: { first: 1, every: 2, max: 4, minHome: 280, apart: 220, edge: 90, bodyClear: 50, baseClear: 130 },
+              station: { cost: { ore: 100, ice: 60, crystal: 15 }, hp: 120, cut: 0.10, r: 15 }, floor: 0.55 },
+    // shield ship levels: warships it can carry, bubble radius, and the cost to reach that level (level 1 is the purchase)
+    shipShield: { levels: [ { cap: 2, r: 105 },
+                            { cap: 4, r: 130, cost: { ore: 160, ice: 90, crystal: 20 } },
+                            { cap: 6, r: 160, cost: { ore: 300, ice: 170, crystal: 45 } } ],
+                  slot: 0.55 },       // fleet members hold station this share of the radius from the shield ship
     // stars to collect
     stars: { min: 3, max: 6, minHome: 380, edge: 50, bodyClear: 30, apart: 90 },
     score: { value: { ore: 1, ice: 2, crystal: 5 }, base: 100, sector: 400,
@@ -109,8 +126,8 @@
       credit: { ore: 1, ice: 2, crystal: 5 },            // credits paid per unit delivered
       startCredits: 250, oldSaveCredits: 500,
       scalePerSector: 0.04, scaleMax: 1.36,              // running costs x min(max, 1 + per*(n-1))
-      maint:  { miner: 30, hauler: 50, warship: 90, mothball: 0.2, wakeSecs: 10 },   // cr per minute; mothball: share still paid
-      upkeep: { home: 0, base: 35, perTier: 10, shield: 20, turret: 20 },            // cr per minute
+      maint:  { miner: 30, hauler: 50, warship: 90, shieldship: 140, mothball: 0.2, wakeSecs: 10 },   // cr per minute; mothball: share still paid
+      upkeep: { home: 0, base: 35, perTier: 10, shield: 20, turret: 20, generator: 10 },   // cr per minute
       debt:   { start: 1500, rate: 0.015, every: 60, dueSector: 3, dueTime: 2700, warnSecs: 300 },
       bankrupt: { floor: -250, grace: 60, blockShipsBelow: 0 },
       timer:  { parMult: 1.5, firstSector: 2, capSector: 10, warnShare: 0.25, warnSecs: 60 },
@@ -271,6 +288,7 @@
   }
   function baseCost(state) { return scaleCost(T.baseCost, costMult(state.sector) * techMult(state, "baseCost")); }   // tech: Forward depots
   function addonCost(state, kind) { return T.addons[kind] ? scaleCost(T.addons[kind].cost, costMult(state.sector)) : null; }
+  function stationCost(state) { return scaleCost(T.energy.station.cost, costMult(state.sector)); }
   function shipCost(state, type) { return scaleCost(SHIP_TYPES[type].cost, costMult(state.sector)); }
   function upgradeCost(state, baseId) {
     const b = state.bases[baseId];
@@ -363,6 +381,26 @@
     }
   }
 
+  // Energy sites: fixed places on the map where a field station can be built. Own seeded generator, so the rest of the map
+  // is unchanged. A site is {id, x, y, built, hp, maxHp, down}.
+  function siteCount(n) { const S = T.energy.sites; return Math.min(S.max, S.first + Math.floor(Math.max(0, n - 1) / S.every)); }
+  function makeSite(id, x, y) { const hp = T.energy.station.hp; return { id, x, y, built: false, hp, maxHp: hp, down: false }; }
+  function generateSites(state, seed) {
+    const S = T.energy.sites, r = rng((seed ^ 0xE4E26) >>> 0), home = state.bases[0], k = Math.sqrt(mapScale(state.sector));
+    state.sites = [];
+    for (let i = 0, n = siteCount(state.sector); i < n; i++) {
+      let x = 0, y = 0, ok = false;
+      for (let tries = 0; tries < 120 && !ok; tries++) {
+        x = S.edge + r() * (state.w - 2 * S.edge); y = S.edge + r() * (state.h - 2 * S.edge);
+        ok = Math.hypot(x - home.x, y - home.y) >= S.minHome * k;
+        for (let j = 0; ok && j < state.bodies.length; j++) { const b = state.bodies[j]; if (Math.hypot(x - b.x, y - b.y) < b.r + S.bodyClear) ok = false; }
+        for (let j = 0; ok && j < state.sites.length; j++) if (Math.hypot(x - state.sites[j].x, y - state.sites[j].y) < S.apart) ok = false;
+        for (let j = 0; ok && j < state.bases.length; j++) if (Math.hypot(x - state.bases[j].x, y - state.bases[j].y) < S.baseClear) ok = false;
+      }
+      state.sites.push(makeSite(i, x, y));
+    }
+  }
+
   // Fills in everything that belongs to one sector's map. Ships, stock and score are left alone.
   function buildSector(state, n) {
     const seed = mapSeed(state.seed, n), r = rng(seed), k = mapScale(n), size = worldSize(n);
@@ -371,11 +409,12 @@
     state.sectorTime = 0; state.won = false; state.wonAt = 0;
     state.bodies = []; state.bases = []; state.stars = []; state.storms = []; state.showers = [];
     state.events = []; state.aliens = []; state.shots = []; state.fx = [];
-    state.nests = []; state.waves = {}; state.sciSector = 0;
+    state.nests = []; state.waves = {}; state.sciSector = 0; state.sites = [];
     state.bases.push(makeBase(0, state.w / 2 + (r() - 0.5) * 260 * k, state.h / 2 + (r() - 0.5) * 160 * k, true));
     generateBodies(state, r, n);
     generateStars(state, seed);
     generateStorms(state, seed);
+    generateSites(state, seed);
     api.generateNests(state, seed);
     state.hz = (seed ^ 0xA5A5A5A5) >>> 0;
     state.eventIn = eventsOn(n) ? T.events.firstDelay : 0;
@@ -386,7 +425,7 @@
   // (never the home base: losing that ends the run); cd: turret fire cooldown.
   function makeBase(id, x, y, home) {
     const hp = home ? T.combat.homeHp : T.combat.baseHp;
-    return { id, x, y, home, tier: 0, hp, maxHp: hp, shield: false, turret: false, down: false, cd: 0 };
+    return { id, x, y, home, tier: 0, hp, maxHp: hp, shield: false, turret: false, generator: false, down: false, cd: 0 };
   }
 
   // One shape for a fresh state; deserialize fills the same object so key order (and so JSON) matches.
@@ -406,6 +445,7 @@
       // science (slice a): points now and in total, raid points this sector (for the cap), owned node ids, the beacon and
       // nests, the last raid id, and {alive, escaped} per raid
       science: 0, sciTotal: 0, sciSector: 0, tech: [], nests: [], waveSeq: 0, waves: {},
+      sites: [],                                        // energy sites and the field stations on them (see generateSites)
       // credits and the lose rules (slice b); rules is a copy of TUNING.lose
       credits: T.econ.startCredits, debt: T.econ.debt.start, debtTick: T.econ.debt.every, brokeFor: 0, netNegFor: 0,
       rules: Object.assign({}, T.lose), econStats: { earned: 0, maint: 0, upkeep: 0, interest: 0, repaid: 0 },
@@ -820,17 +860,29 @@
   function shipMaintRate(state, ship) {
     if (ship.dead) return 0;
     const E = T.econ, war = !!SHIP_TYPES[ship.type].war;
-    let r = (E.maint[ship.type] || 0) * econScale(state.sector) * techMult(state, war ? "warshipMaint" : "shipMaint");
+    let r = (E.maint[ship.type] || 0) * econScale(state.sector) * techMult(state, war ? "warshipMaint" : "shipMaint") * energyMult(state);
     if (ship.mothballed) r *= E.maint.mothball;
     return r;
+  }
+
+  // The share of every running cost still paid after energy savings: each live field station and each live generator
+  // takes its cut, never below T.energy.floor.
+  function energyMult(state) {
+    const E = T.energy, G = T.addons.generator;
+    let m = 1;
+    for (let i = 0; i < (state.sites || []).length; i++) { const s = state.sites[i]; if (s.built && !s.down) m *= 1 - E.station.cut; }
+    for (let i = 0; i < state.bases.length; i++) { const b = state.bases[i]; if (b.generator && !b.down) m *= 1 - G.fleetCut; }
+    return Math.max(E.floor, m);
   }
 
   // Credits per minute a base costs: 0 for a home base itself, 35 for others, plus tiers and add-ons (home too). A base that is down pays nothing.
   function baseUpkeepRate(state, base) {
     if (base.down) return 0;
     const U = T.econ.upkeep;
-    const r = (base.home ? U.home : U.base) + (base.tier | 0) * U.perTier + (base.shield ? U.shield : 0) + (base.turret ? U.turret : 0);
-    return r * econScale(state.sector) * techMult(state, "baseUpkeep");
+    let r = (base.home ? U.home : U.base) + (base.tier | 0) * U.perTier + (base.shield ? U.shield : 0) + (base.turret ? U.turret : 0)
+      + (base.generator ? U.generator : 0);
+    if (base.generator) r *= 1 - T.addons.generator.baseCut;      // its own generator halves (nearly) this base's bill
+    return r * econScale(state.sector) * techMult(state, "baseUpkeep") * energyMult(state);
   }
 
   // Credits per minute: maint and upkeep (what is being paid now), interest (what the debt grows by, not paid from credits),
@@ -1029,7 +1081,7 @@
       if (!atBase(state, ship)) return { ok: false, reason: "Dock at a base first" };
       clearManual(ship);
       ship.st = IDLE; ship.target = -1; ship.dest = -1; ship.star = -1;
-      ship.wait = 0; ship.mv = 0; ship.wo = ""; ship.wt = -1; ship.wake = 0;
+      ship.wait = 0; ship.mv = 0; ship.wo = ""; ship.wt = -1; ship.wake = 0; ship.ws = -1;
       ship.mothballed = true;
       return { ok: true };
     }
@@ -1113,7 +1165,8 @@
       x: 0, y: 0, ang: 0,
       st: IDLE, target: -1, dest: -1, star: -1, cargo: 0, res: "", mv: 0, wait: 0, hitCd: 0,
       ix: 0, iy: 0, mm: 0,
-      hp, maxHp: hp, dead: false, stun: 0, rep: 0, wo: "", wx: 0, wy: 0, wt: -1, cd: 0, mothballed: false, wake: 0 };
+      hp, maxHp: hp, dead: false, stun: 0, rep: 0, wo: "", wx: 0, wy: 0, wt: -1, cd: 0, mothballed: false, wake: 0,
+      lvl: type === "shieldship" ? 1 : 0, ws: -1 };   // lvl: a shield ship's level (1 to 3); ws: the shield ship a warship is assigned to, or -1
   }
 
   function makeAlien(state, x, y, n) {
@@ -1293,7 +1346,8 @@
     return { ok: true };
   }
 
-  function clearManual(ship) { ship.mm = 0; ship.ix = 0; ship.iy = 0; }
+  // Every order calls this first, so any order also takes a warship out of its shield ship's fleet.
+  function clearManual(ship) { ship.mm = 0; ship.ix = 0; ship.iy = 0; ship.ws = -1; }
 
   // ---------------------------------------------------------------- manual flying and numbered targets
   // A player can fly one ship by hand (state MANUAL). It moves at the ship's normal speed (storms slow it), mines at the
@@ -1306,7 +1360,7 @@
     { const u = unavailable(state, ship); if (u) return u; }
     clearManual(ship);
     ship.st = MANUAL;
-    ship.target = -1; ship.dest = -1; ship.star = -1; ship.wait = 0; ship.wo = ""; ship.wt = -1;
+    ship.target = -1; ship.dest = -1; ship.star = -1; ship.wait = 0; ship.wo = ""; ship.wt = -1; ship.ws = -1;   // flying by hand leaves a fleet
     return { ok: true };
   }
 
@@ -1485,7 +1539,7 @@
     if (ship.cargo > 0) state.stats.lost += ship.cargo;      // the cargo is gone with the ship
     ship.cargo = 0; ship.res = "";
     ship.st = IDLE; ship.target = -1; ship.dest = -1; ship.star = -1; ship.mv = 0; ship.wait = 0; ship.mm = 0; ship.ix = 0; ship.iy = 0;
-    ship.stun = 0; ship.rep = 0; ship.wo = ""; ship.wt = -1;
+    ship.stun = 0; ship.rep = 0; ship.wo = ""; ship.wt = -1; ship.ws = -1;
     pushFx(state, "boom", ship.x, ship.y, ship.x, ship.y);
   }
 
@@ -1537,6 +1591,129 @@
       if (dx * dx + dy * dy <= R * R) return true;
     }
     return false;
+  }
+
+  // ---- shield ships and their fleets
+
+  function shieldLevelDef(ship) { const L = T.shipShield.levels; return L[Math.max(0, Math.min(L.length - 1, (ship.lvl | 0) - 1))]; }
+  function isSupport(ship) { return !!(ship && SHIP_TYPES[ship.type] && SHIP_TYPES[ship.type].support); }
+  function fleetCap(ship) { return isSupport(ship) ? shieldLevelDef(ship).cap : 0; }
+  function shieldRadius(ship) { return isSupport(ship) ? shieldLevelDef(ship).r : 0; }
+  // A shield ship that is up: alive, awake. (A mothballed or lost one shields nobody.)
+  function carrierUp(ship) { return isSupport(ship) && !ship.dead && !ship.mothballed && !(ship.wake > 0); }
+  function fleetMembers(state, carrierId) {
+    const out = [];
+    for (let i = 0; i < state.ships.length; i++) { const s = state.ships[i]; if (!s.dead && s.ws === carrierId) out.push(s); }
+    return out;
+  }
+  // True when the ship is a shield ship, or a warship assigned to one, and sits inside that shield ship's bubble.
+  function fleetShielded(state, ship) {
+    const c = isSupport(ship) ? ship : ship.ws >= 0 ? state.ships[ship.ws] : null;
+    if (!c || !carrierUp(c)) return false;
+    const R = shieldRadius(c), dx = ship.x - c.x, dy = ship.y - c.y;
+    return dx * dx + dy * dy <= R * R;
+  }
+
+  function fleetGuard(state, warId, carrierId) {
+    const w = state.ships[warId], c = state.ships[carrierId];
+    if (!w || !c) return { ok: false, reason: "No such ship." };
+    if (state.over) return { ok: false, reason: "This run is over." };
+    return { ok: true, w, c };
+  }
+
+  // Assign a warship to a shield ship, up to its level's capacity.
+  function assignToShield(state, warId, carrierId) {
+    const g = fleetGuard(state, warId, carrierId);
+    if (!g.ok) return g;
+    const w = g.w, c = g.c;
+    if (w.dead) return { ok: false, reason: lostReason(w) };
+    if (!SHIP_TYPES[w.type].war || isSupport(w)) return { ok: false, reason: w.name + " is not a warship." };
+    if (!isSupport(c)) return { ok: false, reason: c.name + " is not a shield ship." };
+    if (c.dead) return { ok: false, reason: lostReason(c) };
+    if (w.ws === carrierId) return { ok: false, reason: w.name + " is already in that fleet." };
+    if (fleetMembers(state, carrierId).length >= fleetCap(c)) return { ok: false, reason: c.name + " is full (" + fleetCap(c) + " warships at level " + c.lvl + "). Upgrade it for more room." };
+    clearManual(w);
+    w.st = IDLE; w.wo = ""; w.wt = -1; w.ws = carrierId;
+    return { ok: true };
+  }
+
+  // Take a warship out of its fleet; it patrols where it is.
+  function releaseFromShield(state, warId) {
+    const w = state.ships[warId];
+    if (!w) return { ok: false, reason: "No such ship." };
+    if (!(w.ws >= 0)) return { ok: false, reason: w.name + " is not in a fleet." };
+    w.ws = -1; w.st = IDLE; w.wo = "patrol"; w.wx = w.x; w.wy = w.y; w.wt = -1;
+    return { ok: true };
+  }
+
+  function shieldUpgradeCost(state, shipId) {
+    const s = state.ships[shipId];
+    if (!isSupport(s) || s.dead || (s.lvl | 0) >= T.shipShield.levels.length) return null;
+    return scaleCost(T.shipShield.levels[s.lvl].cost, costMult(state.sector));
+  }
+
+  // Each level carries more warships under a wider bubble.
+  function upgradeShieldShip(state, shipId) {
+    const s = state.ships[shipId];
+    if (!s) return { ok: false, reason: "No such ship." };
+    if (state.over) return { ok: false, reason: "This run is over." };
+    if (!isSupport(s)) return { ok: false, reason: s.name + " is not a shield ship." };
+    if (s.dead) return { ok: false, reason: lostReason(s) };
+    if ((s.lvl | 0) >= T.shipShield.levels.length) return { ok: false, reason: s.name + " is at the top level." };
+    const cost = shieldUpgradeCost(state, shipId);
+    if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials to upgrade " + s.name + "." };
+    pay(state, cost);
+    s.lvl = (s.lvl | 0) + 1;
+    return { ok: true, level: s.lvl };
+  }
+
+  // A fleet member holds a slot around its shield ship (so the shield ship's orders move the whole fleet) and fires at what
+  // it can reach. Returns false (and frees the ship) when its shield ship is gone.
+  function stepFleet(state, ship, dt, mult, def) {
+    const c = state.ships[ship.ws];
+    if (!c || !isSupport(c) || c.dead) { ship.ws = -1; ship.wo = "patrol"; ship.wx = ship.x; ship.wy = ship.y; return false; }
+    let rank = 0, n = 0;
+    for (let i = 0; i < state.ships.length; i++) { const s = state.ships[i]; if (!s.dead && s.ws === ship.ws) { if (s.id < ship.id) rank++; n++; } }
+    const a = (rank / Math.max(1, n)) * Math.PI * 2, d = shieldRadius(c) * T.shipShield.slot;
+    moveTo(ship, c.x + Math.cos(a) * d, c.y + Math.sin(a) * d, dt, mult);
+    return true;
+  }
+
+  // ---- field stations (built on energy sites)
+
+  const SITE_R = T.energy.station.r;
+
+  function damageStation(state, site, dmg) {
+    if (!site.built || site.down || !(dmg > 0)) return;
+    site.hp -= dmg;
+    if (site.hp > 0) return;
+    site.hp = 0; site.down = true;
+    pushFx(state, "boom", site.x, site.y, site.x, site.y);
+  }
+
+  function buildStation(state, siteId) {
+    const site = (state.sites || [])[siteId];
+    if (!site) return { ok: false, reason: "No such energy site." };
+    if (state.over) return { ok: false, reason: "This run is over." };
+    if (site.built) return { ok: false, reason: "There is already a station there." };
+    if (state.credits < T.econ.bankrupt.blockShipsBelow) return { ok: false, reason: "Overdrawn: new ships and add-ons are blocked until credits are above 0." };
+    const cost = stationCost(state);
+    if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials for an energy station." };
+    pay(state, cost);
+    site.built = true; site.hp = site.maxHp; site.down = false;
+    return { ok: true, site };
+  }
+
+  function repairStation(state, siteId) {
+    const site = (state.sites || [])[siteId];
+    if (!site || !site.built) return { ok: false, reason: "No station there." };
+    if (state.over) return { ok: false, reason: "This run is over." };
+    if (site.hp >= site.maxHp - 1e-9) return { ok: false, reason: "That station is not damaged." };
+    const cost = repairCost(state, "station", siteId);
+    if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials to repair the station." };
+    pay(state, cost);
+    site.hp = site.maxHp; site.down = false;
+    return { ok: true };
   }
 
   function flareActive(state) {
@@ -1613,6 +1790,7 @@
     const def = SHIP_TYPES[ship.type];
     if (ship.hitCd > 0) ship.hitCd = Math.max(0, ship.hitCd - dt);
     if (state.showers.length) { meteorCheck(state, ship, dt); if (ship.dead) return; }
+    if (ship.ws >= 0) { const c = state.ships[ship.ws]; if (!c || !isSupport(c) || c.dead) { ship.ws = -1; ship.wo = "patrol"; ship.wx = ship.x; ship.wy = ship.y; } }   // its shield ship is lost
     if (ship.stun > 0) { ship.stun = Math.max(0, ship.stun - dt); ship.mv = 0; return; }   // a flare holds it: no move, no mining
     if (ship.rep > 0) { ship.rep = Math.max(0, ship.rep - dt); ship.mv = 0; return; }      // being repaired
     if (def.war) { stepWarship(state, ship, dt, def); return; }
@@ -1728,7 +1906,7 @@
       const ships = state.ships;
       for (let i = 0; i < ships.length; i++) {
         const s = ships[i];
-        if (!s.dead && s.stun < T.flare.linger && !shielded(state, s.x, s.y)) s.stun = T.flare.linger;
+        if (!s.dead && s.stun < T.flare.linger && !shielded(state, s.x, s.y) && !fleetShielded(state, s)) s.stun = T.flare.linger;
       }
     }
     if (state.aliens.length) stepAliens(state, dt);
@@ -1850,7 +2028,7 @@
   }
 
   function stepAliens(state, dt) {
-    const A = T.aliens, al = state.aliens, ships = state.ships, bases = state.bases, sp = alienSpeed(state.sector) * dt;
+    const A = T.aliens, al = state.aliens, ships = state.ships, bases = state.bases, sites = state.sites || [], sp = alienSpeed(state.sector) * dt;
     const sense2 = A.sense * A.sense;
     for (let i = 0; i < al.length; i++) {
       const a = al[i];
@@ -1886,18 +2064,25 @@
           const dx = bases[j].x - a.x, dy = bases[j].y - a.y, d = dx * dx + dy * dy;
           if (d < bd) { bd = d; tgt = j; kind = "base"; tx = bases[j].x; ty = bases[j].y; }
         }
+        for (let j = 0; j < sites.length; j++) {      // a live field station is a target like a base
+          const s = sites[j];
+          if (!s.built || s.down) continue;
+          const dx = s.x - a.x, dy = s.y - a.y, d = dx * dx + dy * dy;
+          if (d < bd) { bd = d; tgt = j; kind = "station"; tx = s.x; ty = s.y; }
+        }
       }
       a.tgtKind = kind; a.tgt = tgt;
       a.vx = 0; a.vy = 0;
       if (tgt < 0) continue;
-      const d = Math.sqrt(bd), hold = A.range * A.holdFrac + (kind === "base" ? BASE_R : 0);
+      const rr = kind === "base" ? BASE_R : kind === "station" ? SITE_R : 0;
+      const d = Math.sqrt(bd), hold = A.range * A.holdFrac + rr;
       if (d > hold) {
         const k = Math.min(sp, d - hold) / d;
         a.vx = (tx - a.x) * k / dt; a.vy = (ty - a.y) * k / dt;
         a.x += (tx - a.x) * k; a.y += (ty - a.y) * k;
       }
       if (a.cd > 0) a.cd = Math.max(0, a.cd - dt);
-      if (a.cd <= 0 && d <= A.range + (kind === "base" ? BASE_R : 0)) {
+      if (a.cd <= 0 && d <= A.range + rr) {
         if (fireShot(state, a.x, a.y, tx, ty, A.shotSpeed, a.dmg, "them", A.range + BASE_R, "alien")) a.cd = A.cd;
       }
     }
@@ -1927,7 +2112,7 @@
   // Shots fly in a line; a hit is checked along the whole step so a fast shot or a long step cannot skip a target.
   function stepShots(state, dt) {
     const shots = state.shots, A = T.aliens, al = state.aliens, ships = state.ships, bases = state.bases;
-    const ar2 = A.r * A.r, sr2 = T.combat.shipR * T.combat.shipR, br2 = BASE_R * BASE_R;
+    const ar2 = A.r * A.r, sr2 = T.combat.shipR * T.combat.shipR, br2 = BASE_R * BASE_R, sr2s = SITE_R * SITE_R, sites = state.sites || [];
     for (let i = shots.length - 1; i >= 0; i--) {
       const s = shots[i], nx = s.x + s.vx * dt, ny = s.y + s.vy * dt;
       let hit = false;
@@ -1955,6 +2140,11 @@
           damageBase(state, bases[j], s.dmg);
           hit = true;
         }
+        for (let j = 0; j < sites.length && !hit; j++) {
+          if (!sites[j].built || sites[j].down || segDist2(s.x, s.y, nx, ny, sites[j].x, sites[j].y) > sr2s) continue;
+          damageStation(state, sites[j], s.dmg);
+          hit = true;
+        }
       }
       s.x = nx; s.y = ny; s.life -= dt;
       if (hit || s.life <= 0 || nx < -T.aliens.offMap || ny < -T.aliens.offMap || nx > state.w + T.aliens.offMap || ny > state.h + T.aliens.offMap) {
@@ -1969,7 +2159,7 @@
   // Aliens in range come first (the ordered one before the others); with none in range, a beacon or nest: the ordered
   // one, else the nearest. Damage is raised by Targeting computers.
   function warFire(state, ship, def) {
-    if (ship.cd > 0) return;
+    if (ship.cd > 0 || !(def.dmg > 0)) return;      // a shield ship has no gun
     const dmg = def.dmg * techMult(state, "warshipDmg");
     if (state.aliens.length) {
       let k = -1;
@@ -2002,6 +2192,7 @@
     if (ship.cd > 0) ship.cd = Math.max(0, ship.cd - dt);
     if (ship.st === MANUAL) { stepManual(state, ship, dt, mult, def); warFire(state, ship, def); return; }
     ship.st = IDLE;
+    if (ship.ws >= 0 && stepFleet(state, ship, dt, mult, def)) { warFire(state, ship, def); return; }
     if (ship.wo === "patrol") moveTo(ship, ship.wx, ship.wy, dt, mult);
     else if (ship.wo === "escort") {
       const t = ship.wt !== ship.id ? state.ships[ship.wt] : null;
@@ -2024,7 +2215,7 @@
     if (state.over) return { ok: false, reason: "This run is over." };
     { const u = unavailable(state, ship); if (u) return u; }
     if (!SHIP_TYPES[ship.type].war) return { ok: false, reason: ship.name + " is not a warship." };
-    return { ok: true, ship };
+    return { ok: true, ship };      // callers free the ship from its fleet (leaveFleet) once the order is accepted
   }
 
   function orderPatrol(state, shipId, x, y) {
@@ -2054,6 +2245,7 @@
   function orderAttack(state, shipId, target) {
     const g = warOrderGuard(state, shipId);
     if (!g.ok) return g;
+    if (isSupport(g.ship)) return { ok: false, reason: g.ship.name + " has no weapons. Give it a patrol or escort order." };
     let kind = "alien", alienId = target;
     if (target && typeof target === "object") { kind = target.kind === "nest" ? "nest" : "alien"; alienId = target.id; }
     if (kind === "nest") {
@@ -2091,7 +2283,7 @@
 
   function repairCost(state, kind, id) {
     const k = costMult(state.sector);
-    const thing = kind === "ship" ? state.ships[id] : kind === "base" ? state.bases[id] : null;
+    const thing = kind === "ship" ? state.ships[id] : kind === "base" ? state.bases[id] : kind === "station" ? (state.sites || [])[id] : null;
     const per = kind === "ship" ? T.repair.ship : T.repair.base;
     const out = { ore: 0, ice: 0, crystal: 0 };
     if (!thing || thing.dead) return out;
@@ -2321,7 +2513,7 @@
       base.tier = intIn(b.tier, 0, MAX_TIER, 0);
       base.maxHp = base.hp;      // a missing hp (older save) means a full one
       base.hp = Math.min(base.maxHp, Math.max(0, num(b.hp, base.maxHp)));
-      base.shield = b.shield === true; base.turret = b.turret === true;
+      base.shield = b.shield === true; base.turret = b.turret === true; base.generator = b.generator === true;
       base.cd = Math.min(60, Math.max(0, num(b.cd, 0)));
       if (base.home) base.hp = Math.max(1, base.hp);           // the home base at 0 HP would have ended the run
       else if (base.hp <= 0 || b.down === true) { base.hp = 0; base.down = true; }
@@ -2356,7 +2548,7 @@
         if (!a) continue;
         const maxHp = Math.min(9999, Math.max(1, num(a.maxHp, alienHp(sector)))), hp = Math.min(maxHp, num(a.hp, maxHp));
         if (!(hp > 0)) continue;
-        const kind = a.tgtKind === "ship" || a.tgtKind === "base" ? a.tgtKind : "";
+        const kind = a.tgtKind === "ship" || a.tgtKind === "base" || a.tgtKind === "station" ? a.tgtKind : "";
         state.aliens.push({ id: intIn(a.id, 0, 1e9, 0), x: Math.min(state.w, Math.max(0, num(a.x, 0))), y: Math.min(state.h, Math.max(0, num(a.y, 0))),
           vx: Math.min(500, Math.max(-500, num(a.vx, 0))), vy: Math.min(500, Math.max(-500, num(a.vy, 0))), hp, maxHp,
           dmg: Math.min(999, Math.max(0, num(a.dmg, alienDmg(sector)))), cd: Math.min(60, Math.max(0, num(a.cd, 0))),
@@ -2443,8 +2635,17 @@
       }
       if (!ship.dead) { ship.stun = Math.min(60, Math.max(0, num(s.stun, 0))); ship.rep = Math.min(10, Math.max(0, num(s.rep, 0))); }
       ship.cd = Math.min(60, Math.max(0, num(s.cd, 0)));
+      if (isSupport(ship)) ship.lvl = intIn(s.lvl, 1, T.shipShield.levels.length, 1);
+      if (!ship.dead && SHIP_TYPES[s.type].war && !isSupport(ship)) ship.ws = intIn(s.ws, -1, raw.ships.length - 1, -1);
       if (!ship.dead) { ship.mothballed = s.mothballed === true; ship.wake = Math.min(T.econ.maint.wakeSecs, Math.max(0, num(s.wake, 0))); }
       state.ships.push(ship);
+    }
+    const carried = Object.create(null);      // a fleet slot must point at a live, awake-or-asleep shield ship with room left
+    for (const s of state.ships) {
+      if (s.ws < 0) continue;
+      const c = state.ships[s.ws];
+      if (!c || !isSupport(c) || c.dead || s.dead || s.mothballed || s.st === MANUAL || (carried[s.ws] | 0) >= fleetCap(c)) { s.ws = -1; if (!s.dead && s.wo === "") { s.wo = "patrol"; s.wx = s.x; s.wy = s.y; } continue; }
+      carried[s.ws] = (carried[s.ws] | 0) + 1;
     }
     for (const s of state.ships) {            // a ship that needs a target but has none just goes home
       if ((s.st === TO_BODY || s.st === MINING) && s.target < 0) s.st = TO_BASE;
@@ -2465,6 +2666,19 @@
     state.sciSector = Math.max(0, num(raw.sciSector, 0));
     if (!pre3 && Array.isArray(raw.nests)) state.nests = sanitizeNests(raw.nests, state);
     else api.generateNests(state, mapSeed(state.seed, sector));
+    if (Array.isArray(raw.sites)) {      // energy sites; a save from before them gets the sector's sites, none built
+      raw.sites.slice(0, T.energy.sites.max).forEach((o, i) => {
+        if (!o || typeof o !== "object") return;
+        const site = makeSite(state.sites.length, Math.min(state.w, Math.max(0, num(o.x, 0))), Math.min(state.h, Math.max(0, num(o.y, 0))));
+        site.built = o.built === true;
+        if (site.built) {
+          site.hp = Math.min(site.maxHp, Math.max(0, num(o.hp, site.maxHp)));
+          if (site.hp <= 0 || o.down === true) { site.hp = 0; site.down = true; }
+        }
+        state.sites.push(site);
+      });
+    }
+    if (!state.sites.length) generateSites(state, mapSeed(state.seed, sector));
     state.waveSeq = intIn(raw.waveSeq, 0, 1e9, 0);
     state.waves = {};
     if (isObj(raw.waves)) {
@@ -3147,6 +3361,9 @@
     END_REASONS, emit, drainEvents, endRun, hasTech, techMult, techAdd,
     scienceFor, awardScience, onAlienKilled, generateNests, stepNests, damageNest, techState, unlockTech, scienceOnWarp,
     raidScienceCap, techCost, cargoCap, unloadRate, dockRange, nestById, liveNests, orderTarget, NEST_ORDER, NEST_GEO,
+    // energy stations, generators and shield ships
+    stationCost, siteCount, buildStation, repairStation, damageStation, energyMult, SITE_R,
+    assignToShield, releaseFromShield, upgradeShieldShip, shieldUpgradeCost, fleetMembers, fleetCap, shieldRadius, fleetShielded, isSupport,
     econScale, econRates, stepEconomy, payDebt, sellStock, buyStock, setMothball, econWarpBlock, econOnWarp, timeLimit, econWarnings,
   };
   return api;

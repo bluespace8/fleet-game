@@ -225,6 +225,30 @@ a Mac) sends. No game key works while it is open.
 - Themes change looks and wording only, never the rules. With reduced motion, wheels, torches, glints and dust
   motes stay still.
 
+## Energy and shield ships
+
+- **Generator (Bases panel, per base):** an add-on that cuts that base's own upkeep (its add-ons included) by 45% and every
+  running cost, ship maintenance and base upkeep, by 3%. It adds 10 credits per minute of its own upkeep, so it pays off on
+  busy bases. A down base's generator saves nothing.
+- **Energy sites and field stations:** each map has fixed energy sites (1 in sector 1, one more every second sector, up to 4),
+  shown as dashed green diamonds. Build a **station** on one (Bases panel, "Energy sites") and every live station cuts all
+  running costs by 10%. Savings stack (generators too) but never go below 55% of the full bill. A station has 120 HP,
+  and raiders go for it like a base (nearest working base or station, when no loaded ship is in sense range), so it needs
+  warships or turrets near it. At 0 HP it is down and saves nothing until you repair it for materials.
+- **Shield ship (Build panel):** much pricier than a warship (260 ore, 140 ice, 35 crystal at sector 1; 140 credits per minute
+  to run). It has no gun. Its bubble stops a solar flare from stunning itself and the warships **assigned** to it, so a fleet
+  can move and fight during a flare. Assign in the Shield fleets panel (click a warship to add it, click a member to release
+  it), or Shift+click between a shield ship and a warship. Level 1 carries 2 warships (radius 105), level 2 carries 4 (130),
+  level 3 carries 6 (160); upgrades cost materials. Fleet members hold slots around the shield ship, so the shield ship's
+  orders (patrol, escort, flying by hand) move the whole fleet; they fire at aliens in range. Any direct order to a member,
+  or mothballing it, takes it out of the fleet. If the shield ship is lost, its fleet is freed.
+- Numbers are in `TUNING` (`addons.generator`, `energy`, `shipShield`, `ships.shieldship`, `econ.maint.shieldship`).
+
+## Parked ideas
+
+- **Market swings:** resource prices (the Sell and Buy rates in the Credits panel) drift randomly by a small amount over time.
+  Not built yet; keep the swing small.
+
 ## Old saves
 
 Saves from the first version (`first-playable`) load as sector 1, with a notice. Stars for that map are

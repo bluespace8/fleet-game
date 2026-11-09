@@ -3543,8 +3543,8 @@ test("the balance table has every econ, lose and science key, with the re-run ch
   const E = G.TUNING.econ;
   assert.deepStrictEqual(E.credit, G.TUNING.score.value);
   assert.deepStrictEqual(Object.keys(E).sort(), ["bankrupt", "credit", "debt", "exchange", "maint", "netWarnSecs", "oldSaveCredits", "scaleMax", "scalePerSector", "startCredits", "timer", "upkeep"]);
-  assert.deepStrictEqual(E.maint, { miner: 30, hauler: 50, warship: 90, mothball: 0.2, wakeSecs: 10 });
-  assert.deepStrictEqual(E.upkeep, { home: 0, base: 35, perTier: 10, shield: 20, turret: 20 });
+  assert.deepStrictEqual(E.maint, { miner: 30, hauler: 50, warship: 90, shieldship: 140, mothball: 0.2, wakeSecs: 10 });
+  assert.deepStrictEqual(E.upkeep, { home: 0, base: 35, perTier: 10, shield: 20, turret: 20, generator: 10 });
   assert.deepStrictEqual(E.debt, { start: 1500, rate: 0.015, every: 60, dueSector: 3, dueTime: 2700, warnSecs: 300 });
   assert.deepStrictEqual(E.bankrupt, { floor: -250, grace: 60, blockShipsBelow: 0 });
   assert.deepStrictEqual(E.timer, { parMult: 1.5, firstSector: 2, capSector: 10, warnShare: 0.25, warnSecs: 60 });
@@ -4933,6 +4933,116 @@ test("survival: the average bot with every default rule on, seeds 1-3, sectors 1
     assert.ok(r.low > G.TUNING.econ.bankrupt.floor, out[out.length - 1]);
   }
   console.log("       " + out.join("\n       "));
+});
+
+console.log("energy stations, generators and shield ships");
+function warAt(s, x, y) { const w = G.buildShip(s, "warship").ship; w.x = x; w.y = y; return w; }
+test("a generator cuts its base's upkeep and every running cost a little; it needs materials and a live base", () => {
+  const s = hgame(1, 2); giveAll(s); s.rules.maintenance = s.rules.upkeep = true;
+  let b = null; for (let x = 80; x < s.w - 80 && !b; x += 40) for (let y = 80; y < s.h - 80 && !b; y += 40) { const r = G.placeBase(s, x, y); if (r.ok) b = r.base; }
+  const before = G.econRates(s);
+  assert.ok(G.buildAddon(s, b.id, "generator").ok);
+  assert.strictEqual(G.buildAddon(s, b.id, "generator").ok, false, "one per base");
+  const after = G.econRates(s);
+  assert.ok(after.upkeep < before.upkeep + G.TUNING.econ.upkeep.generator * G.econScale(1), "the generator saves more than it costs");
+  assert.ok(after.maint < before.maint, "ships cost a little less to run");
+  assert.ok(G.energyMult(s) < 1 && G.energyMult(s) >= G.TUNING.energy.floor);
+  b.down = true; assert.strictEqual(G.energyMult(s), 1, "a down base saves nothing");
+});
+test("energy sites are seeded, deterministic, apart from bodies and each other, and grow with the sector", () => {
+  const a = hgame(1, 1), c = hgame(1, 1);
+  assert.deepStrictEqual(a.sites, c.sites);
+  assert.strictEqual(a.sites.length, G.siteCount(1));
+  assert.ok(G.siteCount(8) > G.siteCount(1) && G.siteCount(99) <= G.TUNING.energy.sites.max);
+  const s = hgame(6, 3);
+  for (const site of s.sites) {
+    assert.ok(site.x > 0 && site.y > 0 && site.x < s.w && site.y < s.h && !site.built);
+    for (const b of s.bodies) assert.ok(Math.hypot(site.x - b.x, site.y - b.y) >= b.r + 1);
+  }
+});
+test("a field station costs materials, cuts all running costs, is raided like a base and is repaired for materials", () => {
+  const s = hgame(4, 3); giveAll(s); s.rules.maintenance = s.rules.upkeep = true;
+  const base = G.econRates(s), site = s.sites[0];
+  assert.strictEqual(G.buildStation(s, 99).ok, false);
+  const stock0 = s.stock.ore;
+  assert.ok(G.buildStation(s, 0).ok && site.built);
+  assert.ok(s.stock.ore < stock0);
+  assert.strictEqual(G.buildStation(s, 0).ok, false, "already built");
+  const cut = G.econRates(s);
+  assert.ok(cut.maint < base.maint && cut.upkeep <= base.upkeep);
+  // aliens with no loaded ship in sense and the site nearer than any base go for the station
+  const al = { id: s.alienSeq++, x: site.x + 120, y: site.y, vx: 0, vy: 0, hp: 500, maxHp: 500, dmg: 30, cd: 0, tgtKind: "", tgt: -1, age: 0 };
+  s.aliens.push(al);
+  hrun(s, 0.2);
+  assert.strictEqual(al.tgtKind, "station"); assert.strictEqual(al.tgt, 0);
+  hrun(s, 12);
+  assert.ok(site.down && site.hp === 0, "shot down");
+  assert.strictEqual(G.econRates(s).maint, base.maint, "a down station saves nothing");
+  s.aliens.length = 0;
+  const c = G.repairCost(s, "station", 0); assert.ok(c.ore > 0);
+  assert.ok(G.repairStation(s, 0).ok && !site.down && site.hp === site.maxHp);
+  assert.strictEqual(G.repairStation(s, 0).ok, false);
+});
+test("stations and generators save and load, and an older save gets sites with none built", () => {
+  const s = hgame(5, 3); giveAll(s);
+  G.buildStation(s, 0); s.sites[0].hp = 40;
+  const r = G.deserialize(G.serialize(s));
+  assert.ok(r.ok); assert.deepStrictEqual(r.state.sites, s.sites);
+  assert.strictEqual(G.serialize(r.state), G.serialize(s));
+  const raw = JSON.parse(G.serialize(s)); delete raw.sites; for (const b of raw.bases) delete b.generator;
+  const o = G.deserialize(JSON.stringify(raw));
+  assert.ok(o.ok && o.state.sites.length === G.siteCount(3) && o.state.sites.every(x => !x.built));
+});
+test("a shield ship costs far more than a warship, takes level-limited fleets, and levels up for materials", () => {
+  const s = hgame(2, 2); giveAll(s);
+  assert.ok(G.shipCost(s, "shieldship").ore > G.shipCost(s, "warship").ore * 2);
+  const c = G.buildShip(s, "shieldship").ship;
+  assert.strictEqual(c.lvl, 1); assert.strictEqual(G.fleetCap(c), 2);
+  const w = [0, 1, 2].map(() => G.buildShip(s, "warship").ship);
+  assert.ok(G.assignToShield(s, w[0].id, c.id).ok && G.assignToShield(s, w[1].id, c.id).ok);
+  assert.strictEqual(G.assignToShield(s, w[2].id, c.id).ok, false, "full at level 1");
+  assert.strictEqual(G.assignToShield(s, c.id, c.id).ok, false); assert.strictEqual(G.assignToShield(s, 0, c.id).ok, false, "miners cannot join");
+  const r1 = G.shieldRadius(c);
+  assert.ok(G.upgradeShieldShip(s, c.id).ok);
+  assert.ok(G.fleetCap(c) === 4 && G.shieldRadius(c) > r1);
+  assert.ok(G.assignToShield(s, w[2].id, c.id).ok);
+  assert.ok(G.upgradeShieldShip(s, c.id).ok); assert.strictEqual(G.upgradeShieldShip(s, c.id).ok, false, "top level");
+  assert.strictEqual(G.fleetMembers(s, c.id).length, 3);
+  assert.strictEqual(G.orderAttack(s, c.id, 0).ok, false, "no gun");
+  assert.ok(G.releaseFromShield(s, w[2].id).ok && G.fleetMembers(s, c.id).length === 2);
+  assert.ok(G.orderPatrol(s, w[0].id, 100, 100).ok && w[0].ws === -1, "an order leaves the fleet");
+});
+test("in a flare the fleet inside the shield ship's bubble keeps moving and shooting; others are stunned", () => {
+  const s = hgame(6, 3); giveAll(s);
+  const c = G.buildShip(s, "shieldship").ship, w1 = G.buildShip(s, "warship").ship, w2 = G.buildShip(s, "warship").ship, out = G.buildShip(s, "warship").ship;
+  const p = { x: s.w / 2 + 300, y: s.h / 2 };
+  c.x = p.x; c.y = p.y; w1.x = p.x + 30; w1.y = p.y; w2.x = p.x - 30; w2.y = p.y; out.x = p.x + 400; out.y = p.y;
+  G.assignToShield(s, w1.id, c.id); G.assignToShield(s, w2.id, c.id);
+  liveEvent(s, "flare", { r: 0 });
+  G.orderPatrol(s, c.id, p.x + 150, p.y);
+  const al = { id: s.alienSeq++, x: p.x + 120, y: p.y + 60, vx: 0, vy: 0, hp: 40, maxHp: 40, dmg: 1, cd: 99, tgtKind: "", tgt: -1, age: 0 };
+  s.aliens.push(al);
+  hrun(s, 4);
+  assert.ok(c.stun === 0 && w1.stun === 0 && w2.stun === 0, "protected");
+  assert.ok(out.stun > 0, "an unassigned warship is stunned");
+  assert.ok(Math.hypot(c.x - p.x, c.y - p.y) > 100, "the shield ship moved in the flare");
+  assert.ok(Math.hypot(w1.x - c.x, w1.y - c.y) <= G.shieldRadius(c), "the fleet came along");
+  assert.ok(s.aliens.length === 0 || al.hp < 40, "the fleet fought during the flare");
+  c.dead = true; c.hp = 0;
+  hrun(s, 0.1);
+  assert.ok(w1.ws === -1 && w2.ws === -1, "no shield ship, no fleet");
+});
+test("shield ship and fleet save and load; bad fleet slots are dropped", () => {
+  const s = hgame(7, 2); giveAll(s);
+  const c = G.buildShip(s, "shieldship").ship, w = G.buildShip(s, "warship").ship;
+  G.upgradeShieldShip(s, c.id); G.assignToShield(s, w.id, c.id);
+  const r = G.deserialize(G.serialize(s));
+  assert.ok(r.ok && r.state.ships[c.id].lvl === 2 && r.state.ships[w.id].ws === c.id);
+  assert.strictEqual(G.serialize(r.state), G.serialize(s));
+  const raw = JSON.parse(G.serialize(s));
+  raw.ships[w.id].ws = 0; raw.ships[c.id].lvl = 99;     // pointing at a miner; level out of range
+  const o = G.deserialize(JSON.stringify(raw));
+  assert.ok(o.ok && o.state.ships[w.id].ws === -1 && o.state.ships[c.id].lvl === 3);
 });
 
 console.log("\n" + passed + " passed, " + failed + " failed");
