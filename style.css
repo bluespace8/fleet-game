@@ -172,6 +172,29 @@ button:focus-visible, .grid th.sortable:focus-visible, .grid tr.click:focus-visi
   border-radius: 8px; padding: 4px 14px; color: #ffe2a0; pointer-events: none; }
 #warnbar.danger { background: rgba(74, 28, 42, 0.9); border-color: #ee6b6b; color: #ffb0b0; }
 #tech { position: absolute; inset: 0; background: rgba(3, 4, 11, 0.85); display: flex; align-items: center; justify-content: center; }
+/* science and the tech tree */
+@keyframes sci-pulse { 0% { color: #ffe9a0; text-shadow: 0 0 8px #ffd84a; } 100% { color: inherit; text-shadow: none; } }
+#sci.pulse { animation: sci-pulse 0.7s ease-out; }
+#tech .card.wide { max-width: 860px; width: calc(100% - 40px); }
+#t-body .note { color: #9aa4e0; margin: 4px 0 8px; font-size: 12px; }
+#t-msg { min-height: 1.4em; margin: 6px 0; text-align: center; }
+.tgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.tcol { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.tcol h2 { margin: 0 0 2px; text-align: center; }
+.tn { display: flex; flex-direction: column; gap: 3px; text-align: left; padding: 6px 8px; min-height: 92px; white-space: normal; }
+.tn .tn-top { display: flex; justify-content: space-between; gap: 6px; }
+.tn .tn-cost { color: #ffd84a; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tn .tn-fx { color: #cfd6ff; font-size: 11px; line-height: 1.3; flex: 1; }
+.tn .tn-state { font-size: 11px; font-weight: 700; }
+.tn-owned { border: 2px solid #4a9a70; background: rgba(60, 130, 95, 0.25); }
+.tn-owned .tn-state { color: #7fe0a8; }
+.tn-available { border: 2px solid #8fd8ff; background: rgba(90, 150, 230, 0.25); }
+.tn-available .tn-state { color: #8fd8ff; }
+.tn-short { border: 2px dashed #a08a2a; opacity: 0.9; }
+.tn-short .tn-state { color: #ffd84a; }
+.tn-locked { border: 2px dotted rgba(160, 180, 255, 0.3); opacity: 0.6; }
+.tn-locked .tn-state { color: #9aa4e0; }
+@media (max-width: 640px) { .tgrid { grid-template-columns: 1fr; } }
 #alerts { position: absolute; left: 10px; top: 56px; display: flex; flex-direction: column; gap: 4px; max-width: 340px; pointer-events: none; }
 #alerts:empty { display: none; }
 #alerts .chip { background: rgba(10, 11, 29, 0.82); border: 1px solid rgba(160, 180, 255, 0.3); border-radius: 8px; padding: 3px 10px; font-size: 12px; }

@@ -1567,7 +1567,12 @@
     let tx = 0, ty = 0, col = "rgba(143,216,255,0.7)", ring = 0;
     if (ship.wo === "patrol") { tx = ship.wx; ty = ship.wy; ring = 11; }
     else if (ship.wo === "escort") { const t = game.ships[ship.wt]; if (!t || t.dead) return; tx = t.x; ty = t.y; ring = 24; }
-    else if (ship.wo === "attack") { const a = game.aliens.find(o => o.id === ship.wt); if (!a) return; tx = a.x; ty = a.y; ring = 18; col = "rgba(255,120,120,0.8)"; }
+    else if (ship.wo === "attack") {
+      const nestOrder = typeof G.NEST_ORDER === "number" && ship.wt >= G.NEST_ORDER;
+      const a = nestOrder ? G.nestById(game, ship.wt - G.NEST_ORDER) : game.aliens.find(o => o.id === ship.wt);
+      if (!a || a.dead) return;
+      tx = a.x; ty = a.y; ring = nestOrder ? G.NEST_GEO.nestR + 8 : 18; col = "rgba(255,120,120,0.8)";
+    }
     else return;
     ctx.strokeStyle = col; ctx.lineWidth = 1.2; ctx.setLineDash([4, 5]);
     ctx.beginPath(); ctx.moveTo(ship.x, ship.y); ctx.lineTo(tx, ty); ctx.stroke();
@@ -1753,7 +1758,59 @@
   }
 
   // The beacon and the alien nests, in world coordinates (inside frame's transform). owner: slice a
-  function drawNests() { }
+  // Same look in every theme, like the aliens. A nest is a dark pink hive; the beacon is a cyan derelict. A health bar shows
+  // only when hurt; pips show the guards (filled alive, hollow waiting), with seconds to the next one back.
+  function drawNests() {
+    const list = game.nests;
+    if (!list || !list.length) return;
+    const geo = G.NEST_GEO, sel = chosenShip();
+    const target = sel && !sel.dead && sel.wo === "attack" && sel.wt >= G.NEST_ORDER ? sel.wt - G.NEST_ORDER : -1;
+    for (const n of list) {
+      if (n.dead) continue;
+      const beacon = n.kind === "beacon", r = beacon ? geo.beaconR : geo.nestR;
+      const pulse = reduceMotion ? 0.5 : 0.5 + 0.5 * Math.sin(time * 2 + n.id);
+      ctx.save();
+      ctx.translate(n.x, n.y);
+      const halo = ctx.createRadialGradient(0, 0, r * 0.5, 0, 0, r * 2.2);
+      const hc = beacon ? "95,208,230" : "255,95,168";
+      halo.addColorStop(0, "rgba(" + hc + "," + (0.16 + 0.12 * pulse) + ")"); halo.addColorStop(1, "rgba(" + hc + ",0)");
+      ctx.fillStyle = halo; ctx.fillRect(-r * 2.2, -r * 2.2, r * 4.4, r * 4.4);
+      ctx.lineJoin = "round"; ctx.lineWidth = 2;
+      ctx.beginPath();
+      if (beacon) { ctx.moveTo(0, -r); ctx.lineTo(r * 0.7, 0); ctx.lineTo(0, r); ctx.lineTo(-r * 0.7, 0); ctx.closePath(); }
+      else for (let k = 0; k < 6; k++) { const a = k * Math.PI / 3 + Math.PI / 6; ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); }
+      if (!beacon) ctx.closePath();
+      ctx.fillStyle = beacon ? "#12323c" : "#4a1038"; ctx.fill();
+      ctx.strokeStyle = beacon ? "#7fe0f0" : "#ff5fa8"; ctx.stroke();
+      ctx.beginPath(); ctx.arc(0, 0, r * 0.32, 0, Math.PI * 2);
+      ctx.fillStyle = beacon ? "rgba(190,250,255," + (0.5 + 0.4 * pulse) + ")" : "rgba(255,196,226," + (0.5 + 0.4 * pulse) + ")"; ctx.fill();
+      if (n.id === target) {
+        ctx.strokeStyle = "rgba(255,120,120,0.9)"; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(0, 0, r + 8, 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.restore();
+      if (n.hp < n.max) drawBar(n.x, n.y - r - 10, 34, n.hp / n.max);
+      if (!beacon) {
+        const total = (G.TUNING.science.nest.guards | 0), waiting = n.guardIn ? n.guardIn.length : 0;
+        let alive = 0;
+        for (const a of game.aliens) if (a.nest === n.id) alive++;
+        const shown = Math.max(total, alive + waiting);
+        ctx.lineWidth = 1.2; ctx.strokeStyle = "#ff5fa8"; ctx.fillStyle = "#ff5fa8";
+        for (let k = 0; k < shown; k++) {
+          const px = n.x + (k - (shown - 1) / 2) * 9, py = n.y + r + 9;
+          ctx.beginPath(); ctx.arc(px, py, 3, 0, Math.PI * 2);
+          if (k < alive) ctx.fill(); else ctx.stroke();
+        }
+        if (waiting) {
+          ctx.font = "600 10px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "rgba(255,196,226,0.9)";
+          ctx.fillText(Math.ceil(Math.min.apply(null, n.guardIn)) + "s", n.x, n.y + r + 24);
+        }
+      } else {
+        ctx.font = "600 10px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "rgba(190,250,255,0.9)";
+        ctx.fillText("BEACON", n.x, n.y + r + 14);
+      }
+    }
+  }
 
   function frame(dt) {
     drawSky(dt);
@@ -1849,9 +1906,45 @@
   // An extra control for a ship's row in the Mission board (a node), or null. Called once when the row is built. owner: slice b
   function shipRowExtra(ship) { return null; }
   function updateShipRowExtra(ship, node) { }   // owner: slice b (called on every board refresh for each ship row)
-  function renderScience() { }   // owner: slice a
+  // The science readout and the Tech button. They show from the first sector that can pay science (or once any is earned).
+  let sciShown = "", sciPulse = 0;
+  function renderScience() {
+    const live = !!game && (game.sector >= G.TUNING.science.firstSector || (game.sciTotal | 0) > 0 || (game.tech && game.tech.length > 0));
+    $("sci").hidden = !live; $("b-tech").hidden = !live;
+    if (!live) { sciShown = ""; return; }
+    const html = `Science <b>${Math.floor(game.science + 1e-9)}</b>`;
+    if (html !== sciShown) { sciShown = html; $("sci").innerHTML = html; }
+  }
+  function pulseScience() {
+    const el = $("sci");
+    if (reduceMotion || !el.classList) return;
+    el.classList.remove("pulse");
+    void el.offsetWidth;   // restart the animation
+    el.classList.add("pulse");
+    clearTimeout(sciPulse);
+    sciPulse = setTimeout(() => el.classList.remove("pulse"), 700);
+  }
   function renderEcon() { }   // owner: slice b
-  function onScienceMsg(e) { }   // owner: slice a (one event from G.drainEvents)
+  const SCI_SOURCE = { raider: "raider", turret: "turret kill", guard: "guard", wave: "wave repelled", beacon: "beacon", nest: "nest", secured: "sector secured" };
+  let sciToastAt = 0;
+  function sciToast(msg) {   // events from one tick share one toast, so a nest kill shows its points and its name
+    const now = Date.now(), el = $("toast");
+    toast(now - sciToastAt < 150 && el.textContent ? el.textContent + " · " + msg : msg);
+    sciToastAt = now;
+  }
+  function onScienceMsg(e) {   // one event from G.drainEvents
+    if (!e) return;
+    if (e.type === "science:gain") {
+      if (!(e.amount > 0)) return;
+      sciToast(`+${e.amount} science` + (SCI_SOURCE[e.source] ? ` (${SCI_SOURCE[e.source]})` : ""));
+      pulseScience(); renderScience();
+    } else if (e.type === "tech:unlock") {
+      const node = (G.TUNING.tech || []).find(o => o.id === e.id);
+      sciToast("Tech unlocked: " + (node ? node.name : e.id));
+      renderScience();
+    } else if (e.type === "nest:destroyed") sciToast(e.kind === "beacon" ? "Beacon destroyed" : "Nest destroyed");
+    else if (e.type === "wave:repelled") sciToast("Raid wave repelled");
+  }
   function onEconMsg(e) { }   // owner: slice b (one event from G.drainEvents)
 
   function renderBoard() {
@@ -2094,7 +2187,76 @@
 
   // The tech tree window. openTech belongs to slice a: it sets ui.tech, shows #tech, fills #t-body and moves focus in.
   let techOpener = null;
-  function openTech() { }
+  const TECH_BRANCH = { mil: "Military", ind: "Industry", log: "Logistics" };
+  const TECH_MARK = { owned: "✓ Owned", available: "● Available", short: "○ Not enough science", locked: "✕ Locked" };
+  function techNode(id) { return G.TUNING.tech.find(o => o.id === id); }
+  function renderTech() {
+    const T = G.TUNING.tech, br = ["mil", "ind", "log"];
+    const sci = Math.floor(game.science + 1e-9);
+    const cols = br.map(b => {
+      const nodes = T.filter(o => o.branch === b).sort((x, y) => x.tier - y.tier).map(o => {
+        const st = G.techState(game, o.id), cost = G.techCost(o);
+        let mark = TECH_MARK[st];
+        if (st === "short") mark = `○ Need ${Math.ceil(cost - game.science - 1e-9)} more`;
+        if (st === "locked" && o.needs) mark = `✕ Locked: needs ${techNode(o.needs).name}`;
+        return `<button type="button" class="tn tn-${st}" data-tech="${o.id}" data-col="${br.indexOf(b)}" data-tier="${o.tier}" aria-disabled="${st === "owned" || st === "available" ? "false" : "true"}">
+          <span class="tn-top"><b>${o.name}</b><span class="tn-cost">${cost} sci</span></span>
+          <span class="tn-fx">${o.text}</span><span class="tn-state">${mark}</span></button>`;
+      }).join("");
+      return `<div class="tcol"><h2>${TECH_BRANCH[b]}</h2>${nodes}</div>`;
+    }).join("");
+    setHtml($("t-body"), `<p class="note">Science <b>${sci}</b>. It comes from fighting: raiders, guards, nests, the sector 2 beacon and repelled waves. Arrow keys move, Enter buys, Esc or T closes.</p><div class="tgrid">${cols}</div>`, "data-tech");
+  }
+  function techMsg(msg, bad) {
+    const el = $("t-msg");
+    el.textContent = msg || ""; el.className = "f-status" + (msg ? (bad ? " err" : " ok") : "");
+  }
+  function openTech() {
+    if (!game || ui.tech || ui.feedback || ui.hangar || ui.dlg.length) return;
+    techOpener = document.activeElement;
+    ui.tech = true;
+    techMsg("");
+    renderTech();
+    $("tech").hidden = false;
+    $("win").hidden = true; $("end").hidden = true;
+    syncInert();
+    const body = $("t-body");
+    const first = body.querySelector(".tn-available") || body.querySelector(".tn-short") || body.querySelector("button");
+    (first || $("t-close")).focus();
+  }
+  function buyTech(id) {
+    const node = techNode(id);
+    if (!node) return;
+    const r = G.unlockTech(game, id);
+    if (!r.ok) { techMsg(r.reason || "Cannot buy that.", true); return; }
+    techMsg(`${node.name} unlocked for ${r.cost} science.`);
+    for (const e of G.drainEvents(game)) { onScienceMsg(e); onEconMsg(e); }   // the game is paused here, so the loop would not
+    saveNow();
+    renderTech(); renderScience();
+  }
+  // Arrow keys walk the grid: left and right change branch at the same tier, up and down change tier.
+  function techArrow(ev) {
+    const dirs = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }, d = dirs[ev.key];
+    const a = document.activeElement;
+    if (!d || !a || !a.dataset || a.dataset.tech == null) return;
+    ev.preventDefault();
+    const col = +a.dataset.col + d[0], tier = +a.dataset.tier + d[1];
+    const n = $("t-body").querySelector(`[data-col="${col}"][data-tier="${tier}"]`);
+    if (n) n.focus();
+  }
+  $("t-body").addEventListener("keydown", techArrow);
+  $("t-body").addEventListener("click", ev => {
+    const b = ev.target.closest && ev.target.closest("[data-tech]");
+    if (b && game && ui.tech) buyTech(b.dataset.tech);
+  });
+  window.addEventListener("keydown", ev => {   // T closes the window it opened (keyActive is off while it is up)
+    if (!ui.tech || ui.feedback || ui.dlg.length || ui.hangar || !ev.key || ev.key.toLowerCase() !== "t") return;
+    if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.repeat) return;
+    const tag = ev.target && ev.target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();   // else the game's own T handler, next in line, would reopen it
+    closeTech();
+  });
   function closeTech() {
     ui.tech = false;
     $("tech").hidden = true;
@@ -2728,6 +2890,13 @@
         if (d <= Math.max(G.TUNING.aliens.r + 8, 14 / view.sc) && d < ad) { ad = d; al = a; }
       }
       if (al) return { kind: "alien", o: al };
+      let nd = Infinity, ne = null;   // no alien there: a live nest or the beacon
+      for (const n of game.nests || []) {
+        if (n.dead) continue;
+        const d = Math.hypot(n.x - p.x, n.y - p.y);
+        if (d <= Math.max((n.kind === "beacon" ? G.NEST_GEO.beaconR : G.NEST_GEO.nestR) + 8, 14 / view.sc) && d < nd) { nd = d; ne = n; }
+      }
+      if (ne) return { kind: "nest", o: ne };
     }
     let ship = null, sd = Infinity;   // ships win over whatever is beneath them
     for (const s of game.ships) {
@@ -2772,6 +2941,7 @@
     }
     if (war) {   // a warship: attack an alien, patrol at an empty spot, go home to a base; it cannot mine
       if (h && h.kind === "alien") { const r = G.orderAttack(game, sel.id, h.o.id); if (!r.ok) return toast(r.reason); }
+      else if (h && h.kind === "nest") { const r = G.orderAttack(game, sel.id, { kind: "nest", id: h.o.id }); if (!r.ok) return toast(r.reason); }
       else if (h && h.kind === "base") G.returnToBase(game, sel.id, game.bases.indexOf(h.o), labelArg());
       else if (h) {   // a body or star: the rules say why a warship cannot take it
         const r = h.kind === "star" ? G.orderShipToStar(game, sel.id, h.o.id) : G.orderShip(game, sel.id, h.o.id, labelArg());
@@ -2934,8 +3104,17 @@
     const s = needWar();
     if (!s) return;
     const id = G.nearestAlien(game, s.x, s.y);
-    if (id < 0) return toast("No aliens on the map.");
-    const r = G.orderAttack(game, s.id, id);
+    let target = id;
+    if (id < 0) {   // no raiders or guards: the nearest nest or the beacon
+      let best = null, bd = Infinity;
+      for (const n of game.nests || []) {
+        const d = Math.hypot(n.x - s.x, n.y - s.y);
+        if (!n.dead && d < bd) { bd = d; best = n; }
+      }
+      if (!best) return toast("No aliens on the map.");
+      target = { kind: "nest", id: best.id };
+    }
+    const r = G.orderAttack(game, s.id, target);
     if (!r.ok) toast(r.reason);
     refresh();
   }

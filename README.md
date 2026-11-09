@@ -45,7 +45,7 @@ The mouse always works. These keys add to it.
   stops it); **E** within reach of a base unloads; **E** again while mining or unloading stops. **F** or **Esc** hands
   the ship back, idle, with its cargo still aboard. Turning keyboard mode off hands every ship back.
 - **Repair and warship keys:** **R** repairs the selected ship (it must be at a base); if the ship is fine it repairs the
-  base it is at (a ship at a downed base repairs that base first). **R** works with keyboard mode off. With a warship selected: **X** attacks the nearest alien,
+  base it is at (a ship at a downed base repairs that base first). **R** works with keyboard mode off. With a warship selected: **X** attacks the nearest alien (or, with none, the nearest nest or beacon), **T** opens the tech tree,
   **P** patrols where the ship is now, **G** escorts the nearest miner or hauler. These work in keyboard mode, or
   whenever a warship is selected. Like every game key they do nothing while a dialog or card is open, or while you
   type in a text box. Tab, the number keys and flying by hand skip lost ships.
@@ -56,6 +56,21 @@ The mouse always works. These keys add to it.
   the buttons in the side panel and top bar. Space still pauses, so use Enter to press a focused button. Dialogs, the
   Hangar and the win and run-over cards take focus when they open and give it back when they close; the
   scoreboard's sortable headers and rows work with Enter.
+
+## Science and the tech tree
+
+- **Science comes from fighting only**, never from mining, delivering, stars or building. It starts in sector 2: killing a
+  raider with a warship (2, a little more in later sectors), a turret kill or a nest guard (1 each), repelling a raid wave
+  (3), destroying the derelict **beacon** in sector 2 (8), destroying an alien **nest** from sector 3 (10, plus 4 per later
+  sector), and warping with every nest of the sector gone (5, "sector secured"). Raid points are capped per sector; nests, the beacon and "sector secured" are not. The top bar shows
+  **Science**, and it pulses and toasts when you earn some.
+- **Nests and the beacon** sit on the map (a dark pink hive; a cyan diamond). Nests keep guards (filled dots; hollow dots
+  count down to the next one back) and heal while no warship is near. To attack one, select a warship and click it, or press **X**
+  when no alien is left (it picks the nearest nest or beacon). The warship flies there and shoots it.
+- **Tech tree:** the **Tech** button or **T** opens a window (the game pauses) with three branches of four tiers: Military,
+  Industry, Logistics. A node needs the one below it in its branch and costs 8, 16, 28 or 45 science by tier. Each shows its cost, its
+  effect and its state: Owned, Available, Not enough science, or Locked. **Arrow keys** move between nodes, **Enter** (or a click)
+  buys, and a refused buy says why. **Esc** or **T** closes the window and focus goes back where it was.
 
 ## Sectors, score and the end of a run
 
