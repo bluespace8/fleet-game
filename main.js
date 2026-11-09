@@ -1593,7 +1593,7 @@
   }
   function drawAlien(a) {
     let dx = a.vx, dy = a.vy;
-    const t = a.tgtKind === "ship" ? game.ships[a.tgt] : a.tgtKind === "base" ? game.bases[a.tgt] : null;
+    const t = a.tgtKind === "ship" ? game.ships[a.tgt] : a.tgtKind === "base" ? game.bases[a.tgt] : a.tgtKind === "station" ? (game.sites || [])[a.tgt] : null;
     if (t) { dx = t.x - a.x; dy = t.y - a.y; }
     pruneAlienAng();
     let ang = alienAng.get(a.id) || 0;
@@ -1816,6 +1816,50 @@
     }
   }
 
+  // Energy sites: an empty site is a faint dashed diamond; a live station glows green with a bolt; a down one is grey.
+  function drawSites() {
+    for (const s of game.sites || []) {
+      const r = G.SITE_R;
+      ctx.save(); ctx.translate(s.x, s.y);
+      if (!s.built) {
+        ctx.strokeStyle = "rgba(120,235,160,0.45)"; ctx.lineWidth = 1.5; ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(r, 0); ctx.lineTo(0, r); ctx.lineTo(-r, 0); ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
+        ctx.font = "600 10px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "rgba(150,240,185,0.75)";
+        ctx.fillText("ENERGY SITE", 0, r + 13);
+      } else {
+        const on = !s.down, pulse = reduceMotion ? 0.5 : 0.5 + 0.5 * Math.sin(time * 3 + s.id);
+        if (on) {
+          const g = ctx.createRadialGradient(0, 0, 2, 0, 0, r * 2.4);
+          g.addColorStop(0, "rgba(110,255,160," + (0.3 + pulse * 0.15) + ")"); g.addColorStop(1, "rgba(110,255,160,0)");
+          ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, r * 2.4, 0, Math.PI * 2); ctx.fill();
+        }
+        ctx.fillStyle = on ? "#16352a" : "#2a2a33"; ctx.strokeStyle = on ? "#6dffa0" : "#6a6a78"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(r, 0); ctx.lineTo(0, r); ctx.lineTo(-r, 0); ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = on ? "#eaffd0" : "#80808c";      // a lightning bolt
+        ctx.beginPath(); ctx.moveTo(2, -9); ctx.lineTo(-5, 2); ctx.lineTo(-1, 2); ctx.lineTo(-3, 9); ctx.lineTo(5, -2); ctx.lineTo(1, -2); ctx.closePath(); ctx.fill();
+      }
+      ctx.restore();
+      if (s.built && s.down) { ctx.textAlign = "center"; ctx.font = "700 11px system-ui, sans-serif"; ctx.fillStyle = "#ff8a8a"; labelText("DOWN - repair it", s.x, s.y + r + 14); }
+      if (s.built && s.hp < s.maxHp) drawBar(s.x, s.y - r - 8, 34, s.hp / s.maxHp);
+    }
+  }
+
+  // A shield ship's bubble, a line to each warship in its fleet, and its level and load.
+  function drawFleetBubbles() {
+    for (const c of game.ships) {
+      if (c.dead || !G.isSupport(c)) continue;
+      const R = G.shieldRadius(c), up = !c.mothballed, members = G.fleetMembers(game, c.id);
+      ctx.fillStyle = "rgba(110,200,255," + (up ? 0.06 : 0.02) + ")";
+      ctx.beginPath(); ctx.arc(c.x, c.y, R, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "rgba(130,220,255," + (up ? 0.5 : 0.2) + ")"; ctx.lineWidth = 1.6; ctx.setLineDash([6, 6]);
+      ctx.beginPath(); ctx.arc(c.x, c.y, R, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+      ctx.strokeStyle = "rgba(130,220,255,0.28)"; ctx.lineWidth = 1;
+      for (const m of members) { ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(m.x, m.y); ctx.stroke(); }
+      ctx.textAlign = "center"; ctx.font = "600 10px system-ui, sans-serif"; ctx.fillStyle = "rgba(190,240,255,0.9)";
+      ctx.fillText("L" + c.lvl + " " + members.length + "/" + G.fleetCap(c), c.x, c.y - 22);
+    }
+  }
+
   function frame(dt) {
     drawSky(dt);
     updateSpin(dt);
@@ -1826,8 +1870,10 @@
     game.storms.forEach(drawStorm);
     for (const b of game.bodies) drawBody(b);
     for (const s of game.stars) if (!s.taken) drawStar(s);
+    drawSites();
     game.bases.forEach(drawBase);
     drawNests();
+    drawFleetBubbles();
     for (const s of game.ships) if (!s.dead) drawTrail(s, shipColor(s));
     for (const s of game.ships) if (!s.dead && (s.st === G.MINING || (s.st === G.MANUAL && s.mm === 1))) drawBeam(s);
     for (const s of game.ships) if (!s.dead) drawShip(s);
@@ -1867,6 +1913,7 @@
     const items = [["miner", L.ship.miner, G.SHIP_TYPES.miner.blurb, G.shipCost(game, "miner")],
       ["hauler", L.ship.hauler, G.SHIP_TYPES.hauler.blurb, G.shipCost(game, "hauler")],
       ["warship", G.TUNING.ships.warship.label, G.SHIP_TYPES.warship.blurb, G.shipCost(game, "warship")],
+      ["shieldship", G.TUNING.ships.shieldship.label, G.SHIP_TYPES.shieldship.blurb, G.shipCost(game, "shieldship")],
       ["base", L.newBase, themed() ? "Click an empty spot to place it" : "Click empty space to place it", G.baseCost(game)]];
     const html = items.map(([key, label, note, cost]) => {
       const ok = !game.over && G.canAfford(game, cost);
@@ -1874,6 +1921,49 @@
         <b>${label}</b> <small>${costText(cost)}</small><small>${note}</small></button>`;
     }).join("");
     if (html !== buildHtml) { buildHtml = html; setHtml($("build"), html, "data-build"); }
+  }
+
+  // Energy sites: build a station (a saving on every running cost) and repair it when it is hurt.
+  function renderSites() {
+    const sites = game.sites || [];
+    if (!sites.length) return "";
+    const cut = Math.round((1 - G.energyMult(game)) * 100);
+    const head = `<div class="base-row"><span class="lbl"><b>Energy sites</b><small>${cut ? "Running costs cut by " + cut + "%" : "Build a station to cut every running cost. Aliens will attack it."}</small></span></div>`;
+    return head + sites.map((s, i) => {
+      let note, btn = "";
+      if (!s.built) {
+        const c = G.stationCost(game);
+        note = "Empty site";
+        btn = `<button type="button" data-act="stbuild:${i}"${!game.over && G.canAfford(game, c) ? "" : " disabled"} title="Cuts all running costs by ${Math.round(G.TUNING.energy.station.cut * 100)}% while it stands. ${G.TUNING.energy.station.hp} HP: defend it.">Build station<small>${costText(c)}</small></button>`;
+      } else {
+        note = s.down ? "DOWN: no saving until repaired" : s.hp < s.maxHp ? `Station, HP ${Math.ceil(s.hp)}/${s.maxHp}` : "Station running";
+        if (s.hp < s.maxHp) {
+          const c = G.repairCost(game, "station", i);
+          btn = `<button type="button" class="fix" data-act="stfix:${i}"${!game.over && G.canAfford(game, c) ? "" : " disabled"}>Repair<small>${costText(c) || "free"}</small></button>`;
+        }
+      }
+      return `<div class="base-row"><span class="lbl"><b>Energy site ${i + 1}</b><small>${note}</small></span>${btn}</div>`;
+    }).join("");
+  }
+
+  // Shield fleets: each shield ship with its level, load and upgrade button, its warships (click to release),
+  // and the unassigned warships (click to assign).
+  let fleetsHtml = "";
+  function renderFleets() {
+    const carriers = game.ships.filter(s => !s.dead && G.isSupport(s));
+    $("fleets").hidden = !carriers.length;
+    if (!carriers.length) { fleetsHtml = ""; return; }
+    const free = game.ships.filter(s => !s.dead && isWar(s) && !G.isSupport(s) && !(s.ws >= 0) && !s.mothballed);
+    const html = carriers.map(c => {
+      const mem = G.fleetMembers(game, c.id), cap = G.fleetCap(c), up = G.shieldUpgradeCost(game, c.id);
+      const upBtn = up
+        ? `<button type="button" data-fl="up:${c.id}"${!game.over && G.canAfford(game, up) ? "" : " disabled"} title="More warships and a wider shield">Level ${c.lvl + 1}<small>${costText(up)}</small></button>`
+        : `<small class="done">Top level</small>`;
+      const rows = mem.map(m => `<button type="button" data-fl="rel:${m.id}" title="Take it out of the fleet">${shipLabel(m)} &times;</button>`).join("");
+      const adds = mem.length < cap ? free.map(w => `<button type="button" data-fl="add:${w.id}:${c.id}" title="Assign to ${shipLabel(c)}">+ ${shipLabel(w)}</button>`).join("") : "";
+      return `<div class="base-row"><span class="lbl"><b>${shipLabel(c)} L${c.lvl}</b><small>${mem.length}/${cap} warships, shield radius ${G.shieldRadius(c)}</small></span>${upBtn}</div><div class="base-extra">${rows}${adds}</div>`;
+    }).join("");
+    if (html !== fleetsHtml) { fleetsHtml = html; setHtml($("fleets-body"), html, "data-fl"); }
   }
 
   function renderBases() {
@@ -1888,7 +1978,7 @@
       if (b.down) note = "DOWN: out of action until repaired";
       else if (b.hp < b.maxHp) note = `HP ${Math.ceil(b.hp)}/${b.maxHp}, ` + note;
       // add-ons and repair: a button while it can be bought, plain text once built
-      const extra = ["shield", "turret"].map(kind => {
+      const extra = ["shield", "turret", "generator"].map(kind => {
         const def = G.TUNING.addons[kind];
         if (b[kind]) return `<small class="done">${def.label} built</small>`;
         const c = G.addonCost(game, kind);
@@ -1899,7 +1989,7 @@
         extra.push(`<button type="button" class="fix" data-act="fix:${i}"${!game.over && G.canAfford(game, c) ? "" : " disabled"} title="Restore full health${b.down ? " and bring the base back" : ""}">Repair<small>${costText(c) || "free"}</small></button>`);
       }
       return `<div class="base-row"><span class="lbl"><b>${label}</b><small>${note}</small></span>${btn}</div><div class="base-extra">${extra.join("")}</div>`;
-    }).join("");
+    }).join("") + renderSites();
     if (html !== basesHtml) { basesHtml = html; setHtml($("bases"), html, "data-act"); }
   }
 
@@ -2173,6 +2263,7 @@
     $("b-retire").disabled = game.over;
     renderBuild();
     renderBases();
+    renderFleets();
     if (ui.selected != null && (!game.ships[ui.selected] || game.ships[ui.selected].dead)) { ui.selected = null; boardKey = ""; buildHtml = ""; }   // the selected ship was lost
     renderBoard();
     renderScience();
@@ -2187,7 +2278,8 @@
         : `Click ${an(lc(L.body.asteroid))} or ${an(lc(L.body.iceplanet))} to mine it, a star to collect it, or ${an(L.base)} to send it there (Esc to deselect)`)
       : ui.placing ? "Click empty space to place the base (Esc to cancel)"
       : "Click a planet or asteroid to mine it, a star to collect it, or a base to send this ship there (Esc to deselect)";
-    if (!ui.placing && isWar(chosenShip())) hint.textContent = "Warship: click an alien or nest to attack, empty space to patrol there, Shift+click a ship to escort it (Esc to deselect)";
+    if (!ui.placing && chosenShip() && G.isSupport(chosenShip())) hint.textContent = "Shield ship: empty space to move it and its fleet there, Shift+click a warship to assign it (Esc to deselect)";
+    else if (!ui.placing && isWar(chosenShip())) hint.textContent = "Warship: click an alien or nest to attack, empty space to patrol there, Shift+click a ship to escort it (Esc to deselect)";
     if (ui.keyboard && ui.placing) hint.textContent = `Arrow keys move the cursor (Shift: faster), Enter places the ${themed() ? L.base : "base"}, Esc cancels`;
     renderLegend();
     syncInert();
@@ -3052,8 +3144,10 @@
     const p = toWorld(ev);
     if (ui.placing) return tryPlace(p);
     const h = hit(p), sel = chosenShip(), war = !!sel && !sel.dead && isWar(sel);
-    if (war && ev.shiftKey && h && h.kind === "ship" && h.o.id !== sel.id) {   // Shift+click one of our ships: escort it
-      const r = G.orderEscort(game, sel.id, h.o.id);
+    if (war && ev.shiftKey && h && h.kind === "ship" && h.o.id !== sel.id) {   // Shift+click one of our ships: escort it (shield ship and warship: join its fleet)
+      const fleet = G.isSupport(sel) !== G.isSupport(h.o) && isWar(h.o);
+      const r = fleet ? (G.isSupport(sel) ? G.assignToShield(game, h.o.id, sel.id) : G.assignToShield(game, sel.id, h.o.id)) : G.orderEscort(game, sel.id, h.o.id);
+      if (fleet && r.ok) { fleetsHtml = ""; saveNow(); }
       if (!r.ok) return toast(r.reason);
       return refresh();
     }
@@ -3113,12 +3207,23 @@
     const btn = ev.target.closest("[data-act]");
     if (!btn || !game) return;
     const [act, id, kind] = btn.dataset.act.split(":"), i = Number(id);
-    const r = act === "add" ? G.buildAddon(game, i, kind, labelArg())
+    const r = act === "stbuild" ? G.buildStation(game, i)
+      : act === "stfix" ? G.repairStation(game, i)
+      : act === "add" ? G.buildAddon(game, i, kind, labelArg())
       : act === "fix" ? G.repairBase(game, i, labelArg())
       : G.upgradeBase(game, i, labelArg());
     if (!r.ok) return toast(r.reason);
     saveNow();
     buildHtml = ""; basesHtml = "";
+    refresh();
+  });
+  $("fleets-body").addEventListener("click", ev => {
+    const btn = ev.target.closest("[data-fl]");
+    if (!btn || !game) return;
+    const [act, a, b] = btn.dataset.fl.split(":");
+    const r = act === "up" ? G.upgradeShieldShip(game, Number(a)) : act === "rel" ? G.releaseFromShield(game, Number(a)) : G.assignToShield(game, Number(a), Number(b));
+    if (!r.ok) return toast(r.reason);
+    saveNow(); fleetsHtml = ""; boardKey = "";
     refresh();
   });
   $("board").addEventListener("click", ev => {
