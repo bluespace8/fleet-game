@@ -4498,10 +4498,33 @@ test("save: Hardened hulls and Deep holds survive a round trip; a forged save ca
     assert.strictEqual(g.ships[fw.id].hp, tech.length ? 117 : 90); assert.strictEqual(g.ships[fw.id].maxHp, tech.length ? 117 : 90);
     assert.strictEqual(g.ships[fm.id].cargo, tech.length ? 25 : 20);
   }
-  // a save that lists the tech after the ships, or junk tech, still loads with only real ids counted
+  // junk tech ids are dropped; the hull and hold caps follow the tech that is left (hulls kept, holds gone)
   const j = JSON.parse(G.serialize(s)); j.tech = ["mil_hulls", "nope", 5];
   const jr = G.deserialize(JSON.stringify(j)).state;
   assert.deepStrictEqual(jr.tech, ["mil_hulls"]); assert.strictEqual(jr.ships[w.id].maxHp, 117); assert.strictEqual(jr.ships[m.id].cargo, 20);
+});
+
+test("save: malformed wave entries are dropped without throwing; a good lost flag is kept", () => {
+  const s = ngame(5, 3);
+  const raw = JSON.parse(G.serialize(s));
+  raw.waves = { "1": null, "x": { lost: true }, "2": { escaped: 1, lost: true }, "3": { escaped: 2 }, "4": 7 };
+  let r;
+  assert.doesNotThrow(() => { r = G.deserialize(JSON.stringify(raw)); });
+  assert.ok(r.ok);
+  assert.deepStrictEqual(Object.keys(r.state.waves).sort(), ["2", "3"]);
+  assert.strictEqual(r.state.waves[2].lost, true); assert.strictEqual(r.state.waves[2].escaped, 1);
+  assert.ok(!r.state.waves[3].lost);
+});
+test("jobText: an attack order on a nest or the beacon names it, an alien order still says alien", () => {
+  const s = ngame(5, 3); giveAll(s);
+  const w = G.buildShip(s, "warship").ship;
+  const nest = s.nests.find(n => n.kind === "nest");
+  assert.ok(G.orderAttack(s, w.id, { kind: "nest", id: nest.id }).ok);
+  assert.strictEqual(G.jobText(s, w), "Attacking a nest");
+  const b = ngame(5, 2); giveAll(b);
+  const wb = G.buildShip(b, "warship").ship, beacon = b.nests.find(n => n.kind === "beacon");
+  assert.ok(G.orderAttack(b, wb.id, { kind: "nest", id: beacon.id }).ok);
+  assert.strictEqual(G.jobText(b, wb), "Attacking a beacon");
 });
 test("jobText shows cargo against the tech-adjusted hold", () => {
   const s = ngame(18, 3); s.nests = []; const sh = s.ships[0], body = nearBody(s);
@@ -4544,7 +4567,7 @@ test("nests shorten only the raid gap: fog and flare timing is the same with nes
     const gap = (kill, kind) => {
       const s = G.newGame(21, sector); s.showerIn = 3000; s.eventIn = 0;
       if (kill) s.nests.forEach(n => { n.dead = true; });
-      const E = G.TUNING.events, odds = kind === "fog" ? 0 : 0;
+      const E = G.TUNING.events, odds = 0;
       withTuning(E, "raidFirst", odds, () => withTuning(E, "raidMax", odds, () => withTuning(E, "raidPerSector", 0, () => {
         withTuning(E.weight, "fog", kind === "fog" ? 1 : 0, () => withTuning(E.weight, "flare", kind === "flare" ? 1 : 0, () => G.step(s, HDT)));
       })));

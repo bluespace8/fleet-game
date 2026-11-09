@@ -1932,7 +1932,10 @@
     if (def.war && ship.st !== MANUAL) {
       if (ship.wo === "patrol") return "Patrolling";
       if (ship.wo === "escort") { const t = state.ships[ship.wt]; return "Escorting " + (t ? shipLabel(t, labels) : "a ship"); }
-      if (ship.wo === "attack") return "Attacking an alien";
+      if (ship.wo === "attack") {
+        if (ship.wt >= NEST_ORDER) { const n = nestById(state, ship.wt - NEST_ORDER); return n && n.kind === "beacon" ? "Attacking a beacon" : "Attacking a nest"; }
+        return "Attacking an alien";
+      }
       return "On guard. Select it, then give an order.";
     }
     switch (ship.st) {
@@ -2189,8 +2192,10 @@
     if (isObj(raw.waves)) {
       for (const key of Object.keys(raw.waves).slice(0, 200)) {
         const w = raw.waves[key];
-        if (/^\d+$/.test(key) && isObj(w)) state.waves[key] = { alive: 0, escaped: intIn(w.escaped, 0, 999, 0) };
-        if (w.lost === true) state.waves[key].lost = true;
+        if (/^\d+$/.test(key) && isObj(w)) {
+          state.waves[key] = { alive: 0, escaped: intIn(w.escaped, 0, 999, 0) };
+          if (w.lost === true) state.waves[key].lost = true;
+        }
       }
     }
     for (const a of state.aliens) {          // alive is what is really on the map
