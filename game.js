@@ -12,7 +12,7 @@
   if (typeof module === "object" && module.exports) module.exports = factory();
   else root.FleetGame = factory();
 })(typeof self !== "undefined" ? self : this, function () {
-  const VERSION = 2;
+  const VERSION = 3;
 
   // ---------------------------------------------------------------- tuning
   // Every number you might want to change sits in this one table. Sector 1 values are the original
@@ -103,6 +103,61 @@
     endCheckEvery: 1,          // seconds between stranded checks
     bank: { claimedKeep: 400, backups: 3 },
     logs: { runs: 500, buys: 500, players: 50, nameMax: 24, minSecs: 5 },
+    msgs: { max: 50 },         // cap on the transient message queue (state.msgs, see emit)
+    // ---- credits and running costs (slice b). Per minute unless noted. econScale(n) multiplies maintenance and upkeep.
+    econ: {
+      credit: { ore: 1, ice: 2, crystal: 5 },            // credits paid per unit delivered
+      startCredits: 250, oldSaveCredits: 500,
+      scalePerSector: 0.04, scaleMax: 1.36,              // running costs x min(max, 1 + per*(n-1))
+      maint:  { miner: 30, hauler: 50, warship: 90, mothball: 0.2, wakeSecs: 10 },   // cr per minute; mothball: share still paid
+      upkeep: { home: 0, base: 35, perTier: 10, shield: 20, turret: 20 },            // cr per minute
+      debt:   { start: 1500, rate: 0.015, every: 60, dueSector: 3, dueTime: 2700, warnSecs: 300 },
+      bankrupt: { floor: -250, grace: 60, blockShipsBelow: 0 },
+      timer:  { parMult: 1.5, firstSector: 2, capSector: 10, warnShare: 0.25, warnSecs: 60 },
+      exchange: { sell: { ore: 1, ice: 2, crystal: 5 }, buy: { ore: 3, ice: 6 }, step: 10, buyOn: true },
+      netWarnSecs: 10,
+    },
+    // which lose rules are on at the start of a run; copied to state.rules by newGame
+    lose: { maintenance: true, upkeep: true, debt: true, timer: false, bankruptcy: true },
+    // ---- science from conquest (slice a). Raider, turret and guard kills and wave bonuses share the per-sector cap
+    // raidCap + raidCapPerSector * (n - firstSector); nests, beacons and "sector secured" are never capped.
+    science: {
+      firstSector: 2, raider: 2, raiderEvery: 2, turretKill: 1, guardKill: 1, wave: 3, secured: 5,
+      raidCap: 20, raidCapPerSector: 10,
+      beacon: { sector: 2, hp: 150, sci: 8 },
+      nest: { firstSector: 3, base: 1, every: 2, max: 3, hp: 300, hpPerSector: 0.3, sci: 10, sciPerSector: 4,
+              guards: 3, guardRespawn: 20, guardLeash: 250, regen: 2, regenRange: 220, raidBoost: 0.2,
+              minHomeShare: 0.6, nearCrystal: 150 },
+    },
+    techCost: [8, 16, 28, 45],     // science per tier 1-4
+    // The tech tree: three branches of four. needs: the node one tier below in the same branch. effects are read with
+    // techMult(state, key) (product of mult) and techAdd(state, key) (sum of add).
+    tech: [
+      { id: "mil_hulls", name: "Hardened hulls", branch: "mil", tier: 1, needs: null, effects: [{ key: "warshipHp", mult: 1.3 }],
+        text: "Warship max HP +30% (90 \u2192 117)." },
+      { id: "mil_targeting", name: "Targeting computers", branch: "mil", tier: 2, needs: "mil_hulls", effects: [{ key: "warshipDmg", mult: 1.25 }],
+        text: "Warship damage +25% (9 \u2192 11.25 per shot)." },
+      { id: "mil_contracts", name: "Navy contracts", branch: "mil", tier: 3, needs: "mil_targeting", effects: [{ key: "warshipMaint", mult: 0.6 }],
+        text: "Warship maintenance x0.6 (90 \u2192 54 cr/min)." },
+      { id: "mil_siege", name: "Siege lances", branch: "mil", tier: 4, needs: "mil_contracts", effects: [{ key: "nestDmg", mult: 2 }],
+        text: "Warship damage against nests and beacons x2." },
+      { id: "ind_drills", name: "Efficient drills", branch: "ind", tier: 1, needs: null, effects: [{ key: "mineRate", mult: 1.2 }],
+        text: "Mining rate +20% (miner 5 \u2192 6/s, hauler 4 \u2192 4.8/s)." },
+      { id: "ind_crews", name: "Lean crews", branch: "ind", tier: 2, needs: "ind_drills", effects: [{ key: "shipMaint", mult: 0.7 }],
+        text: "Miner and hauler maintenance x0.7 (30 \u2192 21, 50 \u2192 35 cr/min)." },
+      { id: "ind_modular", name: "Modular bases", branch: "ind", tier: 3, needs: "ind_crews", effects: [{ key: "baseUpkeep", mult: 0.65 }],
+        text: "Base upkeep, tiers and add-ons included, x0.65." },
+      { id: "ind_holds", name: "Deep holds", branch: "ind", tier: 4, needs: "ind_modular", effects: [{ key: "cargo", mult: 1.25 }],
+        text: "Cargo capacity +25% (miner 20 \u2192 25, hauler 60 \u2192 75)." },
+      { id: "log_credit", name: "Credit line", branch: "log", tier: 1, needs: null, effects: [{ key: "overdraft", add: -250 }, { key: "interest", mult: 0.5 }],
+        text: "Better credit terms: overdraft floor -250 \u2192 -500, and debt interest x0.5 (1.5% \u2192 0.75%/min)." },
+      { id: "log_docks", name: "Quick docks", branch: "log", tier: 2, needs: "log_credit", effects: [{ key: "unload", mult: 1.5 }, { key: "dock", add: 10 }],
+        text: "Unload speed x1.5 and drop-off range +10 at every base." },
+      { id: "log_engines", name: "Afterburners", branch: "log", tier: 3, needs: "log_docks", effects: [{ key: "shipSpeed", mult: 1.15 }],
+        text: "Miner and hauler speed +15%." },
+      { id: "log_depots", name: "Forward depots", branch: "log", tier: 4, needs: "log_engines", effects: [{ key: "baseCost", mult: 0.85 }],
+        text: "New base cost x0.85 (all materials)." },
+    ],
   };
 
   const T = TUNING;
@@ -214,7 +269,7 @@
     for (const r of RES) out[r] = Math.round((cost[r] || 0) * k);
     return out;
   }
-  function baseCost(state) { return scaleCost(T.baseCost, costMult(state.sector)); }
+  function baseCost(state) { return scaleCost(T.baseCost, costMult(state.sector) * techMult(state, "baseCost")); }   // tech: Forward depots
   function addonCost(state, kind) { return T.addons[kind] ? scaleCost(T.addons[kind].cost, costMult(state.sector)) : null; }
   function shipCost(state, type) { return scaleCost(SHIP_TYPES[type].cost, costMult(state.sector)); }
   function upgradeCost(state, baseId) {
@@ -316,10 +371,12 @@
     state.sectorTime = 0; state.won = false; state.wonAt = 0;
     state.bodies = []; state.bases = []; state.stars = []; state.storms = []; state.showers = [];
     state.events = []; state.aliens = []; state.shots = []; state.fx = [];
+    state.nests = []; state.waves = {}; state.sciSector = 0;
     state.bases.push(makeBase(0, state.w / 2 + (r() - 0.5) * 260 * k, state.h / 2 + (r() - 0.5) * 160 * k, true));
     generateBodies(state, r, n);
     generateStars(state, seed);
     generateStorms(state, seed);
+    api.generateNests(state, seed);
     state.hz = (seed ^ 0xA5A5A5A5) >>> 0;
     state.eventIn = eventsOn(n) ? T.events.firstDelay : 0;
     state.showerIn = showersOn(n) ? T.showers.firstDelay : 0;
@@ -346,6 +403,13 @@
       stats: { ore: 0, ice: 0, crystal: 0, lost: 0, kills: 0 },   // total mined, cargo lost (meteors, lost ships), aliens killed
       score: { mat: 0, bases: 0, sectors: 0, time: 0, kills: 0 },
       cleared: 0, starsGot: 0, hits: 0,
+      // science (slice a): points now and in total, raid points this sector (for the cap), owned node ids, the beacon and
+      // nests, the last raid id, and {alive, escaped} per raid
+      science: 0, sciTotal: 0, sciSector: 0, tech: [], nests: [], waveSeq: 0, waves: {},
+      // credits and the lose rules (slice b); rules is a copy of TUNING.lose
+      credits: T.econ.startCredits, debt: T.econ.debt.start, debtTick: T.econ.debt.every, brokeFor: 0, netNegFor: 0,
+      rules: Object.assign({}, T.lose), econStats: { earned: 0, maint: 0, upkeep: 0, interest: 0, repaid: 0 },
+      msgs: [],                                         // transient messages for the UI (see emit); never saved
       delivered: { ore: 0, ice: 0, crystal: 0 },        // units handed in, by type
       starsPaid: [],                                    // star keys already paid to someone; each star pays once per save
     };
@@ -354,10 +418,656 @@
   function newGame(seed, sector) {
     seed = (seed >>> 0);
     const state = blankState(seed);
+    state.rules = Object.assign({}, T.lose);
     buildSector(state, clampSector(sector));
     addShip(state, "miner");
     addShip(state, "miner");
     return state;
+  }
+
+  // ---------------------------------------------------------------- contract: messages, run end, tech, hooks
+  // Shared plumbing for the science tree (slice a) and the economy and lose rules (slice b). The hook calls that shared
+  // functions make go through "api" (the exported object), so a test can swap one of them for a spy.
+
+  // Every way a run can end (state.endReason). deserialize keeps any of these.
+  const END_REASONS = ["retired", "stranded", "destroyed", "bankrupt", "debt", "timeout"];
+
+  // Queue a message for the UI and the tests: {type, ...payload}. Capped; never saved.
+  function emit(state, type, payload) {
+    if (!Array.isArray(state.msgs)) state.msgs = [];
+    const e = { type: String(type) };
+    if (payload) for (const k of Object.keys(payload)) if (k !== "type") e[k] = payload[k];
+    state.msgs.push(e);
+    if (state.msgs.length > T.msgs.max) state.msgs.splice(0, state.msgs.length - T.msgs.max);
+  }
+
+  // Every queued message, oldest first; the queue is emptied.
+  function drainEvents(state) { return Array.isArray(state.msgs) ? state.msgs.splice(0) : []; }
+
+  // End the run for one of END_REASONS (anything else counts as "retired"). The first cause stays; false if already over.
+  function endRun(state, cause) {
+    if (state.over) return false;
+    state.over = true;
+    state.endReason = END_REASONS.indexOf(cause) >= 0 ? cause : "retired";
+    emit(state, "run:end", { cause: state.endReason });
+    return true;
+  }
+
+  const TECH_BY_ID = Object.create(null);
+  for (const node of T.tech) TECH_BY_ID[node.id] = node;
+
+  function hasTech(state, id) { return !!state.tech && state.tech.indexOf(id) >= 0; }
+
+  // Product of the mult of every owned node's effects with this key; 1 when there are none.
+  function techMult(state, key) {
+    const list = state.tech;
+    let m = 1;
+    if (!list || !list.length) return m;
+    for (let i = 0; i < list.length; i++) {
+      const node = TECH_BY_ID[list[i]];
+      if (!node) continue;
+      for (const e of node.effects) if (e.key === key && typeof e.mult === "number") m *= e.mult;
+    }
+    return m;
+  }
+
+  // Sum of the add of every owned node's effects with this key; 0 when there are none.
+  function techAdd(state, key) {
+    const list = state.tech;
+    let a = 0;
+    if (!list || !list.length) return a;
+    for (let i = 0; i < list.length; i++) {
+      const node = TECH_BY_ID[list[i]];
+      if (!node) continue;
+      for (const e of node.effects) if (e.key === key && typeof e.add === "number") a += e.add;
+    }
+    return a;
+  }
+
+  // An alien of a raid is gone from the map: killed, or (escaped) it flew off after its time was up.
+  function waveGone(state, a, escaped) {
+    const w = a.wave >= 0 && state.waves ? state.waves[a.wave] : null;
+    if (!w) return;
+    w.alive = Math.max(0, w.alive - 1);
+    if (escaped) w.escaped++;
+  }
+
+  // Loads the nests of a version 3 save field by field. owner: slice a (keep it in step with any field a nest gains)
+  function sanitizeNests(list, state) {
+    const out = [];
+    for (const n of list.slice(0, 8)) {
+      if (!n || (n.kind !== "beacon" && n.kind !== "nest")) continue;
+      const max = Math.min(99999, Math.max(1, num(n.max, 1))), hp = Math.min(max, Math.max(0, num(n.hp, max)));
+      if (!Number.isInteger(n.id) || n.id < 0 || n.id > NEST_ID_MAX || out.some(o => o.id === n.id)) continue;   // a bad or repeated id drops the entry
+      out.push({ id: n.id, kind: n.kind, x: Math.min(state.w, Math.max(0, num(n.x, 0))), y: Math.min(state.h, Math.max(0, num(n.y, 0))),
+        hp, max, dead: n.dead === true || hp <= 0,
+        guardIn: Array.isArray(n.guardIn) ? n.guardIn.slice(0, 8).map(v => Math.min(600, Math.max(0, num(v, 0)))) : [] });
+    }
+    return out;
+  }
+
+  // ---------------------------------------------------------------- science, nests and the tech tree (slice a)
+  // Science comes only from fighting: raider, turret and guard kills and repelled waves (capped per sector), and the
+  // sector 2 beacon, alien nests and securing a sector (never capped). Mining, delivering, stars and building give none.
+
+  const NEST_ID_MAX = 999999;        // largest nest id: sanitizeNests and the alien "nest" field in deserialize share this bound
+  const NEST_ORDER = 100000000;      // a warship's wt at or above this is an attack order on nest (wt - NEST_ORDER)
+  // Geometry of the alien structures (world units): hit radius of a nest and of the beacon, clearance from the map edge,
+  // body edges, stars and each other when placing, guard orbit radius, placement tries.
+  const NEST_GEO = { nestR: 24, beaconR: 18, edge: 60, bodyClear: 40, starClear: 90, apart: 160, orbit: 70, tries: 240, crystalTries: 80 };
+  const CAPPED_SOURCES = { raider: true, turret: true, guard: true, wave: true };   // these share the per-sector raid cap
+
+  function nestById(state, id) {
+    const list = state.nests;
+    if (!list) return null;
+    for (let i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+    return null;
+  }
+
+  // The nests (not the beacon) still standing.
+  function liveNests(state) {
+    const out = [];
+    if (state.nests) for (let i = 0; i < state.nests.length; i++) if (state.nests[i].kind === "nest" && !state.nests[i].dead) out.push(state.nests[i]);
+    return out;
+  }
+
+  function nestCount(n) { const N = T.science.nest; return n < N.firstSector ? 0 : Math.min(N.max, N.base + Math.floor((n - N.firstSector) / N.every)); }
+  function nestHp(n) { const N = T.science.nest; return Math.round(N.hp * (1 + N.hpPerSector * Math.max(0, n - N.firstSector))); }
+
+  // What a source is worth in sector state.sector, before the cap. source: "raider" (killed by a warship), "turret",
+  // "guard", "wave", "beacon", "nest", "secured". 0 for anything else or before the source exists.
+  function scienceFor(state, source) {
+    const S = T.science, n = state.sector, A = T.aliens.firstSector;
+    switch (source) {
+      case "raider": return n >= A ? S.raider + Math.floor((n - A) / S.raiderEvery) : 0;
+      case "turret": return n >= A ? S.turretKill : 0;
+      case "guard": return n >= S.nest.firstSector ? S.guardKill : 0;
+      case "wave": return n >= A ? S.wave : 0;
+      case "beacon": return n === S.beacon.sector ? S.beacon.sci : 0;
+      case "nest": return n >= S.nest.firstSector ? S.nest.sci + S.nest.sciPerSector * (n - S.nest.firstSector) : 0;
+      case "secured": return n >= S.nest.firstSector ? S.secured : 0;
+    }
+    return 0;
+  }
+
+  // The most raider, turret and guard kills and wave bonuses can earn in this sector.
+  function raidScienceCap(state) {
+    const S = T.science;
+    return S.raidCap + S.raidCapPerSector * Math.max(0, state.sector - T.aliens.firstSector);
+  }
+
+  // Add science. Raid sources are cut to what is left under the sector's cap. Returns the new total (science in hand).
+  function awardScience(state, n, source) {
+    if (!(n > 0)) return state.science;
+    if (CAPPED_SOURCES[source]) {
+      n = Math.min(n, Math.max(0, raidScienceCap(state) - state.sciSector));
+      if (!(n > 0)) return state.science;
+      state.sciSector += n;
+    }
+    state.science += n;
+    state.sciTotal += n;
+    emit(state, "science:gain", { amount: n, source, total: state.science });
+    return state.science;
+  }
+
+  // Called when an alien dies (src: "warship" | "turret" | "alien"). Returns the science it earned. A guard pays its own
+  // kill and its nest starts a respawn timer; a raider pays by who killed it; the last raider of a wave (none escaped, no base
+  // lost while it lasted) adds the wave bonus.
+  function onAlienKilled(state, alien, src) {
+    const before = state.science;
+    if (alien.nest >= 0) {
+      const nest = nestById(state, alien.nest);
+      if (nest && !nest.dead) nest.guardIn.push(T.science.nest.guardRespawn);
+      awardScience(state, scienceFor(state, "guard"), "guard");
+    } else {
+      const source = src === "turret" ? "turret" : src === "alien" ? "" : "raider";
+      if (source) awardScience(state, scienceFor(state, source), source);
+      const w = alien.wave >= 0 && state.waves ? state.waves[alien.wave] : null;
+      if (w && w.alive === 0 && w.escaped === 0 && !w.lost && !w.repelled) {
+        w.repelled = true;
+        emit(state, "wave:repelled", { wave: alien.wave });
+        awardScience(state, scienceFor(state, "wave"), "wave");
+      }
+    }
+    return state.science - before;
+  }
+
+  // Places the sector's alien structures with their own generator (rng(seed ^ 0x4E57)), so bodies and stars never move:
+  // one derelict beacon in sector 2, nests from sector 3. They sit at least minHomeShare of the largest home-to-corner
+  // distance from home; the first nest goes within nearCrystal of the richest crystal body in that band, if there is one.
+  // Guards are not made here: each nest starts with its guards' timers at 0 and stepNests spawns them.
+  function generateNests(state, seed) {
+    const S = T.science, G = NEST_GEO, n = state.sector, out = [];
+    state.nests = out;
+    const beacon = n === S.beacon.sector, count = beacon ? 1 : nestCount(n);
+    if (!count || !state.bases.length) return;
+    const r = rng(seed ^ 0x4E57), home = state.bases[0], w = state.w, h = state.h;
+    let far = 0;
+    for (const cx of [0, w]) for (const cy of [0, h]) far = Math.max(far, Math.hypot(cx - home.x, cy - home.y));
+    const minHome = far * S.nest.minHomeShare;
+    let rich = null;
+    for (const b of state.bodies) {
+      if (b.res === "crystal" && Math.hypot(b.x - home.x, b.y - home.y) >= minHome && (!rich || b.max > rich.max)) rich = b;
+    }
+    const fits = (x, y, k) => {
+      if (x < G.edge || y < G.edge || x > w - G.edge || y > h - G.edge) return false;
+      if (Math.hypot(x - home.x, y - home.y) < minHome) return false;
+      for (const b of state.bodies) if (Math.hypot(x - b.x, y - b.y) < b.r + G.bodyClear * k) return false;
+      for (const st of state.stars) if (Math.hypot(x - st.x, y - st.y) < G.starClear * k) return false;
+      for (const o of out) if (Math.hypot(x - o.x, y - o.y) < G.apart * k) return false;
+      return true;
+    };
+    for (let i = 0; i < count; i++) {
+      let spot = null;
+      for (let pass = 0; pass < 3 && !spot; pass++) {
+        const k = pass === 0 ? 1 : pass === 1 ? 0.5 : 0;
+        for (let t = 0; t < G.tries && !spot; t++) {
+          let x, y;
+          if (i === 0 && rich && t < G.crystalTries) {
+            const a = r() * Math.PI * 2, lo = rich.r + G.bodyClear, d = lo + r() * Math.max(0, S.nest.nearCrystal - lo);
+            x = rich.x + Math.cos(a) * d; y = rich.y + Math.sin(a) * d;
+          } else {
+            x = G.edge + r() * (w - 2 * G.edge); y = G.edge + r() * (h - 2 * G.edge);
+          }
+          if (fits(x, y, k)) spot = { x, y };
+        }
+      }
+      if (!spot) spot = { x: home.x < w / 2 ? w - G.edge : G.edge, y: home.y < h / 2 ? h - G.edge : G.edge };   // the far corner
+      const max = beacon ? S.beacon.hp : nestHp(n);
+      const guardIn = [];
+      if (!beacon) for (let g = 0; g < S.nest.guards; g++) guardIn.push(0);
+      out.push({ id: i, kind: beacon ? "beacon" : "nest", x: spot.x, y: spot.y, hp: max, max, dead: false, guardIn });
+    }
+  }
+
+  function warshipNear(state, x, y, range) {
+    const r2 = range * range;
+    for (let i = 0; i < state.ships.length; i++) {
+      const s = state.ships[i];
+      if (s.dead || s.mothballed || !SHIP_TYPES[s.type].war) continue;
+      const dx = s.x - x, dy = s.y - y;
+      if (dx * dx + dy * dy <= r2) return true;
+    }
+    return false;
+  }
+
+  function spawnGuard(state, nest) {
+    const a = state.alienSeq * 2.399, al = makeAlien(state, nest.x + Math.cos(a) * NEST_GEO.orbit, nest.y + Math.sin(a) * NEST_GEO.orbit, state.sector);
+    al.nest = nest.id;
+    state.aliens.push(al);
+  }
+
+  // A nest heals while no warship is near, and brings back each dead guard when its timer runs out. A beacon does neither.
+  function stepNests(state, dt) {
+    if (!state.nests || !state.nests.length) return;
+    const N = T.science.nest;
+    for (let k = 0; k < state.nests.length; k++) {
+      const nest = state.nests[k];
+      if (nest.dead || nest.kind !== "nest") continue;
+      if (nest.hp < nest.max && !warshipNear(state, nest.x, nest.y, N.regenRange)) nest.hp = Math.min(nest.max, nest.hp + N.regen * dt);
+      for (let i = nest.guardIn.length - 1; i >= 0; i--) {
+        nest.guardIn[i] = Math.max(0, nest.guardIn[i] - dt);
+        if (nest.guardIn[i] <= 0 && state.aliens.length < T.aliens.max) { nest.guardIn.splice(i, 1); spawnGuard(state, nest); }
+      }
+    }
+  }
+
+  // A guard sits at its orbit spot by the nest. Any live ship within the leash of the nest, warships too, draws it: it
+  // closes to its hold distance (never past the leash) and fires like a raider.
+  function stepGuard(state, a, nest, dt, sp) {
+    const A = T.aliens, leash = T.science.nest.guardLeash, ships = state.ships;
+    let tgt = -1, bd = Infinity;
+    for (let j = 0; j < ships.length; j++) {
+      const s = ships[j];
+      if (s.dead || s.mothballed || Math.hypot(s.x - nest.x, s.y - nest.y) > leash) continue;
+      const dx = s.x - a.x, dy = s.y - a.y, d2 = dx * dx + dy * dy;
+      if (d2 < bd) { bd = d2; tgt = j; }
+    }
+    a.vx = 0; a.vy = 0;
+    if (a.cd > 0) a.cd = Math.max(0, a.cd - dt);
+    let gx, gy, hold = 0;
+    if (tgt >= 0) { gx = ships[tgt].x; gy = ships[tgt].y; hold = A.range * A.holdFrac; a.tgtKind = "ship"; a.tgt = tgt; }
+    else {
+      const ang = a.id * 2.399;
+      gx = nest.x + Math.cos(ang) * NEST_GEO.orbit; gy = nest.y + Math.sin(ang) * NEST_GEO.orbit;
+      a.tgtKind = ""; a.tgt = -1;
+    }
+    const dx = gx - a.x, dy = gy - a.y, d = Math.sqrt(dx * dx + dy * dy);
+    if (d > hold + 1e-6) {
+      const k = Math.min(sp, d - hold) / d;
+      let nx = a.x + dx * k, ny = a.y + dy * k;
+      const ex = nx - nest.x, ey = ny - nest.y, ed = Math.sqrt(ex * ex + ey * ey);
+      if (ed > leash) { nx = nest.x + ex / ed * leash; ny = nest.y + ey / ed * leash; }
+      a.vx = (nx - a.x) / dt; a.vy = (ny - a.y) / dt;
+      a.x = nx; a.y = ny;
+    }
+    if (tgt >= 0 && a.cd <= 0) {
+      const s = ships[tgt], ddx = s.x - a.x, ddy = s.y - a.y;
+      if (ddx * ddx + ddy * ddy <= A.range * A.range && fireShot(state, a.x, a.y, s.x, s.y, A.shotSpeed, a.dmg, "them", A.range + BASE_R, "alien")) a.cd = A.cd;
+    }
+  }
+
+  // Hurt a nest or the beacon. A warship's damage is raised by Siege lances. A kill pays its science, ends the nest's
+  // guards (they fall with it), and emits "nest:destroyed". Returns {killed, science}.
+  function damageNest(state, id, dmg, by) {
+    const nest = nestById(state, id);
+    if (!nest || nest.dead || !(dmg > 0)) return { killed: false };
+    if (by === "warship") dmg *= techMult(state, "nestDmg");
+    nest.hp -= dmg;
+    if (nest.hp > 0) return { killed: false };
+    nest.hp = 0; nest.dead = true; nest.guardIn = [];
+    pushFx(state, "boom", nest.x, nest.y, nest.x, nest.y);
+    for (let i = state.aliens.length - 1; i >= 0; i--) {
+      const g = state.aliens[i];
+      if (g.nest === nest.id) { pushFx(state, "kill", g.x, g.y, g.x, g.y); state.aliens.splice(i, 1); }
+    }
+    const before = state.science;
+    awardScience(state, scienceFor(state, nest.kind), nest.kind);
+    emit(state, "nest:destroyed", { id: nest.id, kind: nest.kind, sector: state.sector });
+    return { killed: true, science: state.science - before };
+  }
+
+  // +5 for warping with every nest of the sector destroyed. Returns the bonus.
+  function scienceOnWarp(state) {
+    const nests = state.nests ? state.nests.filter(o => o.kind === "nest") : [];
+    if (!nests.length || nests.some(o => !o.dead)) return 0;
+    const before = state.science;
+    awardScience(state, scienceFor(state, "secured"), "secured");
+    return state.science - before;
+  }
+
+  // ---- the tech tree
+
+  function techCost(node) { return T.techCost[node.tier - 1]; }
+
+  // "owned", "available" (the node below is owned and there is enough science), "short" (the node below is owned,
+  // science is not enough) or "locked" (the node below is not owned yet; also for an unknown id).
+  function techState(state, id) {
+    const node = typeof id === "string" ? TECH_BY_ID[id] : null;
+    if (!node) return "locked";
+    if (hasTech(state, id)) return "owned";
+    if (node.needs && !hasTech(state, node.needs)) return "locked";
+    return state.science + 1e-9 >= techCost(node) ? "available" : "short";
+  }
+
+  function unlockTech(state, id) {
+    const node = typeof id === "string" ? TECH_BY_ID[id] : null;
+    if (!node) return { ok: false, reason: "No such tech." };
+    if (state.over) return { ok: false, reason: "This run is over." };
+    if (hasTech(state, id)) return { ok: false, reason: node.name + " is already yours." };
+    if (node.needs && !hasTech(state, node.needs)) return { ok: false, reason: "Needs " + TECH_BY_ID[node.needs].name + "." };
+    const cost = techCost(node);
+    if (state.science + 1e-9 < cost) return { ok: false, reason: "Need " + Math.ceil(cost - state.science - 1e-9) + " more science." };
+    state.science -= cost;
+    if (state.science < 0) state.science = 0;
+    state.tech.push(id);
+    emit(state, "tech:unlock", { id });
+    for (const s of state.ships) if (!s.dead && SHIP_TYPES[s.type].war) syncWarshipHp(state, s, SHIP_TYPES[s.type]);
+    return { ok: true, cost };
+  }
+
+  // ---- what the tree changes in the rules (the economy ones are read in slice b through techMult and techAdd)
+
+  // Cargo a ship holds: Deep holds raises it.
+  function cargoCap(state, def) { return def.cap * techMult(state, "cargo"); }
+  // Units a base takes in per second, and how far from it a ship can drop off: Quick docks raises both.
+  function unloadRate(state, base) { return T.upgrades[base.tier | 0].unload * techMult(state, "unload"); }
+  function dockRange(state, base) { return T.upgrades[base.tier | 0].dock + techAdd(state, "dock"); }
+
+  // A warship's maximum HP follows Hardened hulls; the share of health it has stays the same.
+  function syncWarshipHp(state, ship, def) {
+    const want = Math.round(def.hp * techMult(state, "warshipHp"));
+    if (ship.maxHp === want) return;
+    const share = ship.maxHp > 0 ? ship.hp / ship.maxHp : 1;
+    ship.maxHp = want;
+    ship.hp = Math.min(want, share * want);
+  }
+
+  // What a warship's attack order points at: {kind: "alien" | "nest", id}, or null when it has none.
+  function orderTarget(ship) {
+    if (ship.wo !== "attack" || !(ship.wt >= 0)) return null;
+    return ship.wt >= NEST_ORDER ? { kind: "nest", id: ship.wt - NEST_ORDER } : { kind: "alien", id: ship.wt };
+  }
+
+  // ---------------------------------------------------------------- economy and lose rules (slice b)
+  // Credits are a separate currency: earned on delivery (deliver), spent on maintenance and base upkeep every tick, on the
+  // starting debt, and on buying ore or ice. state.rules switches each lose rule on or off. Softener nodes reach in only
+  // through techMult(state, "shipMaint" | "warshipMaint" | "baseUpkeep" | "interest") and techAdd(state, "overdraft").
+
+  const NET_WARM = 30;         // seconds into the run before the "net is negative" clock may run
+  const OVERDRAWN_CALM = 10;   // the overdrawn warning may fire again only after credits stayed at 0 or more for this many seconds
+  const DEBT_RED = 60;         // the debt warning turns red this many seconds before the backstop
+
+  // Which warnings were already announced; lives only while the game runs (never saved), so a loaded game announces them again.
+  const econRun = new WeakMap();
+  function econRt(state) {
+    let r = econRun.get(state);
+    if (!r) { r = { marks: Object.create(null) }; econRun.set(state, r); }
+    return r;
+  }
+
+  // Credits per minute earned so far, averaged over the whole run (score.mat is every unit delivered at its credit value, so
+  // old saves have it too). It is worked out from saved numbers only, so a saved and reloaded game plays on identically.
+  function econIncome(state) { return state.score.mat / Math.max(1, state.time) * 60; }
+
+  function econClock(secs) { const s = Math.max(0, Math.ceil(secs - 1e-9)); return Math.floor(s / 60) + ":" + (s % 60 < 10 ? "0" : "") + (s % 60); }
+  function econFmt(n) { return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
+
+  // Running costs grow at half the rate of build costs, capped (see the design note).
+  function econScale(n) { const E = T.econ; return Math.min(E.scaleMax, 1 + E.scalePerSector * (Math.max(1, n) - 1)); }
+
+  // Credits per minute a ship costs now: its type's rate, scaled by sector and softeners, 20% when mothballed. Lost ships cost nothing.
+  function shipMaintRate(state, ship) {
+    if (ship.dead) return 0;
+    const E = T.econ, war = !!SHIP_TYPES[ship.type].war;
+    let r = (E.maint[ship.type] || 0) * econScale(state.sector) * techMult(state, war ? "warshipMaint" : "shipMaint");
+    if (ship.mothballed) r *= E.maint.mothball;
+    return r;
+  }
+
+  // Credits per minute a base costs: 0 for a home base itself, 35 for others, plus tiers and add-ons (home too). A base that is down pays nothing.
+  function baseUpkeepRate(state, base) {
+    if (base.down) return 0;
+    const U = T.econ.upkeep;
+    const r = (base.home ? U.home : U.base) + (base.tier | 0) * U.perTier + (base.shield ? U.shield : 0) + (base.turret ? U.turret : 0);
+    return r * econScale(state.sector) * techMult(state, "baseUpkeep");
+  }
+
+  // Credits per minute: maint and upkeep (what is being paid now), interest (what the debt grows by, not paid from credits),
+  // net = average income so far - maint - upkeep.
+  function econRates(state) {
+    const rules = state.rules || {}, E = T.econ;
+    let maint = 0, upkeep = 0, interest = 0;
+    if (rules.maintenance) for (let i = 0; i < state.ships.length; i++) maint += shipMaintRate(state, state.ships[i]);
+    if (rules.upkeep) for (let i = 0; i < state.bases.length; i++) upkeep += baseUpkeepRate(state, state.bases[i]);
+    if (rules.debt && state.debt > 0) interest = state.debt * E.debt.rate * techMult(state, "interest");
+    return { maint, upkeep, interest, net: econIncome(state) - maint - upkeep };
+  }
+
+  // The lowest credits may go before the bankruptcy clock runs (-250, or -500 with the credit line).
+  function econFloor(state) { return T.econ.bankrupt.floor + techAdd(state, "overdraft"); }
+
+  // Credits that the cargo still in holds will pay once it is handed in.
+  function carriedCredits(state) {
+    let c = 0;
+    for (let i = 0; i < state.ships.length; i++) {
+      const s = state.ships[i];
+      if (!s.dead && s.cargo > 0 && s.res) c += s.cargo * (T.econ.credit[s.res] || 0);
+    }
+    return c;
+  }
+
+  // The run ends for money reasons, unless it is also stranded: then it is "stranded".
+  function econEnd(state, cause) { endRun(state, isStranded(state) ? "stranded" : cause); }
+
+  // Seconds allowed in this sector, or 0 when the timer rule is off or the sector is exempt.
+  function timeLimit(state) {
+    const E = T.econ.timer;
+    if (!state.rules || !state.rules.timer || state.sector < E.firstSector) return 0;
+    return E.parMult * parTime(Math.min(state.sector, E.capSector));
+  }
+
+  function stepEconomy(state, dt) {
+    if (state.over || !(dt > 0)) return;
+    const E = T.econ, rules = state.rules, stats = state.econStats;
+
+    // maintenance and upkeep
+    const rates = econRates(state);
+    const m = rates.maint * dt / 60, u = rates.upkeep * dt / 60;
+    if (m || u) { state.credits -= m + u; stats.maint += m; stats.upkeep += u; }
+
+    // debt interest, compounded every 60 s of game time
+    if (rules.debt && state.debt > 0) {
+      state.debtTick -= dt;
+      while (state.debtTick <= 1e-7) {
+        const add = state.debt * E.debt.rate * techMult(state, "interest");
+        state.debt += add; stats.interest += add; state.debtTick += E.debt.every;
+      }
+    }
+
+    // bankruptcy: below the floor for the grace period ends the run; off, credits stop at the floor
+    const floor = econFloor(state);
+    if (rules.bankruptcy) {
+      if (state.credits < floor) state.brokeFor += dt; else state.brokeFor = 0;
+    } else {
+      state.brokeFor = 0;
+      if (state.credits < floor) state.credits = floor;
+    }
+
+    // the net-negative clock only runs once the income average has had time to settle
+    if (state.time >= NET_WARM) { if (rates.net < 0) state.netNegFor += dt; else state.netNegFor = 0; }
+
+    // debt backstop
+    if (rules.debt && state.debt > 0 && state.time + 1e-6 >= E.debt.dueTime) {
+      if (state.credits + 1e-9 >= state.debt) payDebt(state); else econEnd(state, "debt");
+    }
+    if (rules.bankruptcy && state.brokeFor + 1e-6 >= E.bankrupt.grace) econEnd(state, "bankrupt");
+    const lim = timeLimit(state);
+    if (lim > 0 && !state.won && state.sectorTime > lim) endRun(state, "timeout");
+
+    if (!state.over) econAnnounce(state, econRt(state), dt);
+  }
+
+  // Tell the UI when a warning starts, changes level (or passes 60/30/10 s for bankruptcy) and when it goes.
+  // The overdrawn warning is debounced: once announced it is only cleared (so it can fire again) after credits stayed >= 0 for OVERDRAWN_CALM s.
+  function econAnnounce(state, rt, dt) {
+    const list = econWarnings(state), seen = Object.create(null);
+    for (let i = 0; i < list.length; i++) {
+      const w = list[i];
+      seen[w.cause] = true;
+      const mark = w.level + (w.cause === "bankrupt" ? ":" + (w.secsLeft <= 10 ? 10 : w.secsLeft <= 30 ? 30 : 60) : "");
+      if (rt.marks[w.cause] !== mark) {
+        rt.marks[w.cause] = mark;
+        emit(state, "econ:warn", { cause: w.cause, level: w.level, secsLeft: w.secsLeft, text: w.text });
+      }
+    }
+    for (const cause of Object.keys(rt.marks)) {
+      if (seen[cause]) { if (cause === "overdrawn") rt.calm = 0; continue; }
+      if (cause === "overdrawn" && state.credits >= 0) {
+        rt.calm = (rt.calm || 0) + (dt > 0 ? dt : 0);
+        if (rt.calm < OVERDRAWN_CALM) continue;
+      }
+      delete rt.marks[cause]; emit(state, "econ:clear", { cause });
+      if (cause === "overdrawn") rt.calm = 0;
+    }
+  }
+
+  // The warnings to show now, pure: [{cause, level: "warn" | "danger", secsLeft, text}]. Causes: bankrupt, overdrawn, debt, timer, net.
+  function econWarnings(state) {
+    const out = [], E = T.econ, rules = state.rules || {};
+    if (rules.bankruptcy && state.credits < econFloor(state)) {
+      const left = Math.max(0, Math.ceil(E.bankrupt.grace - state.brokeFor - 1e-9));
+      out.push({ cause: "bankrupt", level: "danger", secsLeft: left,
+        text: "Bankrupt in " + econClock(left) + ": sell stock, mothball ships, or pay less upkeep." });
+    } else if (state.credits < E.bankrupt.blockShipsBelow) {
+      out.push({ cause: "overdrawn", level: "warn", secsLeft: 0, text: "Overdrawn: new ships and add-ons are blocked until credits are above 0." });
+    }
+    if (rules.debt && state.debt > 0) {
+      // the backstop (and its warnings) counts credits only; the sector-3 warp check also counts cargo still aboard
+      const needDue = Math.ceil(state.debt - state.credits - 1e-9);
+      const needWarp = Math.ceil(state.debt - state.credits - carriedCredits(state) - 1e-9);
+      const left = Math.max(0, Math.ceil(E.debt.dueTime - state.time - 1e-9));
+      if (needDue > 0 && left <= DEBT_RED) out.push({ cause: "debt", level: "danger", secsLeft: left,
+        text: "Loan due in " + econClock(left) + ": " + econFmt(needDue) + " more credits needed, or the run ends." });
+      else if (state.sector >= E.debt.dueSector && needWarp > 0) out.push({ cause: "debt", level: "warn", secsLeft: left,
+        text: "Need " + econFmt(needWarp) + " more credits to warp." });
+      else if (needDue > 0 && left <= E.debt.warnSecs) out.push({ cause: "debt", level: "warn", secsLeft: left,
+        text: "Loan due in " + econClock(left) + ": " + econFmt(needDue) + " more credits needed." });
+    }
+    const lim = timeLimit(state);
+    if (lim > 0 && !state.won) {
+      const left = Math.max(0, Math.ceil(lim - state.sectorTime - 1e-9));
+      if (left <= E.timer.warnSecs) out.push({ cause: "timer", level: "danger", secsLeft: left, text: "Time left " + econClock(left) + " to clear this sector." });
+      else if (left <= lim * E.timer.warnShare) out.push({ cause: "timer", level: "warn", secsLeft: left, text: "Time left " + econClock(left) + " to clear this sector." });
+    }
+    if (state.netNegFor >= E.netWarnSecs) {
+      out.push({ cause: "net", level: "warn", secsLeft: 0,
+        text: "Spending more than you earn: -" + econFmt(-econRates(state).net) + " cr/min. Mothball idle ships or sell stock." });
+    }
+    return out;
+  }
+
+  // Pay debt from credits: all that can be paid, or amount if given. {ok, paid, reason?}
+  function payDebt(state, amount) {
+    if (state.over) return { ok: false, paid: 0, reason: "This run is over." };
+    if (!state.rules || !state.rules.debt || !(state.debt > 0)) return { ok: false, paid: 0, reason: "There is no debt to pay." };
+    if (!(state.credits > 0)) return { ok: false, paid: 0, reason: "No credits to pay with." };
+    let pay = Math.min(state.debt, state.credits);
+    if (amount !== undefined && amount !== null) {
+      if (!(amount > 0) || !isFinite(amount)) return { ok: false, paid: 0, reason: "Enter an amount above 0." };
+      pay = Math.min(pay, amount);
+    }
+    state.credits -= pay; state.debt -= pay; state.econStats.repaid += pay;
+    if (state.debt < 0.005) state.debt = 0;
+    emit(state, "debt:paid", { amount: pay, left: state.debt });
+    return { ok: true, paid: pay };
+  }
+
+  // Sell up to n units of stock for credits (as many as there are if fewer). {ok, credits, sold} or {ok:false, reason}
+  function sellStock(state, res, n) {
+    if (state.over) return { ok: false, reason: "This run is over." };
+    if (RES.indexOf(res) < 0) return { ok: false, reason: "Unknown material." };
+    n = Math.floor(Number(n));
+    if (!(n > 0)) return { ok: false, reason: "Choose an amount above 0." };
+    const sold = Math.min(n, Math.floor(state.stock[res] + 1e-9));
+    if (sold < 1) return { ok: false, reason: "No " + res + " in stock to sell." };
+    state.stock[res] -= sold;
+    if (state.stock[res] < 0) state.stock[res] = 0;
+    state.credits += sold * T.econ.exchange.sell[res];
+    return { ok: true, credits: state.credits, sold };
+  }
+
+  // Buy up to n units of ore or ice with credits (as many as the credits cover). Crystal cannot be bought.
+  function buyStock(state, res, n) {
+    const X = T.econ.exchange;
+    if (state.over) return { ok: false, reason: "This run is over." };
+    if (RES.indexOf(res) < 0) return { ok: false, reason: "Unknown material." };
+    if (!X.buyOn) return { ok: false, reason: "Buying is switched off." };
+    if (!X.buy[res]) return { ok: false, reason: "Crystal cannot be bought. Mine it." };
+    n = Math.floor(Number(n));
+    if (!(n > 0)) return { ok: false, reason: "Choose an amount above 0." };
+    const price = X.buy[res], bought = Math.min(n, Math.floor(Math.max(0, state.credits) / price + 1e-9));
+    if (bought < 1) return { ok: false, reason: "Need " + price + " credits for 1 " + res + "." };
+    state.credits -= bought * price;
+    state.stock[res] += bought;
+    return { ok: true, credits: state.credits, bought };
+  }
+
+  // Mothball a ship or wake it. Mothballing needs the ship at a base (within its dock range); it parks there, keeps its cargo
+  // and drops its orders, then costs 20% upkeep; waking takes wakeSecs before it works again. Allowed with every rule off.
+  function atBase(state, ship) {
+    const base = state.bases[nearestBase(state, ship.x, ship.y)], up = T.upgrades[base.tier | 0];
+    return Math.hypot(ship.x - base.x, ship.y - base.y) <= BASE_R + 10 + up.dock + MANUAL_SLACK;
+  }
+  function setMothball(state, shipId, on) {
+    const ship = state.ships[shipId];
+    if (!ship) return { ok: false, reason: "No such ship." };
+    if (state.over) return { ok: false, reason: "This run is over." };
+    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    if (on) {
+      if (ship.mothballed) return { ok: false, reason: ship.name + " is already mothballed." };
+      if (!atBase(state, ship)) return { ok: false, reason: "Dock at a base first" };
+      clearManual(ship);
+      ship.st = IDLE; ship.target = -1; ship.dest = -1; ship.star = -1;
+      ship.wait = 0; ship.mv = 0; ship.wo = ""; ship.wt = -1; ship.wake = 0;
+      ship.mothballed = true;
+      return { ok: true };
+    }
+    if (!ship.mothballed) return { ok: false, reason: ship.name + " is not mothballed." };
+    ship.mothballed = false;
+    ship.wake = T.econ.maint.wakeSecs;
+    return { ok: true };
+  }
+
+  // "" or why the warp is refused: the starting loan must be covered by credits plus the cargo still aboard (it is handed in
+  // after this check) once the sector is the due one.
+  function econWarpBlock(state) {
+    const rules = state.rules || {}, E = T.econ.debt;
+    if (!rules.debt || !(state.debt > 0) || state.sector < E.dueSector) return "";
+    const short = Math.ceil(state.debt - state.credits - carriedCredits(state) - 1e-9);
+    if (short <= 0) return "";
+    emit(state, "debt:refused", { need: short });
+    return "The starting loan (" + econFmt(state.debt) + " cr) is due before you leave sector " + E.dueSector + ". You need " + econFmt(short) + " more credits. Sell stock or deliver more.";
+  }
+
+  // Called once the cargo is in: pays the loan at its due point.
+  function econOnWarp(state) {
+    const rules = state.rules || {};
+    if (rules.debt && state.debt > 0 && state.sector >= T.econ.debt.dueSector) payDebt(state);
+  }
+
+  // Can this cost be met from stock plus credits at the Buy prices? Crystal comes from stock only.
+  function canAffordWithCredits(state, cost) {
+    const X = T.econ.exchange;
+    let cr = Math.max(0, state.credits);
+    for (let i = 0; i < RES.length; i++) {
+      const r = RES[i], need = (cost[r] || 0) - state.stock[r];
+      if (need <= 1e-9) continue;
+      if (!X.buyOn || !X.buy[r]) return false;
+      cr -= Math.ceil(need - 1e-9) * X.buy[r];
+      if (cr < -1e-9) return false;
+    }
+    return true;
   }
 
   // ---------------------------------------------------------------- costs and building
@@ -395,25 +1105,28 @@
   // One shape for a ship, whoever makes it. ix, iy: manual flight input (runtime only); mm: manual sub-mode 0 flying,
   // 1 mining, 2 unloading. hp/maxHp: health; dead: lost for good (the entry stays so ids hold); stun: flare seconds left;
   // rep: seconds left in a repair. Warship orders: wo "patrol" | "escort" | "attack" | "", wx/wy the patrol point,
-  // wt the escort ship id or attack alien id, cd the fire cooldown.
+  // wt the escort ship id or attack alien id, cd the fire cooldown. mothballed: parked at the base it docked at on a reduced running cost,
+  // wake: seconds left before a woken ship works again (both slice b).
   function makeShip(id, type, name) {
     const hp = SHIP_TYPES[type].hp;
     return { id, type, name,
       x: 0, y: 0, ang: 0,
       st: IDLE, target: -1, dest: -1, star: -1, cargo: 0, res: "", mv: 0, wait: 0, hitCd: 0,
       ix: 0, iy: 0, mm: 0,
-      hp, maxHp: hp, dead: false, stun: 0, rep: 0, wo: "", wx: 0, wy: 0, wt: -1, cd: 0 };
+      hp, maxHp: hp, dead: false, stun: 0, rep: 0, wo: "", wx: 0, wy: 0, wt: -1, cd: 0, mothballed: false, wake: 0 };
   }
 
   function makeAlien(state, x, y, n) {
     const hp = alienHp(n);
-    return { id: state.alienSeq++, x, y, vx: 0, vy: 0, hp, maxHp: hp, dmg: alienDmg(n), cd: T.aliens.cd, tgtKind: "", tgt: -1, age: 0 };
+    return { id: state.alienSeq++, x, y, vx: 0, vy: 0, hp, maxHp: hp, dmg: alienDmg(n), cd: T.aliens.cd, tgtKind: "", tgt: -1, age: 0,
+      wave: -1, nest: -1 };   // wave: the raid it came with (state.waves), nest: the nest it guards; -1 for neither
   }
 
   function buildShip(state, type, labels) {
     const def = SHIP_TYPES[type];
     if (!def) return { ok: false, reason: "Unknown ship type." };
     if (state.over) return { ok: false, reason: "This run is over." };
+    if (state.credits < T.econ.bankrupt.blockShipsBelow) return { ok: false, reason: "Overdrawn: new ships and add-ons are blocked until credits are above 0." };
     const cost = shipCost(state, type);
     if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials for " + an(lc(labels && labels.ship[type] || def.label)) + "." };
     pay(state, cost);
@@ -481,11 +1194,15 @@
   function warpToNextSector(state, labels) {
     if (state.over) return { ok: false, reason: "This run is over." };
     if (!state.won) return { ok: false, reason: "Build " + goalBases(state.sector) + " " + lc(labels ? labels.bases : "bases") + " first." };
+    const block = api.econWarpBlock(state);       // slice b: e.g. the starting debt cannot be paid
+    if (block) return { ok: false, reason: block };
     for (const s of state.ships) {            // cargo still aboard is handed in before the jump
       if (s.cargo > 0 && s.res) { deliver(state, s.res, s.cargo); }
       s.cargo = 0; s.res = ""; s.st = IDLE; s.target = -1; s.dest = -1; s.star = -1; s.wait = 0; s.hitCd = 0; s.mv = 0; s.mm = 0; s.ix = 0; s.iy = 0;
       s.stun = 0; s.rep = 0; s.cd = 0; s.wo = ""; s.wt = -1;   // the new map has no flares, repairs or aliens in progress
     }
+    api.scienceOnWarp(state);                    // slice a: the "sector secured" bonus
+    api.econOnWarp(state);                       // slice b: the debt is paid at its due point
     buildSector(state, state.sector + 1);
     state.clearInfo = null;
     for (const s of state.ships) parkShip(state, s);
@@ -498,10 +1215,20 @@
   function lostReason(ship) { return ship.dead ? ship.name + " was lost." : ""; }
   function warReason(ship) { return SHIP_TYPES[ship.type].war ? ship.name + " is a warship. It cannot mine. Give it a patrol, escort or attack order." : ""; }
 
+  // Slice b decides when a ship is out of reach of orders (mothballed, waking); both go through api so a test can swap them.
+  function shipAvailable(state, ship) { return !ship.dead && !ship.mothballed && !(ship.wake > 0); }   // owner: slice b
+  function shipUnavailableReason(state, ship) {                                                          // owner: slice b
+    if (ship.dead) return lostReason(ship);
+    if (ship.mothballed) return ship.name + " is mothballed. Wake it first (it takes " + T.econ.maint.wakeSecs + " seconds).";
+    if (ship.wake > 0) return ship.name + " is waking up. " + Math.ceil(ship.wake - 1e-9) + " more seconds.";
+    return "";
+  }
+  function unavailable(state, ship) { return api.shipAvailable(state, ship) ? null : { ok: false, reason: api.shipUnavailableReason(state, ship) }; }
+
   function orderShip(state, shipId, bodyId, labels) {
     const ship = state.ships[shipId], body = state.bodies[bodyId];
     if (!ship || !body) return { ok: false, reason: "No such ship or body." };
-    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    { const u = unavailable(state, ship); if (u) return u; }
     if (SHIP_TYPES[ship.type].war) return { ok: false, reason: warReason(ship) };
     if (body.amount <= 1e-6) return { ok: false, reason: bodyLabel(body, labels) + " is empty." };
     clearManual(ship);
@@ -519,7 +1246,7 @@
   function orderShipToStar(state, shipId, starId) {
     const ship = state.ships[shipId], star = state.stars[starId];
     if (!ship || !star) return { ok: false, reason: "No such ship or star." };
-    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    { const u = unavailable(state, ship); if (u) return u; }
     if (SHIP_TYPES[ship.type].war) return { ok: false, reason: warReason(ship) };
     if (star.taken) return { ok: false, reason: "That star is already taken." };
     clearManual(ship);
@@ -533,7 +1260,7 @@
   function recallShip(state, shipId) {
     const ship = state.ships[shipId];
     if (!ship) return { ok: false, reason: "No such ship." };
-    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    { const u = unavailable(state, ship); if (u) return u; }
     if (SHIP_TYPES[ship.type].war) return guardBase(state, ship, nearestBase(state, ship.x, ship.y));
     clearManual(ship);
     ship.target = -1;
@@ -556,7 +1283,7 @@
   function returnToBase(state, shipId, baseId, labels) {
     const ship = state.ships[shipId], base = state.bases[baseId];
     if (!ship || !base) return { ok: false, reason: "No such ship or " + (labels ? labels.base : "base") + "." };
-    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    { const u = unavailable(state, ship); if (u) return u; }
     if (SHIP_TYPES[ship.type].war) return guardBase(state, ship, baseId);
     clearManual(ship);
     ship.target = -1;
@@ -576,7 +1303,7 @@
     const ship = state.ships[shipId];
     if (!ship) return { ok: false, reason: "No such ship." };
     if (state.over) return { ok: false, reason: "This run is over." };
-    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    { const u = unavailable(state, ship); if (u) return u; }
     clearManual(ship);
     ship.st = MANUAL;
     ship.target = -1; ship.dest = -1; ship.star = -1; ship.wait = 0; ship.wo = ""; ship.wt = -1;
@@ -611,9 +1338,9 @@
     if (def.war) return { ok: false, reason: warReason(ship) };
     if (ship.stun > 0) return { ok: false, reason: ship.name + " is stunned by a solar flare." };
     if (ship.cargo > 0) {
-      const base = state.bases[nearestBase(state, ship.x, ship.y)], up = T.upgrades[base.tier | 0];
-      if (Math.hypot(ship.x - base.x, ship.y - base.y) <= BASE_R + 10 + up.dock + MANUAL_SLACK) {
-        ship.wait = ship.cargo / up.unload;
+      const base = state.bases[nearestBase(state, ship.x, ship.y)];
+      if (Math.hypot(ship.x - base.x, ship.y - base.y) <= BASE_R + 10 + dockRange(state, base) + MANUAL_SLACK) {
+        ship.wait = ship.cargo / unloadRate(state, base);
         deliver(state, ship.res, ship.cargo);
         ship.cargo = 0; ship.res = ""; ship.mm = 2;
         return { ok: true, did: "unload" };
@@ -630,7 +1357,7 @@
     }
     if (!best && wrongRes) return { ok: false, reason: "Carrying " + (L.res[ship.res] || ship.res) + ". Unload at a " + L.base + " first." };
     if (!best) return { ok: false, reason: "Nothing in reach." };
-    if (ship.cargo >= def.cap - 1e-9) return { ok: false, reason: "Full. Unload at a " + L.base + " first." };
+    if (ship.cargo >= cargoCap(state, def) - 1e-9) return { ok: false, reason: "Full. Unload at a " + L.base + " first." };
     ship.mm = 1; ship.target = best.id; ship.res = best.res;
     return { ok: true, did: "mine" };
   }
@@ -661,6 +1388,7 @@
   function orderToTarget(state, shipId, n, labels) {
     const ship = state.ships[shipId];
     if (!ship) return { ok: false, reason: "No such ship." };
+    { const u = unavailable(state, ship); if (u) return u; }
     const nb = state.bodies.length;
     if (Number.isInteger(n) && n >= 1 && n <= nb) return orderShip(state, shipId, n - 1, labels);
     if (Number.isInteger(n) && n > nb && n - nb <= state.stars.length) return orderShipToStar(state, shipId, n - nb - 1);
@@ -670,6 +1398,7 @@
   function orderNearestBase(state, shipId, labels) {
     const ship = state.ships[shipId];
     if (!ship) return { ok: false, reason: "No such ship." };
+    { const u = unavailable(state, ship); if (u) return u; }
     return returnToBase(state, shipId, nearestBase(state, ship.x, ship.y), labels);
   }
 
@@ -725,6 +1454,8 @@
 
   function deliver(state, res, amount) {
     state.stock[res] += amount;
+    const cr = amount * (T.econ.credit[res] || 0);       // slice b: the same units also pay credits
+    state.credits += cr; state.econStats.earned += cr;
     state.score.mat += amount * T.score.value[res];
     state.delivered[res] += amount;
   }
@@ -764,7 +1495,8 @@
     if (base.hp > 0) return;
     base.hp = 0;
     pushFx(state, "boom", base.x, base.y, base.x, base.y);
-    if (base.home) { if (!state.over) { state.over = true; state.endReason = "destroyed"; } }
+    for (const k of Object.keys(state.waves || {})) if (state.waves[k].alive > 0) state.waves[k].lost = true;   // no wave bonus for a wave that cost a base
+    if (base.home) endRun(state, "destroyed");
     else base.down = true;
   }
 
@@ -842,6 +1574,7 @@
   }
 
   function stepManual(state, ship, dt, mult, def) {
+    const cap = cargoCap(state, def), rate = def.rate * techMult(state, "mineRate");   // tech: Deep holds, Efficient drills
     if (ship.mm === 2) {                       // unloading: the delivery was made when it started
       ship.mv = 0;
       ship.wait -= dt;
@@ -855,13 +1588,13 @@
         const body = state.bodies[ship.target];
         ship.mv = 0;
         if (!body || body.amount <= 1e-6) { ship.mm = 0; ship.target = -1; return; }
-        const take = Math.min(def.rate * dt * mineMult(state, ship.x, ship.y), body.amount, def.cap - ship.cargo);
+        const take = Math.min(rate * dt * mineMult(state, ship.x, ship.y), body.amount, cap - ship.cargo);
         body.amount -= take;
         if (body.amount < 1e-6) body.amount = 0;
         ship.cargo += take;
         ship.res = body.res;
         state.stats[body.res] += take;
-        if (ship.cargo >= def.cap - 1e-9 || body.amount === 0) { ship.mm = 0; ship.target = -1; }
+        if (ship.cargo >= cap - 1e-9 || body.amount === 0) { ship.mm = 0; ship.target = -1; }
         return;
       }
     }
@@ -875,6 +1608,8 @@
 
   function stepShip(state, ship, dt) {
     if (ship.dead) return;
+    if (ship.mothballed) { ship.mv = 0; return; }
+    if (ship.wake > 0) { ship.wake = Math.max(0, ship.wake - dt); ship.mv = 0; return; }
     const def = SHIP_TYPES[ship.type];
     if (ship.hitCd > 0) ship.hitCd = Math.max(0, ship.hitCd - dt);
     if (state.showers.length) { meteorCheck(state, ship, dt); if (ship.dead) return; }
@@ -888,7 +1623,7 @@
       if (ship.wait <= 0) { ship.wait = 0; afterUnload(state, ship); }
       return;
     }
-    const mult = state.storms.length ? speedMult(state, ship.x, ship.y) : 1;
+    const mult = (state.storms.length ? speedMult(state, ship.x, ship.y) : 1) * techMult(state, "shipSpeed");   // tech: Afterburners (miners and haulers)
     if (ship.st === MANUAL) { stepManual(state, ship, dt, mult, def); return; }
     if (ship.st === TO_STAR) {
       const star = state.stars[ship.star];
@@ -914,24 +1649,24 @@
         return;
       }
       ship.mv = 0;
-      const take = Math.min(def.rate * dt * mineMult(state, ship.x, ship.y), body.amount, def.cap - ship.cargo);
+      const cap = cargoCap(state, def);
+      const take = Math.min(def.rate * techMult(state, "mineRate") * dt * mineMult(state, ship.x, ship.y), body.amount, cap - ship.cargo);
       body.amount -= take;
       if (body.amount < 1e-6) body.amount = 0;
       ship.cargo += take;
       ship.res = body.res;
       state.stats[body.res] += take;
-      if (ship.cargo >= def.cap - 1e-9 || body.amount === 0) ship.st = TO_BASE;
+      if (ship.cargo >= cap - 1e-9 || body.amount === 0) ship.st = TO_BASE;
       return;
     }
     // TO_BASE: fly to the chosen base (else the nearest) and get within its drop-off range, unload
     // (an upgraded base takes less time), then repeat the run if the body still has something
     let base = ship.dest >= 0 && ship.dest < state.bases.length ? state.bases[ship.dest] : null;
     if (!base || base.down) base = state.bases[nearestBase(state, ship.x, ship.y)];   // a base that is down takes no drop-offs
-    const up = T.upgrades[base.tier | 0];
-    const a = ship.id * 2.399, stop = BASE_R + 10 + up.dock;
+    const a = ship.id * 2.399, stop = BASE_R + 10 + dockRange(state, base);
     if (!moveTo(ship, base.x + Math.cos(a) * stop, base.y + Math.sin(a) * stop, dt, mult)) return;
     let wait = 0;
-    if (ship.cargo > 0) { wait = ship.cargo / up.unload; deliver(state, ship.res, ship.cargo); ship.cargo = 0; }
+    if (ship.cargo > 0) { wait = ship.cargo / unloadRate(state, base); deliver(state, ship.res, ship.cargo); ship.cargo = 0; }
     ship.res = "";
     ship.dest = -1;
     if (wait > 0) { ship.wait = wait; ship.st = UNLOADING; }
@@ -1026,20 +1761,34 @@
       e.x = side === 0 ? edge : side === 1 ? w - edge : edge + u * (w - 2 * edge);
       e.y = side === 2 ? edge : side === 3 ? h - edge : edge + u * (h - 2 * edge);
       e.r = T.aliens.markR; e.dur = 0; e.power = alienCount(n);
+      const live = liveNests(state);
+      if (live.length) {      // a known direction: the map edge nearest one of the live nests (the one picked by the same draw)
+        const nest = live[Math.min(live.length - 1, Math.floor(u * live.length))];
+        const dl = nest.x, dr = w - nest.x, dt = nest.y, db = h - nest.y, m = Math.min(dl, dr, dt, db);
+        e.x = m === dl ? edge : m === dr ? w - edge : Math.max(edge, Math.min(w - edge, nest.x));
+        e.y = m === dl || m === dr ? Math.max(edge, Math.min(h - edge, nest.y)) : m === dt ? edge : h - edge;
+      }
     }
     ev.push(e);
     state.eventIn = eventGap(n) * (1 - E.jitter / 2 + E.jitter * hrand(state));
+    if (kind === "raid") state.eventIn /= 1 + T.science.nest.raidBoost * liveNests(state).length;   // nests shorten the raid gap only
   }
 
   // The raid arrives: the aliens appear around the warned point at the edge of the map.
   function spawnRaid(state, e) {
     const A = T.aliens, n = state.sector;
     const count = Math.max(1, Math.floor(typeof e.power === "number" ? e.power : alienCount(n)));
+    const wave = state.waveSeq + 1;      // one id per raid that brings anyone
+    let made = 0;
     for (let i = 0; i < count && state.aliens.length < A.max; i++) {
       const x = Math.max(0, Math.min(state.w, e.x + (hrand(state) - 0.5) * 2 * e.r));
       const y = Math.max(0, Math.min(state.h, e.y + (hrand(state) - 0.5) * 2 * e.r));
-      state.aliens.push(makeAlien(state, x, y, n));
+      const al = makeAlien(state, x, y, n);
+      al.wave = wave;
+      state.aliens.push(al);
+      made++;
     }
+    if (made > 0) { state.waveSeq = wave; state.waves[wave] = { alive: made, escaped: 0 }; }
   }
 
   function alienById(state, id) {
@@ -1071,21 +1820,22 @@
   }
 
   // Fire a shot from (x, y) at (tx, ty) (already led). No-op when the shot list is full.
-  function fireShot(state, x, y, tx, ty, speed, dmg, side, range) {
+  function fireShot(state, x, y, tx, ty, speed, dmg, side, range, src) {
     if (state.shots.length >= T.combat.maxShots) return false;
     const dx = tx - x, dy = ty - y, d = Math.sqrt(dx * dx + dy * dy);
     if (!(d > 1e-6)) return false;
-    state.shots.push({ x, y, vx: dx / d * speed, vy: dy / d * speed, life: Math.min(T.combat.shotLife, range * T.combat.shotReach / speed), dmg, side });
+    state.shots.push({ x, y, vx: dx / d * speed, vy: dy / d * speed, life: Math.min(T.combat.shotLife, range * T.combat.shotReach / speed), dmg, side,
+      src: src || (side === "us" ? "warship" : "alien") });   // src: who fired it, "warship" | "turret" | "alien"
     return true;
   }
 
   // Fire at alien a from (x, y), leading it by its velocity.
-  function fireAtAlien(state, x, y, a, speed, dmg, range) {
+  function fireAtAlien(state, x, y, a, speed, dmg, range, src) {
     const dx = a.x - x, dy = a.y - y, t = Math.sqrt(dx * dx + dy * dy) / speed;
-    return fireShot(state, x, y, a.x + a.vx * t, a.y + a.vy * t, speed, dmg, "us", range);
+    return fireShot(state, x, y, a.x + a.vx * t, a.y + a.vy * t, speed, dmg, "us", range, src);
   }
 
-  function killAlien(state, index) {
+  function killAlien(state, index, src) {
     const A = T.aliens, a = state.aliens[index];
     state.score.kills += A.score;
     state.stats.kills++;
@@ -1095,6 +1845,8 @@
       state.stars.push({ id: state.stars.length, x: Math.max(m, Math.min(state.w - m, a.x)), y: Math.max(m, Math.min(state.h - m, a.y)), taken: false });
     }
     state.aliens.splice(index, 1);
+    waveGone(state, a, false);
+    api.onAlienKilled(state, a, src || "warship");     // slice a: science for the kill
   }
 
   function stepAliens(state, dt) {
@@ -1103,12 +1855,18 @@
     for (let i = 0; i < al.length; i++) {
       const a = al[i];
       a.age = (a.age || 0) + dt;
+      if (a.nest >= 0) {      // a nest guard: it stays near its nest and shoots any ship that comes close (warships too)
+        const nest = nestById(state, a.nest);
+        if (!nest || nest.dead) { al.splice(i, 1); i--; continue; }
+        stepGuard(state, a, nest, dt, sp);
+        continue;
+      }
       if (a.age > A.stay) {      // time to go: fly to the nearest map edge and leave (no score)
         const ex = a.x < state.w - a.x ? 0 : state.w, ey = a.y < state.h - a.y ? 0 : state.h;
         const alongX = Math.abs(a.x - ex) <= Math.abs(a.y - ey);
         const gx = alongX ? ex : a.x, gy = alongX ? a.y : ey, dx = gx - a.x, dy = gy - a.y, d = Math.sqrt(dx * dx + dy * dy);
         a.tgtKind = ""; a.tgt = -1;
-        if (d <= sp) { al.splice(i, 1); i--; continue; }
+        if (d <= sp) { waveGone(state, a, true); al.splice(i, 1); i--; continue; }
         a.vx = dx / d * sp / dt; a.vy = dy / d * sp / dt;
         a.x += dx / d * sp; a.y += dy / d * sp;
         continue;
@@ -1140,7 +1898,7 @@
       }
       if (a.cd > 0) a.cd = Math.max(0, a.cd - dt);
       if (a.cd <= 0 && d <= A.range + (kind === "base" ? BASE_R : 0)) {
-        if (fireShot(state, a.x, a.y, tx, ty, A.shotSpeed, a.dmg, "them", A.range + BASE_R)) a.cd = A.cd;
+        if (fireShot(state, a.x, a.y, tx, ty, A.shotSpeed, a.dmg, "them", A.range + BASE_R, "alien")) a.cd = A.cd;
       }
     }
   }
@@ -1153,7 +1911,7 @@
       if (b.cd > 0) b.cd = Math.max(0, b.cd - dt);
       if (b.cd > 0 || !state.aliens.length) continue;
       const k = alienIndexNear(state, b.x, b.y, U.range);
-      if (k >= 0 && fireAtAlien(state, b.x, b.y, state.aliens[k], U.shotSpeed, U.dmg, U.range)) b.cd = U.cd;
+      if (k >= 0 && fireAtAlien(state, b.x, b.y, state.aliens[k], U.shotSpeed, U.dmg, U.range, "turret")) b.cd = U.cd;
     }
   }
 
@@ -1177,8 +1935,14 @@
         for (let j = 0; j < al.length; j++) {
           if (segDist2(s.x, s.y, nx, ny, al[j].x, al[j].y) > ar2) continue;
           al[j].hp -= s.dmg;
-          if (al[j].hp <= 0) killAlien(state, j);
+          if (al[j].hp <= 0) killAlien(state, j, s.src);
           hit = true; break;
+        }
+        for (let j = 0; j < state.nests.length && !hit; j++) {     // a beacon or nest
+          const nest = state.nests[j], r = (nest.kind === "beacon" ? NEST_GEO.beaconR : NEST_GEO.nestR);
+          if (nest.dead || segDist2(s.x, s.y, nx, ny, nest.x, nest.y) > r * r) continue;
+          damageNest(state, nest.id, s.dmg, s.src || "warship");
+          hit = true;
         }
       } else {
         for (let j = 0; j < ships.length && !hit; j++) {
@@ -1202,18 +1966,38 @@
 
   // ---- warships
 
+  // Aliens in range come first (the ordered one before the others); with none in range, a beacon or nest: the ordered
+  // one, else the nearest. Damage is raised by Targeting computers.
   function warFire(state, ship, def) {
-    if (ship.cd > 0 || !state.aliens.length) return;
-    let k = -1;
-    if (ship.wo === "attack") {      // the ordered alien first, when it is in range
-      const a = alienById(state, ship.wt);
-      if (a) { const dx = a.x - ship.x, dy = a.y - ship.y; if (dx * dx + dy * dy <= def.range * def.range) k = state.aliens.indexOf(a); }
+    if (ship.cd > 0) return;
+    const dmg = def.dmg * techMult(state, "warshipDmg");
+    if (state.aliens.length) {
+      let k = -1;
+      if (ship.wo === "attack" && ship.wt < NEST_ORDER) {      // the ordered alien first, when it is in range
+        const a = alienById(state, ship.wt);
+        if (a) { const dx = a.x - ship.x, dy = a.y - ship.y; if (dx * dx + dy * dy <= def.range * def.range) k = state.aliens.indexOf(a); }
+      }
+      if (k < 0) k = alienIndexNear(state, ship.x, ship.y, def.range);
+      if (k >= 0) {
+        if (fireAtAlien(state, ship.x, ship.y, state.aliens[k], def.shotSpeed, dmg, def.range, "warship")) ship.cd = def.cd;
+        return;
+      }
     }
-    if (k < 0) k = alienIndexNear(state, ship.x, ship.y, def.range);
-    if (k >= 0 && fireAtAlien(state, ship.x, ship.y, state.aliens[k], def.shotSpeed, def.dmg, def.range)) ship.cd = def.cd;
+    if (!state.nests.length) return;
+    let nest = ship.wo === "attack" && ship.wt >= NEST_ORDER ? nestById(state, ship.wt - NEST_ORDER) : null;
+    if (nest && (nest.dead || Math.hypot(nest.x - ship.x, nest.y - ship.y) > def.range)) nest = null;
+    if (!nest) {
+      let bd = def.range;
+      for (let i = 0; i < state.nests.length; i++) {
+        const o = state.nests[i], d = Math.hypot(o.x - ship.x, o.y - ship.y);
+        if (!o.dead && d <= bd) { bd = d; nest = o; }
+      }
+    }
+    if (nest && fireShot(state, ship.x, ship.y, nest.x, nest.y, def.shotSpeed, dmg, "us", def.range, "warship")) ship.cd = def.cd;
   }
 
   function stepWarship(state, ship, dt, def) {
+    syncWarshipHp(state, ship, def);      // tech: Hardened hulls
     const mult = state.storms.length ? speedMult(state, ship.x, ship.y) : 1;
     if (ship.cd > 0) ship.cd = Math.max(0, ship.cd - dt);
     if (ship.st === MANUAL) { stepManual(state, ship, dt, mult, def); warFire(state, ship, def); return; }
@@ -1224,8 +2008,9 @@
       if (!t || t.dead) { ship.wo = "patrol"; ship.wx = ship.x; ship.wy = ship.y; ship.wt = -1; ship.mv = 0; }
       else moveNear(ship, t.x, t.y, def.follow, dt, mult);
     } else if (ship.wo === "attack") {
-      const a = alienById(state, ship.wt);
-      if (!a) { ship.wo = "patrol"; ship.wx = ship.x; ship.wy = ship.y; ship.wt = -1; ship.mv = 0; }
+      const nestTarget = ship.wt >= NEST_ORDER;
+      const a = nestTarget ? nestById(state, ship.wt - NEST_ORDER) : alienById(state, ship.wt);
+      if (!a || a.dead) { ship.wo = "patrol"; ship.wx = ship.x; ship.wy = ship.y; ship.wt = -1; ship.mv = 0; }
       else moveNear(ship, a.x, a.y, def.range * def.standoff, dt, mult);
     } else ship.mv = 0;
     warFire(state, ship, def);
@@ -1237,7 +2022,7 @@
     const ship = state.ships[shipId];
     if (!ship) return { ok: false, reason: "No such ship." };
     if (state.over) return { ok: false, reason: "This run is over." };
-    if (ship.dead) return { ok: false, reason: lostReason(ship) };
+    { const u = unavailable(state, ship); if (u) return u; }
     if (!SHIP_TYPES[ship.type].war) return { ok: false, reason: ship.name + " is not a warship." };
     return { ok: true, ship };
   }
@@ -1265,9 +2050,21 @@
     return { ok: true };
   }
 
-  function orderAttack(state, shipId, alienId) {
+  // target: an alien id (a number), {kind: "alien", id} or {kind: "nest", id} (a nest or the sector 2 beacon).
+  function orderAttack(state, shipId, target) {
     const g = warOrderGuard(state, shipId);
     if (!g.ok) return g;
+    let kind = "alien", alienId = target;
+    if (target && typeof target === "object") { kind = target.kind === "nest" ? "nest" : "alien"; alienId = target.id; }
+    if (kind === "nest") {
+      const nest = nestById(state, alienId);
+      if (!nest) return { ok: false, reason: "No such nest." };
+      if (nest.dead) return { ok: false, reason: "That " + nest.kind + " is already destroyed." };
+      const ship = g.ship;
+      clearManual(ship);
+      ship.st = IDLE; ship.wo = "attack"; ship.wt = NEST_ORDER + nest.id;
+      return { ok: true };
+    }
     if (!alienById(state, alienId)) return { ok: false, reason: "No such alien." };
     const ship = g.ship;
     clearManual(ship);
@@ -1284,6 +2081,7 @@
     if (state.over) return { ok: false, reason: "This run is over." };
     if (base.down) return { ok: false, reason: "This " + bw + " is down. Repair it first." };
     if (base[kind]) return { ok: false, reason: "This " + bw + " already has " + an(lc(def.label)) + "." };
+    if (state.credits < T.econ.bankrupt.blockShipsBelow) return { ok: false, reason: "Overdrawn: new ships and add-ons are blocked until credits are above 0." };
     const cost = addonCost(state, kind);
     if (!canAfford(state, cost)) return { ok: false, reason: "Not enough materials for " + an(lc(def.label)) + "." };
     pay(state, cost);
@@ -1345,20 +2143,21 @@
   }
 
   // Stranded: no material left anywhere to mine, nothing in a hold, and not enough for another base.
-  // (A new ship would have nothing to mine, so being able to afford one does not count.)
+  // (A new ship would have nothing to mine, so being able to afford one does not count.) Credits count at the Buy prices for ore
+  // and ice; crystal is stock only.
   function isStranded(state) {
     if (state.over || state.won) return false;
     let crew = false;      // every miner and hauler lost and no stock for a new miner: nothing can ever be mined again
     for (let i = 0; i < state.ships.length && !crew; i++) crew = !state.ships[i].dead && !SHIP_TYPES[state.ships[i].type].war;
-    if (!crew && !canAfford(state, shipCost(state, "miner"))) return true;
+    if (!crew && !canAffordWithCredits(state, shipCost(state, "miner"))) return true;
     for (let i = 0; i < state.bodies.length; i++) if (state.bodies[i].amount > 1e-6) return false;
     for (let i = 0; i < state.ships.length; i++) if (state.ships[i].cargo > 1e-9) return false;
-    return !canAfford(state, baseCost(state));
+    return !canAffordWithCredits(state, baseCost(state));
   }
 
   function retire(state) {
     if (state.over) return { ok: false, reason: "This run is already over." };
-    state.over = true; state.endReason = "retired";
+    endRun(state, "retired");
     return { ok: true };
   }
 
@@ -1367,12 +2166,14 @@
     state.time += dt;
     state.sectorTime += dt;
     stepHazards(state, dt);
+    api.stepNests(state, dt);
     const ships = state.ships;
     for (let i = 0; i < ships.length; i++) stepShip(state, ships[i], dt);
+    api.stepEconomy(state, dt);
     state.endTimer -= dt;
     if (state.endTimer <= 0) {
       state.endTimer = T.endCheckEvery;
-      if (isStranded(state)) { state.over = true; state.endReason = "stranded"; }
+      if (isStranded(state)) endRun(state, "stranded");
     }
   }
 
@@ -1409,12 +2210,15 @@
     if (def.war && ship.st !== MANUAL) {
       if (ship.wo === "patrol") return "Patrolling";
       if (ship.wo === "escort") { const t = state.ships[ship.wt]; return "Escorting " + (t ? shipLabel(t, labels) : "a ship"); }
-      if (ship.wo === "attack") return "Attacking an alien";
+      if (ship.wo === "attack") {
+        if (ship.wt >= NEST_ORDER) { const n = nestById(state, ship.wt - NEST_ORDER); return n && n.kind === "beacon" ? "Attacking a beacon" : "Attacking a nest"; }
+        return "Attacking an alien";
+      }
       return "On guard. Select it, then give an order.";
     }
     switch (ship.st) {
       case TO_BODY: return "Flying to " + (body ? bodyLabel(body, L) : "target");
-      case MINING: return "Mining " + (body ? bodyLabel(body, L) : "") + " " + r0(ship.cargo) + "/" + def.cap;
+      case MINING: return "Mining " + (body ? bodyLabel(body, L) : "") + " " + r0(ship.cargo) + "/" + r0(cargoCap(state, def));
       case TO_STAR: return "Flying to a star";
       case UNLOADING: return "Unloading";
       case MANUAL: return ship.mm === 1 ? "Manual: mining " + (body ? bodyLabel(body, L) : "") : ship.mm === 2 ? "Manual: unloading" : "Manual";
@@ -1445,6 +2249,7 @@
   function spawnStress(state, total, aliens) {
     if (!state.stress) {
       state.stress = true;
+      for (const k of Object.keys(state.rules)) state.rules[k] = false;   // the test fleet runs with every lose rule off
       for (const b of state.bodies) { b.amount *= 8; b.max *= 8; }
     }
     const r = rng(state.seed ^ 0x5eed);
@@ -1466,8 +2271,9 @@
 
   // ---------------------------------------------------------------- save / load
 
+  // Everything but the transient message queue.
   function serialize(state) {
-    return JSON.stringify(state);
+    return JSON.stringify(Object.assign({}, state, { msgs: undefined }));
   }
 
   function num(v, def) { return typeof v === "number" && isFinite(v) ? v : def; }
@@ -1480,8 +2286,9 @@
     let raw;
     try { raw = JSON.parse(text); } catch (e) { return { ok: false, error: "Save is not valid JSON." }; }
     if (!raw || typeof raw !== "object") return { ok: false, error: "Save is empty." };
-    if (raw.ver !== VERSION && raw.ver !== 1) return { ok: false, error: "Save is from a different version." };
+    if (raw.ver !== VERSION && raw.ver !== 2 && raw.ver !== 1) return { ok: false, error: "Save is from a different version." };
     const old = raw.ver === 1;
+    const pre3 = raw.ver < 3;          // before the credits, science and tech fields: they get their defaults
     if (!Array.isArray(raw.bodies) || !Array.isArray(raw.bases) || !Array.isArray(raw.ships) || !raw.stock) {
       return { ok: false, error: "Save is missing parts." };
     }
@@ -1553,7 +2360,8 @@
         state.aliens.push({ id: intIn(a.id, 0, 1e9, 0), x: Math.min(state.w, Math.max(0, num(a.x, 0))), y: Math.min(state.h, Math.max(0, num(a.y, 0))),
           vx: Math.min(500, Math.max(-500, num(a.vx, 0))), vy: Math.min(500, Math.max(-500, num(a.vy, 0))), hp, maxHp,
           dmg: Math.min(999, Math.max(0, num(a.dmg, alienDmg(sector)))), cd: Math.min(60, Math.max(0, num(a.cd, 0))),
-          tgtKind: kind, tgt: kind ? intIn(a.tgt, -1, 1e9, -1) : -1, age: Math.min(3600, Math.max(0, num(a.age, 0))) });
+          tgtKind: kind, tgt: kind ? intIn(a.tgt, -1, 1e9, -1) : -1, age: Math.min(3600, Math.max(0, num(a.age, 0))),
+          wave: intIn(a.wave, -1, 1e9, -1), nest: intIn(a.nest, -1, NEST_ID_MAX, -1) });
       }
       const seen = Object.create(null);
       let topId = -1;
@@ -1561,8 +2369,10 @@
       state.alienSeq = Math.max(topId + 1, intIn(raw.alienSeq, 0, 1e9, 0));
       for (const s of (Array.isArray(raw.shots) ? raw.shots.slice(0, T.combat.maxShots) : [])) {
         if (!s || (s.side !== "us" && s.side !== "them")) continue;
-        state.shots.push({ x: num(s.x, 0), y: num(s.y, 0), vx: Math.min(2000, Math.max(-2000, num(s.vx, 0))), vy: Math.min(2000, Math.max(-2000, num(s.vy, 0))),
-          life: Math.min(10, Math.max(0, num(s.life, 0))), dmg: Math.min(999, Math.max(0, num(s.dmg, 0))), side: s.side });
+        const shot = { x: num(s.x, 0), y: num(s.y, 0), vx: Math.min(2000, Math.max(-2000, num(s.vx, 0))), vy: Math.min(2000, Math.max(-2000, num(s.vy, 0))),
+          life: Math.min(10, Math.max(0, num(s.life, 0))), dmg: Math.min(999, Math.max(0, num(s.dmg, 0))), side: s.side };
+        if (s.src === "warship" || s.src === "turret" || s.src === "alien") shot.src = s.src;   // an older save's shots have none: counted as the side's default
+        state.shots.push(shot);
       }
       for (const f of (Array.isArray(raw.fx) ? raw.fx.slice(0, T.combat.fxMax) : [])) {
         if (!f || (f.kind !== "block" && f.kind !== "kill" && f.kind !== "boom")) continue;
@@ -1579,7 +2389,7 @@
       state.clearInfo = ci && typeof ci === "object" ? { sector: intIn(ci.sector, 1, 999, sector),
         sectorPts: Math.max(0, num(ci.sectorPts, 0)), timePts: Math.max(0, num(ci.timePts, 0)), secs: Math.max(0, num(ci.secs, 0)) } : null;
       state.over = !!raw.over;
-      state.endReason = state.over ? (raw.endReason === "stranded" ? "stranded" : raw.endReason === "destroyed" ? "destroyed" : "retired") : "";
+      state.endReason = state.over ? (END_REASONS.indexOf(raw.endReason) >= 0 ? raw.endReason : "retired") : "";
       if (state.endReason === "destroyed") state.bases[0].hp = 0;
       state.endTimer = Math.max(0, num(raw.endTimer, T.endCheckEvery));
     } else {
@@ -1595,6 +2405,8 @@
       // a save from before this field: its taken stars were already paid to whoever was playing
       for (const st of state.stars) if (st.taken) state.starsPaid.push(starKey(state, st));
     }
+    state.tech = [];      // read before the ships: their caps (Deep holds, Hardened hulls) depend on it
+    if (Array.isArray(raw.tech)) for (const id of raw.tech.slice(0, 64)) if (typeof id === "string" && TECH_BY_ID[id] && state.tech.indexOf(id) < 0) state.tech.push(id);
     for (let i = 0; i < raw.ships.length; i++) {
       const s = raw.ships[i];
       if (!s || typeof s.type !== "string" || !Object.prototype.hasOwnProperty.call(SHIP_TYPES, s.type)) return { ok: false, error: "Save has a bad ship." };
@@ -1606,7 +2418,7 @@
       const dest = intIn(s.dest, -1, 1e9, -1);
       const star = intIn(s.star, -1, 1e9, -1);
       const res = RES.indexOf(s.res) >= 0 ? s.res : "";
-      const cargo = res ? Math.min(SHIP_TYPES[s.type].cap, Math.max(0, num(s.cargo, 0))) : 0;
+      const cargo = res ? Math.min(cargoCap(state, SHIP_TYPES[s.type]), Math.max(0, num(s.cargo, 0))) : 0;
       const ship = makeShip(i, s.type, String(s.name || SHIP_TYPES[s.type].label));
       Object.assign(ship, { x: num(s.x, 0), y: num(s.y, 0),
         ang: num(s.ang, 0), st, target: target < state.bodies.length ? target : -1,
@@ -1614,7 +2426,7 @@
         star: star < state.stars.length ? star : -1, cargo, res, mv: 0,
         wait: Math.max(0, num(s.wait, 0)), hitCd: Math.max(0, num(s.hitCd, 0)), ix: 0, iy: 0, mm });
       // health and hazards (absent in older saves: full health, nothing in progress)
-      ship.maxHp = SHIP_TYPES[s.type].hp;
+      ship.maxHp = SHIP_TYPES[s.type].war ? Math.round(SHIP_TYPES[s.type].hp * techMult(state, "warshipHp")) : SHIP_TYPES[s.type].hp;
       ship.hp = Math.min(ship.maxHp, Math.max(0, num(s.hp, ship.maxHp)));
       if (s.dead === true || ship.hp <= 0) {      // a lost ship stays lost: empty, still, no orders
         Object.assign(ship, { hp: 0, dead: true, st: IDLE, target: -1, dest: -1, star: -1, cargo: 0, res: "", mm: 0, wait: 0 });
@@ -1631,6 +2443,7 @@
       }
       if (!ship.dead) { ship.stun = Math.min(60, Math.max(0, num(s.stun, 0))); ship.rep = Math.min(10, Math.max(0, num(s.rep, 0))); }
       ship.cd = Math.min(60, Math.max(0, num(s.cd, 0)));
+      if (!ship.dead) { ship.mothballed = s.mothballed === true; ship.wake = Math.min(T.econ.maint.wakeSecs, Math.max(0, num(s.wake, 0))); }
       state.ships.push(ship);
     }
     for (const s of state.ships) {            // a ship that needs a target but has none just goes home
@@ -1646,6 +2459,41 @@
       const body = s.target >= 0 ? state.bodies[s.target] : null;   // cargo that does not fit the target is dropped
       if (body && (s.st === TO_BODY || s.st === MINING) && s.res !== body.res) { s.cargo = 0; s.res = ""; }
     }
+    // science, tech, nests, credits and the lose rules. A save from before version 3 gets the defaults: no science, no
+    // tech, nests regenerated from the seed at full health, 500 credits, no debt (so the debt rule is off for that run).
+    state.science = Math.max(0, num(raw.science, 0)); state.sciTotal = Math.max(state.science, num(raw.sciTotal, 0));
+    state.sciSector = Math.max(0, num(raw.sciSector, 0));
+    if (!pre3 && Array.isArray(raw.nests)) state.nests = sanitizeNests(raw.nests, state);
+    else api.generateNests(state, mapSeed(state.seed, sector));
+    state.waveSeq = intIn(raw.waveSeq, 0, 1e9, 0);
+    state.waves = {};
+    if (isObj(raw.waves)) {
+      for (const key of Object.keys(raw.waves).slice(0, 200)) {
+        const w = raw.waves[key];
+        if (/^\d+$/.test(key) && isObj(w)) {
+          state.waves[key] = { alive: 0, escaped: intIn(w.escaped, 0, 999, 0) };
+          if (w.lost === true) state.waves[key].lost = true;
+        }
+      }
+    }
+    for (const a of state.aliens) {          // alive is what is really on the map
+      if (a.wave < 0) continue;
+      if (!state.waves[a.wave]) state.waves[a.wave] = { alive: 0, escaped: 0 };
+      state.waves[a.wave].alive++;
+    }
+    for (const key of Object.keys(state.waves)) state.waveSeq = Math.max(state.waveSeq, Number(key));
+    const E = T.econ;
+    state.credits = pre3 ? E.oldSaveCredits : Math.min(1e9, Math.max(-1e7, num(raw.credits, E.startCredits)));
+    state.debt = pre3 ? 0 : Math.min(1e9, Math.max(0, num(raw.debt, 0)));
+    state.debtTick = pre3 ? E.debt.every : Math.min(E.debt.every, Math.max(0, num(raw.debtTick, E.debt.every)));
+    state.brokeFor = pre3 ? 0 : Math.min(1e6, Math.max(0, num(raw.brokeFor, 0)));
+    state.netNegFor = pre3 ? 0 : Math.min(1e6, Math.max(0, num(raw.netNegFor, 0)));
+    const rr = !pre3 && isObj(raw.rules) ? raw.rules : {};
+    for (const k of Object.keys(T.lose)) {
+      state.rules[k] = state.stress ? false : typeof rr[k] === "boolean" ? rr[k] : pre3 && k === "debt" ? false : T.lose[k];
+    }
+    const es = !pre3 && isObj(raw.econStats) ? raw.econStats : {};
+    for (const k of Object.keys(state.econStats)) state.econStats[k] = Math.min(1e12, Math.max(0, num(es[k], 0)));
     const dv = isObj(raw.delivered) ? raw.delivered : {};
     for (const k of RES) state.delivered[k] = Math.max(0, num(dv[k], 0));
     const out = { ok: true, state };
@@ -2274,7 +3122,7 @@
     };
   }
 
-  return {
+  const api = {
     newRoster, parseRoster, serializeRoster, currentPlayer, addPlayer, renamePlayer, choosePlayer,
     newRunLog, parseRunLog, serializeRunLog, shouldLogRun, runRecord, addRun,
     newBuyLog, parseBuyLog, serializeBuyLog, buyRecord, addBuy,
@@ -2286,7 +3134,7 @@
     rng, newGame, canAfford, buildShip, addShip, baseSpotProblem, placeBase, checkWin,
     clampSector, mapScale, worldSize, mapSeed, goalBases, amountMult, crystalCount, bodyCount, crystalRich, BODY_SPECS, costMult, stormCount, showersOn,
     showerGap, showerHit, parTime, baseCost, shipCost, upgradeCost, upgradeBase, warpToNextSector,
-    orderShip, orderShipToStar, recallShip, returnToBase, nearestBase, inStorm, step, isStranded, retire, scoreTotal,
+    shipAvailable, shipUnavailableReason, orderShip, orderShipToStar, recallShip, returnToBase, nearestBase, inStorm, step, isStranded, retire, scoreTotal,
     jobText, spawnStress, serialize, deserialize, addBackup,
     hrand, eventsOn, aliensOn, eventGap, eventPower, raidOdds, fogRadius, flareDur, showerRadius, showerDmg,
     alienCount, alienHp, alienDmg, alienSpeed, addonCost, buildAddon, repairCost, repairShip, repairBase,
@@ -2295,5 +3143,11 @@
     GAME_VERSION, FEEDBACK_SCHEMA, FEEDBACK_TYPES, FEEDBACK_MAX, FEEDBACK_URL, FEEDBACK_TIMEOUT_MS,
     feedbackId, validateFeedback, feedbackGameInfo, makeFeedback, feedbackReply, newFeedbackEntry, parseFeedbackList,
     serializeFeedbackList, feedbackText, feedbackExport,
+    // science, tech and lose-rule plumbing (see "contract" above)
+    END_REASONS, emit, drainEvents, endRun, hasTech, techMult, techAdd,
+    scienceFor, awardScience, onAlienKilled, generateNests, stepNests, damageNest, techState, unlockTech, scienceOnWarp,
+    raidScienceCap, techCost, cargoCap, unloadRate, dockRange, nestById, liveNests, orderTarget, NEST_ORDER, NEST_GEO,
+    econScale, econRates, stepEconomy, payDebt, sellStock, buyStock, setMothball, econWarpBlock, econOnWarp, timeLimit, econWarnings,
   };
+  return api;
 });

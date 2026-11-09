@@ -14,6 +14,10 @@
       <div class="res" id="res"></div>
       <div class="goal" id="goal"></div>
       <div class="goal" id="score"></div>
+      <div class="goal" id="sci" hidden></div>
+      <div class="goal" id="credits" hidden></div>
+      <div class="goal" id="debt" hidden></div>
+      <div class="goal" id="timeleft" hidden></div>
       <button id="b-player" type="button" title="Players: choose, add, rename, clear data, stats"></button>
       <button id="b-warp" class="primary" type="button" hidden>Warp to next sector</button>
       <div class="actions">
@@ -23,11 +27,13 @@
         <button id="b-new" type="button">New game</button>
         <button id="b-retire" type="button">Retire</button>
         <button id="b-scores" type="button">Scores</button>
+        <button id="b-tech" type="button" title="Tech tree (T)" hidden>Tech</button>
         <button id="b-hangar" type="button">Hangar</button>
         <button id="b-keys" type="button" aria-pressed="false" title="Keyboard mode: numbered targets, flying by hand (K)">Keyboard</button>
         <button id="b-feedback" type="button">Feedback</button>
       </div>
     </div>
+    <div id="warnbar" role="status" hidden></div>
     <div id="alerts"></div>
     <div id="hint"></div>
     <div id="keys" hidden></div>
@@ -66,6 +72,14 @@
         <div id="h-body"></div>
         <div id="h-history-wrap"><h2>History</h2><div id="h-history"></div></div>
         <div class="row"><button id="h-close" class="primary" type="button">Close</button></div>
+      </div>
+    </div>
+    <div id="tech" role="dialog" aria-modal="true" aria-labelledby="t-title" hidden>
+      <div class="card wide">
+        <h1 id="t-title">Tech</h1>
+        <div id="t-body"></div>
+        <div id="t-msg" role="status"></div>
+        <div class="row"><button id="t-close" class="primary" type="button">Close</button></div>
       </div>
     </div>
     <div id="dlg" hidden>
@@ -120,6 +134,10 @@
     <section class="panel">
       <h2>Build</h2>
       <div id="build"></div>
+    </section>
+    <section class="panel" id="econ" hidden>
+      <h2>Credits</h2>
+      <div id="econ-body"></div>
     </section>
     <section class="panel">
       <h2 id="bases-title">Bases <span id="bases-note">upgrade for speed and range</span></h2>

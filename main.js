@@ -38,7 +38,7 @@
   let roster = null, runLog = null, buyLog = null;   // only set when HAS
   let profile = G.newProfile(), looks = G.currentLooks(profile);
   const ui = { selected: null, placing: false, paused: false, mouse: null, winShown: false, winOpen: false,
-    endShown: false, endOpen: false, hangar: false, feedback: false, starsSeen: 0,
+    endShown: false, endOpen: false, hangar: false, tech: false, feedback: false, starsSeen: 0,
     dlg: [], sort: { col: "best", dir: "desc" }, noLog: false, keyboard: false, cursor: null };   // cursor: keyboard base-placement spot
   const view = { sc: 1, ox: 0, oy: 0, W: 1, H: 1, dpr: 1 };
   let skyStars = [], nebula = null, scene = null;   // scene: the entry of SCENES in use
@@ -1567,7 +1567,12 @@
     let tx = 0, ty = 0, col = "rgba(143,216,255,0.7)", ring = 0;
     if (ship.wo === "patrol") { tx = ship.wx; ty = ship.wy; ring = 11; }
     else if (ship.wo === "escort") { const t = game.ships[ship.wt]; if (!t || t.dead) return; tx = t.x; ty = t.y; ring = 24; }
-    else if (ship.wo === "attack") { const a = game.aliens.find(o => o.id === ship.wt); if (!a) return; tx = a.x; ty = a.y; ring = 18; col = "rgba(255,120,120,0.8)"; }
+    else if (ship.wo === "attack") {
+      const nestOrder = typeof G.NEST_ORDER === "number" && ship.wt >= G.NEST_ORDER;
+      const a = nestOrder ? G.nestById(game, ship.wt - G.NEST_ORDER) : game.aliens.find(o => o.id === ship.wt);
+      if (!a || a.dead) return;
+      tx = a.x; ty = a.y; ring = nestOrder ? G.NEST_GEO.nestR + 8 : 18; col = "rgba(255,120,120,0.8)";
+    }
     else return;
     ctx.strokeStyle = col; ctx.lineWidth = 1.2; ctx.setLineDash([4, 5]);
     ctx.beginPath(); ctx.moveTo(ship.x, ship.y); ctx.lineTo(tx, ty); ctx.stroke();
@@ -1595,7 +1600,7 @@
     if (dx * dx + dy * dy > 0.01) { ang = Math.atan2(dy, dx); alienAng.set(a.id, ang); }
     ctx.save();
     ctx.translate(a.x, a.y); ctx.rotate(ang);
-    if (!t) ctx.globalAlpha = 0.6;   // leaving the map
+    if (!t && !(a.nest >= 0)) ctx.globalAlpha = 0.6;   // leaving the map (nest guards idle at their nest and stay solid)
     ctx.drawImage(alienSprite(), -20, -20, 40, 40);
     ctx.restore();
     if (a.hp < a.maxHp) drawBar(a.x, a.y - 22, 26, a.hp / a.maxHp);
@@ -1752,6 +1757,65 @@
     ctx.restore();
   }
 
+  // The beacon and the alien nests, in world coordinates (inside frame's transform). owner: slice a
+  // Same look in every theme, like the aliens. A nest is a dark pink hive; the beacon is a cyan derelict. A health bar shows
+  // only when hurt; pips show the guards (filled alive, hollow waiting), with seconds to the next one back.
+  function drawNests() {
+    const list = game.nests;
+    if (!list || !list.length) return;
+    const geo = G.NEST_GEO, sel = chosenShip();
+    const target = sel && !sel.dead && sel.wo === "attack" && sel.wt >= G.NEST_ORDER ? sel.wt - G.NEST_ORDER : -1;
+    for (const n of list) {
+      if (n.dead) continue;
+      const beacon = n.kind === "beacon", r = beacon ? geo.beaconR : geo.nestR;
+      const pulse = reduceMotion ? 0.5 : 0.5 + 0.5 * Math.sin(time * 2 + n.id);
+      ctx.save();
+      ctx.translate(n.x, n.y);
+      const halo = ctx.createRadialGradient(0, 0, r * 0.5, 0, 0, r * 2.2);
+      const hc = beacon ? "95,208,230" : "255,95,168";
+      halo.addColorStop(0, "rgba(" + hc + "," + (0.16 + 0.12 * pulse) + ")"); halo.addColorStop(1, "rgba(" + hc + ",0)");
+      ctx.fillStyle = halo; ctx.fillRect(-r * 2.2, -r * 2.2, r * 4.4, r * 4.4);
+      ctx.lineJoin = "round"; ctx.lineWidth = 2;
+      ctx.beginPath();
+      if (beacon) { ctx.moveTo(0, -r); ctx.lineTo(r * 0.7, 0); ctx.lineTo(0, r); ctx.lineTo(-r * 0.7, 0); ctx.closePath(); }
+      else for (let k = 0; k < 6; k++) { const a = k * Math.PI / 3 + Math.PI / 6; ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); }
+      if (!beacon) ctx.closePath();
+      ctx.fillStyle = beacon ? "#12323c" : "#4a1038"; ctx.fill();
+      ctx.strokeStyle = beacon ? "#7fe0f0" : "#ff5fa8"; ctx.stroke();
+      ctx.beginPath(); ctx.arc(0, 0, r * 0.32, 0, Math.PI * 2);
+      ctx.fillStyle = beacon ? "rgba(190,250,255," + (0.5 + 0.4 * pulse) + ")" : "rgba(255,196,226," + (0.5 + 0.4 * pulse) + ")"; ctx.fill();
+      if (n.id === target) {
+        ctx.strokeStyle = "rgba(255,120,120,0.9)"; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(0, 0, r + 8, 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.restore();
+      if (n.hp < n.max) drawBar(n.x, n.y - r - 10, 34, n.hp / n.max);
+      if (!beacon) {
+        const total = (G.TUNING.science.nest.guards | 0), waiting = n.guardIn ? n.guardIn.length : 0;
+        let alive = 0;
+        for (const a of game.aliens) if (a.nest === n.id) alive++;
+        const shown = Math.max(total, alive + waiting);
+        ctx.lineWidth = 1.2; ctx.strokeStyle = "#ff5fa8"; ctx.fillStyle = "#ff5fa8";
+        for (let k = 0; k < shown; k++) {
+          const px = n.x + (k - (shown - 1) / 2) * 9, py = n.y + r + 9;
+          ctx.beginPath(); ctx.arc(px, py, 3, 0, Math.PI * 2);
+          if (k < alive) ctx.fill(); else ctx.stroke();
+        }
+        if (waiting) {
+          let soon = Infinity;
+          for (const v of n.guardIn) if (v > 0 && v < soon) soon = v;   // a timer stuck at 0 is a guard held back by the map alien limit: not counting down, so not shown
+          if (soon < Infinity) {
+            ctx.font = "600 10px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "rgba(255,196,226,0.9)";
+            ctx.fillText(Math.ceil(soon) + "s", n.x, n.y + r + 24);
+          }
+        }
+      } else {
+        ctx.font = "600 10px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "rgba(190,250,255,0.9)";
+        ctx.fillText("BEACON", n.x, n.y + r + 14);
+      }
+    }
+  }
+
   function frame(dt) {
     drawSky(dt);
     updateSpin(dt);
@@ -1763,6 +1827,7 @@
     for (const b of game.bodies) drawBody(b);
     for (const s of game.stars) if (!s.taken) drawStar(s);
     game.bases.forEach(drawBase);
+    drawNests();
     for (const s of game.ships) if (!s.dead) drawTrail(s, shipColor(s));
     for (const s of game.ships) if (!s.dead && (s.st === G.MINING || (s.st === G.MANUAL && s.mm === 1))) drawBeam(s);
     for (const s of game.ships) if (!s.dead) drawShip(s);
@@ -1842,6 +1907,156 @@
   // so a click never lands on a row that has just been thrown away.
   let boardRows = [];
 
+  // The science readout and the Tech button. They show from the first sector that can pay science (or once any is earned).
+  let sciShown = "", sciPulse = 0;
+  function renderScience() {
+    const live = !!game && (game.sector >= G.TUNING.science.firstSector || (game.sciTotal | 0) > 0 || (game.tech && game.tech.length > 0));
+    $("sci").hidden = !live; $("b-tech").hidden = !live;
+    if (!live) { sciShown = ""; return; }
+    const html = `Science <b>${Math.floor(game.science + 1e-9)}</b>`;
+    if (html !== sciShown) { sciShown = html; $("sci").innerHTML = html; }
+  }
+  function pulseScience() {
+    const el = $("sci");
+    if (reduceMotion || !el.classList) return;
+    el.classList.remove("pulse");
+    void el.offsetWidth;   // restart the animation
+    el.classList.add("pulse");
+    clearTimeout(sciPulse);
+    sciPulse = setTimeout(() => el.classList.remove("pulse"), 700);
+  }
+  const SCI_SOURCE = { raider: "raider", turret: "turret kill", guard: "guard", wave: "wave repelled", beacon: "beacon", nest: "nest", secured: "sector secured" };
+  let sciToastAt = 0, sciToastText = "", sciToastParts = 0;   // the text last shown by sciToast, so only a science toast is merged into
+  function sciToast(msg) {   // events from one tick share one toast, so a nest kill shows its points and its name
+    const now = Date.now(), el = $("toast");
+    const merge = now - sciToastAt < 150 && sciToastText && el.textContent === sciToastText && sciToastParts < 3 && sciToastText.length + msg.length < 80;
+    sciToastText = merge ? sciToastText + " · " + msg : msg;
+    sciToastParts = merge ? sciToastParts + 1 : 1;
+    toast(sciToastText);
+    sciToastAt = now;
+  }
+  function onScienceMsg(e) {   // one event from G.drainEvents
+    if (!e) return;
+    if (e.type === "science:gain") {
+      if (!(e.amount > 0)) return;
+      sciToast(`+${e.amount} science` + (SCI_SOURCE[e.source] ? ` (${SCI_SOURCE[e.source]})` : ""));
+      pulseScience(); renderScience();
+    } else if (e.type === "tech:unlock") {
+      const node = (G.TUNING.tech || []).find(o => o.id === e.id);
+      sciToast("Tech unlocked: " + (node ? node.name : e.id));
+      renderScience();
+    } else if (e.type === "nest:destroyed") sciToast(e.kind === "beacon" ? "Beacon destroyed" : "Nest destroyed");
+    else if (e.type === "wave:repelled") sciToast("Raid wave repelled");
+  }
+  // ---- credits, debt, warnings, the credits panel and the Mothball button (slice b)
+  const fmtCr = n => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const signedCr = n => (Math.round(n) < 0 ? "-" : "+") + fmtCr(Math.abs(n));
+  function pumpMsgs() { for (const e of G.drainEvents(game)) { onScienceMsg(e); onEconMsg(e); } }   // after a click: toast now, not later
+
+  // A Mothball / Wake button and a status tag, on the right of the ship's row. A click on it never selects the row.
+  function shipRowExtra(ship) {
+    const box = document.createElement("span"); box.className = "rowx";
+    const tag = document.createElement("small"); tag.className = "mtag";
+    const btn = document.createElement("button"); btn.type = "button"; btn.className = "moth";
+    btn.addEventListener("click", ev => { ev.stopPropagation(); mothballShip(ship.id); });
+    box.append(tag, btn);
+    return box;
+  }
+
+  function updateShipRowExtra(ship, node) {
+    const box = node.querySelector(".rowx");
+    if (!box) return;
+    box.hidden = ship.dead;
+    if (ship.dead) return;
+    const tag = box.firstChild, btn = box.lastChild, W = G.TUNING.econ.maint.wakeSecs;
+    const t = ship.mothballed ? "Mothballed" : ship.wake > 0 ? "Waking " + Math.ceil(ship.wake) + " s" : "";
+    const b = ship.mothballed || ship.wake > 0 ? "Wake" : "Mothball";
+    const title = ship.mothballed ? `Wake it. It works again after ${W} seconds (M)`
+      : ship.wake > 0 ? "Waking up" : `Park it at a base (dock first) on ${Math.round(G.TUNING.econ.maint.mothball * 100)}% running costs (M)`;
+    if (tag.textContent !== t) tag.textContent = t;
+    if (btn.textContent !== b) btn.textContent = b;
+    if (btn.title !== title) btn.title = title;
+    btn.disabled = game.over || (ship.wake > 0 && !ship.mothballed);
+  }
+
+  function mothballShip(id) {
+    const s = game && game.ships[id];
+    if (!s) return;
+    const r = G.setMothball(game, id, !s.mothballed);
+    if (!r.ok) toast(r.reason);
+    else { toast(shipName(s) + (s.mothballed ? " is mothballed at the base." : ` is waking up (${G.TUNING.econ.maint.wakeSecs} s).`)); saveNow(); }
+    boardKey = ""; refresh();
+  }
+
+  const econCache = { credits: "", debt: "", time: "", bar: "", body: "" };
+  function setCached(key, el, html) { if (econCache[key] !== html) { econCache[key] = html; el.innerHTML = html; } }
+
+  function renderEcon() {
+    const E = G.TUNING.econ, L = LB(), r = game.rules || {}, rates = G.econRates(game), by = {};
+    for (const w of G.econWarnings(game)) by[w.cause] = w;
+    const level = c => by[c] ? (by[c].level === "danger" ? "red" : "amber") : "";
+    const cr = $("credits"), dbt = $("debt"), tl = $("timeleft"), bar = $("warnbar");
+    cr.hidden = false; $("econ").hidden = false;
+    setCached("credits", cr, `<b>${fmtCr(game.credits)}</b> cr (${signedCr(rates.net)}/min)${game.credits < 0 ? " overdrawn" : ""}`);
+    cr.title = by.overdrawn ? by.overdrawn.text : by.net ? by.net.text : "Credits: earned on delivery, spent on running costs";
+    cr.classList.toggle("amber", game.credits < 0 || game.netNegFor >= E.netWarnSecs);
+    cr.classList.toggle("red", !!by.bankrupt);
+    const showDebt = !!r.debt && game.debt > 0;
+    dbt.hidden = !showDebt;
+    if (showDebt) {
+      const pct = +(E.debt.rate * 100 * G.techMult(game, "interest")).toFixed(2);
+      setCached("debt", dbt, `Debt <b>${fmtCr(game.debt)}</b> (+${pct}%/min), due leaving ${lc(L.sector)} ${E.debt.dueSector}`);
+      dbt.classList.toggle("amber", level("debt") === "amber"); dbt.classList.toggle("red", level("debt") === "red");
+    }
+    const lim = G.timeLimit(game), showTime = lim > 0 && !game.won;
+    tl.hidden = !showTime;
+    if (showTime) {
+      setCached("time", tl, `Time left <b>${fmtSecs(Math.ceil(lim - game.sectorTime))}</b>`);
+      tl.classList.toggle("amber", level("timer") === "amber"); tl.classList.toggle("red", level("timer") === "red");
+    }
+    const banners = ["bankrupt", "debt", "timer"].filter(c => by[c]).map(c => by[c]);
+    bar.hidden = !banners.length;
+    bar.classList.toggle("danger", banners.some(w => w.level === "danger"));
+    bar.style.top = (topH + 6) + "px";
+    const barKey = banners.map(w => w.text).join("\n");
+    if (econCache.bar !== barKey) {
+      econCache.bar = barKey; bar.textContent = "";
+      for (const w of banners) { const d = document.createElement("div"); d.textContent = w.text; bar.appendChild(d); }
+    }
+    // the credits panel
+    const X = E.exchange, n = X.step, can = !game.over;
+    const income = rates.net + rates.maint + rates.upkeep;
+    const line = (a, b) => `<div class="eco-line"><span>${a}</span><b>${b}</b></div>`;
+    let html = line("Income (run average)", signedCr(income) + "/min") + line("Ships", signedCr(-rates.maint) + "/min") +
+      line(L.bases, signedCr(-rates.upkeep) + "/min") + line("Net", signedCr(rates.net) + "/min");
+    if (showDebt) {
+      const payable = Math.min(game.debt, Math.max(0, game.credits));
+      html += line("Debt interest", "+" + fmtCr(rates.interest) + "/min (adds to the debt)") +
+        `<button type="button" data-eco="pay"${can && payable > 0 ? "" : " disabled"} title="Pay the debt from your credits">Pay debt<small>${fmtCr(payable)} of ${fmtCr(game.debt)} cr</small></button>`;
+    }
+    html += `<div class="eco-ex">` + G.RES.map(res => {
+      const have = Math.floor(game.stock[res] + 1e-9), sell = Math.min(n, have) * X.sell[res], price = X.buy[res];
+      const buy = X.buyOn && price ? `<button type="button" data-eco="buy:${res}"${can && game.credits >= price ? "" : " disabled"} title="Buy up to ${n} for ${price} cr each">Buy ${n}<small>-${fmtCr(Math.min(n, Math.floor(Math.max(0, game.credits) / price)) * price || price)} cr</small></button>` : "";
+      return `<div class="eco-row"><span>${L.res[res]} <b>${have}</b></span><button type="button" data-eco="sell:${res}"${can && have >= 1 ? "" : " disabled"} title="Sell up to ${n} for ${X.sell[res]} cr each">Sell ${n}<small>+${fmtCr(sell || X.sell[res])} cr</small></button>${buy}</div>`;
+    }).join("") + `</div>`;
+    if (econCache.body !== html) { econCache.body = html; setHtml($("econ-body"), html, "data-eco"); }
+  }
+
+  $("econ-body").addEventListener("click", ev => {
+    const btn = ev.target.closest("[data-eco]");
+    if (!btn || !game) return;
+    const [act, res] = btn.dataset.eco.split(":"), n = G.TUNING.econ.exchange.step;
+    const r = act === "pay" ? G.payDebt(game) : act === "sell" ? G.sellStock(game, res, n) : G.buyStock(game, res, n);
+    if (!r.ok) toast(r.reason); else saveNow();
+    pumpMsgs(); econCache.body = ""; buildHtml = ""; refresh();
+  });
+
+  // One message from the game: a warning is shown as a toast when it starts or changes (the banner and the top bar stay up on their own).
+  function onEconMsg(e) {
+    if (e.type === "econ:warn" && e.text) toast(e.text, true);
+    else if (e.type === "debt:paid") toast(e.left > 0 ? `Paid ${fmtCr(e.amount)} cr of the loan. ${fmtCr(e.left)} cr left.` : "The starting loan is paid off.");
+  }
+
   function renderBoard() {
     const list = $("board");
     const key = game.ships.map(s => s.id).join(",");
@@ -1863,6 +2078,8 @@
         bar.appendChild(fill);
         txt.append(name, hp, document.createElement("br"), job, bar);
         li.append(dot, txt, fix);
+        const extra = shipRowExtra(s);
+        if (extra) li.appendChild(extra);
         list.appendChild(li);
         return { li, dot, name, hp, job, fill, fix, last: "" };
       });
@@ -1870,6 +2087,7 @@
     let live = 0, busy = 0;
     for (let i = 0; i < game.ships.length; i++) {
       const s = game.ships[i], row = boardRows[i];
+      updateShipRowExtra(s, row.li);
       const pct = s.cargo > 0 ? Math.round((s.cargo / G.SHIP_TYPES[s.type].cap) * 100) : 0;
       const job = G.jobText(game, s, labelArg()), nm = shipName(s);
       const hurt = !s.dead && s.hp < s.maxHp, at = hurt && !game.over ? atBase(s) : -1;
@@ -1955,6 +2173,8 @@
     renderBases();
     if (ui.selected != null && (!game.ships[ui.selected] || game.ships[ui.selected].dead)) { ui.selected = null; boardKey = ""; buildHtml = ""; }   // the selected ship was lost
     renderBoard();
+    renderScience();
+    renderEcon();
     renderAlerts();
     $("b-pause").textContent = ui.paused ? "Resume" : "Pause";
     $("paused").style.display = ui.paused ? "block" : "none";
@@ -1965,7 +2185,7 @@
         : `Click ${an(lc(L.body.asteroid))} or ${an(lc(L.body.iceplanet))} to mine it, a star to collect it, or ${an(L.base)} to send it there (Esc to deselect)`)
       : ui.placing ? "Click empty space to place the base (Esc to cancel)"
       : "Click a planet or asteroid to mine it, a star to collect it, or a base to send this ship there (Esc to deselect)";
-    if (!ui.placing && isWar(chosenShip())) hint.textContent = "Warship: click an alien to attack, empty space to patrol there, Shift+click a ship to escort it (Esc to deselect)";
+    if (!ui.placing && isWar(chosenShip())) hint.textContent = "Warship: click an alien or nest to attack, empty space to patrol there, Shift+click a ship to escort it (Esc to deselect)";
     if (ui.keyboard && ui.placing) hint.textContent = `Arrow keys move the cursor (Shift: faster), Enter places the ${themed() ? L.base : "base"}, Esc cancels`;
     renderLegend();
     syncInert();
@@ -1987,6 +2207,18 @@
     focusCard();
   }
 
+  // Title and opening sentence of the run-end card, by game.endReason (L: the labels in use; crew: a miner or hauler is still
+  // afloat). The three economy causes are slice b's.
+  const END_TEXT = {
+    retired: { title: () => "Run over", text: () => "You retired the fleet. " },
+    stranded: { title: () => "Stranded", text: (L, crew) => crew ? "Nothing left to mine and not enough to build with. "
+      : `Every ${shipWord()} was lost and there is not enough left to build another. `},
+    destroyed: { title: L => (themed() ? L.home : "Home base") + " destroyed", text: L => `Your ${lc(L.home)} was destroyed. ` },
+    bankrupt: { title: () => "Bankrupt", text: () => `Bankrupt: credits stayed below ${fmtCr(G.TUNING.econ.bankrupt.floor + G.techAdd(game, "overdraft"))} for ${G.TUNING.econ.bankrupt.grace} seconds. ` },
+    debt: { title: () => "Defaulted", text: () => `Defaulted: the starting loan wasn't repaid by the ${Math.round(G.TUNING.econ.debt.dueTime / 60)}-minute deadline. ` },
+    timeout: { title: () => "Out of time", text: L => `Out of time: ${lc(L.sector)} ${game.sector}'s goal wasn't met within ${fmtSecs(G.timeLimit(game))}. ` },
+  };
+
   function showEnd() {
     ui.endShown = true; ui.endOpen = true;
     claim();
@@ -1995,11 +2227,9 @@
     logRun(game.endReason);
     const why = game.endReason, s = game.score, L = LB(), row = (a, b, cls) => `<tr${cls ? ` class="${cls}"` : ""}><td>${a}</td><td>${b}</td></tr>`;
     const crew = game.ships.some(sh => !sh.dead && !isWar(sh));   // a miner or hauler still afloat
-    $("end-title").textContent = why === "stranded" ? "Stranded" : why === "destroyed" ? (themed() ? L.home : "Home base") + " destroyed" : "Run over";
-    $("end-text").textContent = (why === "stranded"
-      ? (crew ? "Nothing left to mine and not enough to build with. " : `Every ${shipWord()} was lost and there is not enough left to build another. `)
-      : why === "destroyed" ? `Your ${lc(L.home)} was destroyed. `
-      : "You retired the fleet. ") + `You reached ${lc(L.sector)} ${game.sector} and cleared ${game.cleared}.`;
+    const ET = END_TEXT[why] || END_TEXT.retired;
+    $("end-title").textContent = ET.title(L);
+    $("end-text").textContent = ET.text(L, crew) + `You reached ${lc(L.sector)} ${game.sector} and cleared ${game.cleared}.`;
     $("end-score").innerHTML = row("Materials delivered", Math.floor(s.mat)) + row(L.bases + " built", Math.floor(s.bases)) +
       row(L.sector + "s cleared", Math.floor(s.sectors)) + row("Time bonus", Math.floor(s.time)) +
       (s.kills > 0 ? row("Aliens destroyed (" + ((game.stats && game.stats.kills) | 0) + ")", Math.floor(s.kills)) : "") + row("Score", total, "sum");
@@ -2065,6 +2295,100 @@
     (first || $("h-close")).focus();   // focus moves into the hangar
   }
 
+  // The tech tree window. openTech belongs to slice a: it sets ui.tech, shows #tech, fills #t-body and moves focus in.
+  let techOpener = null;
+  const TECH_BRANCH = { mil: "Military", ind: "Industry", log: "Logistics" };
+  const TECH_MARK = { owned: "✓ Owned", available: "● Available", short: "○ Not enough science", locked: "✕ Locked" };
+  function techNode(id) { return G.TUNING.tech.find(o => o.id === id); }
+  function renderTech() {
+    const T = G.TUNING.tech, br = ["mil", "ind", "log"];
+    const sci = Math.floor(game.science + 1e-9);
+    const cols = br.map(b => {
+      const nodes = T.filter(o => o.branch === b).sort((x, y) => x.tier - y.tier).map(o => {
+        const st = G.techState(game, o.id), cost = G.techCost(o);
+        let mark = TECH_MARK[st];
+        if (st === "short") mark = `○ Need ${Math.ceil(cost - game.science - 1e-9)} more`;
+        if (st === "locked" && o.needs) mark = `✕ Locked: needs ${techNode(o.needs).name}`;
+        return `<button type="button" class="tn tn-${st}" data-tech="${o.id}" data-col="${br.indexOf(b)}" data-tier="${o.tier}" aria-disabled="${st === "owned" || st === "available" ? "false" : "true"}">
+          <span class="tn-top"><b>${o.name}</b><span class="tn-cost">${cost} sci</span></span>
+          <span class="tn-fx">${o.text}</span><span class="tn-state">${mark}</span></button>`;
+      }).join("");
+      return `<div class="tcol"><h2>${TECH_BRANCH[b]}</h2>${nodes}</div>`;
+    }).join("");
+    setHtml($("t-body"), `<p class="note">Science <b>${sci}</b>. It comes from fighting: raiders, guards, nests, the sector 2 beacon and repelled waves. Arrow keys move, Enter buys, Esc or T closes.</p><div class="tgrid">${cols}</div>`, "data-tech");
+  }
+  function techMsg(msg, bad) {
+    const el = $("t-msg");
+    el.textContent = msg || ""; el.className = "f-status" + (msg ? (bad ? " err" : " ok") : "");
+  }
+  function openTech() {
+    if (!game || ui.tech || ui.feedback || ui.hangar || ui.dlg.length) return;
+    techOpener = document.activeElement;
+    ui.tech = true;
+    techMsg("");
+    renderTech();
+    $("tech").hidden = false;
+    $("win").hidden = true; $("end").hidden = true;
+    syncInert();
+    const body = $("t-body");
+    const first = body.querySelector(".tn-available") || body.querySelector(".tn-short") || body.querySelector("button");
+    (first || $("t-close")).focus();
+  }
+  function buyTech(id) {
+    const node = techNode(id);
+    if (!node) return;
+    const r = G.unlockTech(game, id);
+    if (!r.ok) { techMsg(r.reason || "Cannot buy that.", true); return; }
+    techMsg(`${node.name} unlocked for ${r.cost} science.`);
+    pumpMsgs();   // the game is paused here, so the loop would not
+    saveNow();
+    renderTech(); renderScience();
+  }
+  // Arrow keys walk the grid: left and right change branch at the same tier, up and down change tier.
+  function techArrow(ev) {
+    if (ev.key === "Enter" && ev.repeat) { ev.preventDefault(); return; }   // holding Enter must not re-buy and wipe the "unlocked" message
+    const dirs = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }, d = dirs[ev.key];
+    const a = document.activeElement;
+    if (!d || !a || !a.dataset || a.dataset.tech == null) return;
+    ev.preventDefault();
+    const col = +a.dataset.col + d[0], tier = +a.dataset.tier + d[1];
+    const n = $("t-body").querySelector(`[data-col="${col}"][data-tier="${tier}"]`);
+    if (n) n.focus();
+  }
+  $("t-body").addEventListener("keydown", techArrow);
+  $("t-body").addEventListener("click", ev => {
+    const b = ev.target.closest && ev.target.closest("[data-tech]");
+    if (b && game && ui.tech) buyTech(b.dataset.tech);
+  });
+  window.addEventListener("keydown", ev => {   // T closes the window it opened (keyActive is off while it is up)
+    if (!ui.tech || ui.feedback || ui.dlg.length || ui.hangar || !ev.key || ev.key.toLowerCase() !== "t") return;
+    if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.repeat) return;
+    const tag = ev.target && ev.target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (ev.stopImmediatePropagation) ev.stopImmediatePropagation();   // else the game's own T handler, next in line, would reopen it
+    closeTech();
+  });
+  function closeTech() {
+    ui.tech = false;
+    $("tech").hidden = true;
+    showCards();
+    syncInert();
+    focusBack(techOpener, "b-tech");
+    techOpener = null;
+  }
+
+  // C moves focus to the first button in the credits panel (Pay debt, Sell, Buy). M mothballs or wakes the selected ship.
+  function focusEcon() {
+    const b = $("econ-body").querySelector("button:not([disabled])");
+    if (b) b.focus(); else toast(`Credits ${fmtCr(game.credits)}. Nothing to press in the credits panel yet.`);
+  }
+  function toggleMothball() {
+    const s = needShip();
+    if (!s) return;
+    if (s.wake > 0 && !s.mothballed) return toast(shipName(s) + " is waking up.");
+    mothballShip(s.id);
+  }
+
   function closeHangar() {
     ui.hangar = false;
     $("hangar").hidden = true;
@@ -2083,7 +2407,7 @@
 
   // Everything behind a dialog or card is unreachable by Tab and click while it is open.
   function syncInert() {
-    const block = !!(ui.feedback || ui.hangar || ui.dlg.length || !$("end").hidden);   // the win card covers only the stage
+    const block = !!(ui.feedback || ui.hangar || ui.tech || ui.dlg.length || !$("end").hidden);   // the win card covers only the stage
     $("side").inert = block; $("topbar").inert = block; $("paused").inert = ui.feedback;
   }
 
@@ -2095,7 +2419,7 @@
   }
 
   // The win and run-end cards show only when no hangar or dialog is on top.
-  const modal = () => ui.hangar || ui.feedback || ui.dlg.length > 0;
+  const modal = () => ui.hangar || ui.tech || ui.feedback || ui.dlg.length > 0;
   function showCards() {
     $("win").hidden = modal() || !ui.winOpen; $("end").hidden = modal() || !ui.endOpen;
     focusCard();
@@ -2124,6 +2448,8 @@
   });
   $("h-close").addEventListener("click", closeHangar);
   $("b-hangar").addEventListener("click", () => (ui.hangar ? closeHangar() : openHangar()));
+  $("b-tech").addEventListener("click", () => (ui.tech ? closeTech() : openTech()));
+  $("t-close").addEventListener("click", closeTech);
   $("e-hangar").addEventListener("click", openHangar);
 
   // ---------------------------------------------------------------- players, scoreboard, stats
@@ -2468,7 +2794,7 @@
     fb.opener = opener || document.activeElement;
     fb.wasPaused = ui.paused;
     ui.feedback = true; ui.paused = true;
-    $("win").hidden = true; $("end").hidden = true; $("hangar").hidden = true; $("dlg").hidden = true;   // an open Players/Scores/Stats stack waits underneath
+    $("win").hidden = true; $("end").hidden = true; $("hangar").hidden = true; $("tech").hidden = true; $("dlg").hidden = true;   // an open Players/Scores/Stats stack waits underneath
     for (const id of ["side", "topbar", "paused"]) $(id).inert = true;   // nothing behind the dialog can be reached
     $("feedback").hidden = false;
     fbCount(); fbStatus("");
@@ -2482,7 +2808,7 @@
     ui.feedback = false; ui.paused = fb.wasPaused;
     $("feedback").hidden = true;
     for (const id of ["side", "topbar", "paused"]) $(id).inert = false;
-    $("hangar").hidden = !ui.hangar;
+    $("hangar").hidden = !ui.hangar; $("tech").hidden = !ui.tech;
     if (ui.dlg.length) showDlg(); else showCards();
     if (game) refresh();
     const back =fb.opener && document.contains(fb.opener) && fb.opener.getClientRects().length ? fb.opener : $("b-feedback");
@@ -2683,6 +3009,13 @@
         if (d <= Math.max(G.TUNING.aliens.r + 8, 14 / view.sc) && d < ad) { ad = d; al = a; }
       }
       if (al) return { kind: "alien", o: al };
+      let nd = Infinity, ne = null;   // no alien there: a live nest or the beacon
+      for (const n of game.nests || []) {
+        if (n.dead) continue;
+        const d = Math.hypot(n.x - p.x, n.y - p.y);
+        if (d <= Math.max((n.kind === "beacon" ? G.NEST_GEO.beaconR : G.NEST_GEO.nestR) + 8, 14 / view.sc) && d < nd) { nd = d; ne = n; }
+      }
+      if (ne) return { kind: "nest", o: ne };
     }
     let ship = null, sd = Infinity;   // ships win over whatever is beneath them
     for (const s of game.ships) {
@@ -2727,6 +3060,7 @@
     }
     if (war) {   // a warship: attack an alien, patrol at an empty spot, go home to a base; it cannot mine
       if (h && h.kind === "alien") { const r = G.orderAttack(game, sel.id, h.o.id); if (!r.ok) return toast(r.reason); }
+      else if (h && h.kind === "nest") { const r = G.orderAttack(game, sel.id, { kind: "nest", id: h.o.id }); if (!r.ok) return toast(r.reason); }
       else if (h && h.kind === "base") G.returnToBase(game, sel.id, game.bases.indexOf(h.o), labelArg());
       else if (h) {   // a body or star: the rules say why a warship cannot take it
         const r = h.kind === "star" ? G.orderShipToStar(game, sel.id, h.o.id) : G.orderShip(game, sel.id, h.o.id, labelArg());
@@ -2819,6 +3153,7 @@
     if (ui.feedback) return closeFeedback();
     if (ui.dlg.length) return popDlg();   // the top dialog; a stats view opened from the scoreboard goes back to it
     if (ui.hangar) return closeHangar();
+    if (ui.tech) return closeTech();
     clearDigits();
     const sel = game && ui.selected != null ? game.ships[ui.selected] : null;
     if (sel && sel.st === G.MANUAL) { G.releaseManual(game, sel.id); refresh(); return; }   // hand the ship back first
@@ -2845,7 +3180,7 @@
   const digits = { s: "", timer: 0 };
 
   function keyActive(ev) {
-    if (!game || ui.feedback || ui.hangar || ui.dlg.length || ui.winOpen || ui.endOpen) return false;
+    if (!game || ui.feedback || ui.hangar || ui.tech || ui.dlg.length || ui.winOpen || ui.endOpen) return false;
     if (!$("win").hidden || !$("end").hidden) return false;
     const t = ev && ev.target, tag = t && t.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable)) return false;
@@ -2888,8 +3223,17 @@
     const s = needWar();
     if (!s) return;
     const id = G.nearestAlien(game, s.x, s.y);
-    if (id < 0) return toast("No aliens on the map.");
-    const r = G.orderAttack(game, s.id, id);
+    let target = id;
+    if (id < 0) {   // no raiders or guards: the nearest nest or the beacon
+      let best = null, bd = Infinity;
+      for (const n of game.nests || []) {
+        const d = Math.hypot(n.x - s.x, n.y - s.y);
+        if (!n.dead && d < bd) { bd = d; best = n; }
+      }
+      if (!best) return toast("No aliens on the map.");
+      target = { kind: "nest", id: best.id };
+    }
+    const r = G.orderAttack(game, s.id, target);
     if (!r.ok) toast(r.reason);
     refresh();
   }
@@ -3030,6 +3374,9 @@
     if (lk === "k") { if (!ev.repeat) setKeyboard(!ui.keyboard); return; }
     if (!ui.placing && !ev.repeat) {
       if (lk === "r") { repairKey(); return; }   // repair works with keyboard mode off
+      if (lk === "t") { openTech(); return; }       // T, C and M also work with keyboard mode off
+      if (lk === "c") { focusEcon(); return; }
+      if (lk === "m") { toggleMothball(); return; }
       if ((lk === "x" || lk === "p" || lk === "g") && (ui.keyboard || isWar(chosenShip()))) {   // warship orders: with a warship selected, or in keyboard mode
         if (lk === "x") attackKey(); else if (lk === "p") patrolKey(); else escortKey();
         return;
@@ -3078,6 +3425,7 @@
       ["H", "nearest " + base], ["F", "fly it by hand / hand back"], ["WASD, arrows", "steer"], ["E", "mine or unload nearby, again to stop"],
       ["R", "repair it, or the " + base + " it is at (works with keyboard mode off)"],
       ["X", "warship: attack the nearest alien"], ["P", "warship: patrol where it is"], ["G", "warship: escort the nearest " + sh + " (not a warship)"],
+      ["T", "tech tree (science from conquest)"], ["C", "focus the credits panel"], ["M", "mothball or wake it"],
       ["B", "focus the build panel"], ["Esc", "hand back, then cancel"], ["K", "keyboard mode off"]];
     box.textContent = "";
     box.appendChild(el("b", "", "Keys"));
@@ -3114,6 +3462,7 @@
       let n = 0;
       while (acc >= STEP && n < MAX_STEPS) { G.step(game, STEP); time += STEP; acc -= STEP; n++; addTrailPoints(); }
       if (n === MAX_STEPS) acc = 0;
+      for (const e of G.drainEvents(game)) { onScienceMsg(e); onEconMsg(e); }
       G.checkWin(game);
       if (game.starsGot !== ui.starsSeen || game.over || (game.won && !ui.winShown)) refresh();
     }
