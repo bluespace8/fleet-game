@@ -1959,9 +1959,9 @@
       const upBtn = up
         ? `<button type="button" data-fl="up:${c.id}"${!game.over && G.canAfford(game, up) ? "" : " disabled"} title="More warships and a wider shield">Level ${c.lvl + 1}<small>${costText(up)}</small></button>`
         : `<small class="done">Top level</small>`;
-      const rows = mem.map(m => `<button type="button" data-fl="rel:${m.id}" title="Take it out of the fleet">${shipLabel(m)} &times;</button>`).join("");
-      const adds = mem.length < cap ? free.map(w => `<button type="button" data-fl="add:${w.id}:${c.id}" title="Assign to ${shipLabel(c)}">+ ${shipLabel(w)}</button>`).join("") : "";
-      return `<div class="base-row"><span class="lbl"><b>${shipLabel(c)} L${c.lvl}</b><small>${mem.length}/${cap} warships, shield radius ${G.shieldRadius(c)}</small></span>${upBtn}</div><div class="base-extra">${rows}${adds}</div>`;
+      const rows = mem.map(m => `<button type="button" data-fl="rel:${m.id}" title="Take it out of the fleet">${shipName(m)} &times;</button>`).join("");
+      const adds = mem.length < cap ? free.map(w => `<button type="button" data-fl="add:${w.id}:${c.id}" title="Assign to ${shipName(c)}">+ ${shipName(w)}</button>`).join("") : "";
+      return `<div class="base-row"><span class="lbl"><b>${shipName(c)} L${c.lvl}</b><small>${mem.length}/${cap} warships, shield radius ${G.shieldRadius(c)}</small></span>${upBtn}</div><div class="base-extra">${rows}${adds}</div>`;
     }).join("");
     if (html !== fleetsHtml) { fleetsHtml = html; setHtml($("fleets-body"), html, "data-fl"); }
   }
