@@ -49,6 +49,8 @@ The mouse always works. These keys add to it.
   **P** patrols where the ship is now, **G** escorts the nearest miner or hauler. These keys work in keyboard mode, or
   whenever a warship is selected (T works any time). Like every game key they do nothing while a dialog or card is open, or while you
   type in a text box. Tab, the number keys and flying by hand skip lost ships.
+- **Credits keys:** **C** moves focus to the credits panel (Pay debt, Sell, Buy). **M** mothballs the selected ship, or wakes
+  it if it is mothballed. Both work with keyboard mode off, and, like every game key, do nothing in a dialog or text box.
 - **Esc** closes things in this order: feedback form, dialog, Hangar, hand-flown ship, base placement or selection.
 - **Base placement:** click the New base button, then the arrow keys move a cursor from the middle of the map
   (Shift moves faster), **Enter** places the base and **Esc** cancels. Moving the mouse takes the ghost back.
@@ -118,6 +120,33 @@ Sector 1 is calm. Every warning shows in the top-left with a 10 second countdown
   nothing in any hold, and not enough materials for another base (or every miner and hauler is lost and you cannot afford
   another). Alien kills add to the score. The run-end screen shows the score breakdown and the
   best score so far.
+
+## Credits, running costs and the ways to lose
+
+Credits are a second currency. Every unit you deliver also pays credits (ore 1, ice 2, crystal 5); running costs take
+them away. Top bar: **credits** with the net rate ("1,240 cr (+180/min)", amber when you have been spending more than
+you earn for 10 seconds or are below 0), **Debt** and, if the timer is on, **Time left**. A banner under the top bar
+counts down any warning. The **Credits** panel shows the net breakdown, **Pay debt**, and **Sell 10 / Buy 10** for each
+material (you cannot buy crystal).
+
+- **Maintenance:** miner 30, hauler 50, warship 90 credits a minute. **Upkeep:** each base besides home 35, plus 10 per tier,
+  20 for a shield and 20 for a turret; a home base costs nothing itself. A lost ship or a downed base costs nothing.
+  Both grow 4% per sector (capped at x1.36).
+- **Mothball:** the Mothball button on a ship's row (or **M**) hands in its cargo, drops its orders and parks it at home
+  at once. It then costs 20% of its maintenance. Wake it to work again after 10 seconds. A mothballed or waking
+  ship takes no orders.
+- **Debt:** you start with a loan of 1,500 that grows 1.5% a minute (compounded every 60 s). It is due when you leave sector 3:
+  the warp is refused if credits plus the cargo still aboard fall short (the message says by how much), and paid
+  automatically when they cover it. Backstop: still unpaid at 45 minutes (2,700 s) and you cannot pay, the run ends.
+- **Bankruptcy:** below -250 credits for 60 seconds in a row ends the run. Getting back above clears the clock.
+  Below 0 you cannot build new ships or add-ons (a new base is still allowed).
+- **Timer:** a sector must be cleared within 1.5 x its par time (from sector 2; sector 10's limit after that).
+  Off by default.
+- **Stranded first:** if the run is also stranded, it ends as stranded. Being stranded counts credits at the Buy prices
+  (ore 3, ice 6) for ore and ice; crystal only counts from stock.
+- **Switches:** `state.rules` has `maintenance`, `upkeep`, `debt`, `bankruptcy` and `timer` (saved with the game).
+  A rule that is off never ends a run; with bankruptcy off, credits stop falling at the floor. Stress mode switches all off.
+  Tech nodes (Lean crews, Navy contracts, Modular bases, Credit line) soften the costs.
 
 ## Stars and the Hangar
 
@@ -199,6 +228,7 @@ a Mac) sends. No game key works while it is open.
 
 Saves from the first version (`first-playable`) load as sector 1, with a notice. Stars for that map are
 made from its seed.
+Saves from before credits load with 500 credits, no debt and the debt rule off; the other rules are on.
 
 ## Files
 
