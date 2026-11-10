@@ -10,7 +10,8 @@ Plain HTML, Canvas and JavaScript. No installs, no build step. The only network 
 
 1. Double-click `index.html`.
 2. Click a ship (on the map or in the Mission board), then click a planet or asteroid. The ship flies
-   there, mines until full, flies to the nearest base, unloads, and repeats until the body is empty.
+   there, mines until full, flies to the nearest base, unloads, and repeats. When the body is empty it moves on to the
+   nearest body of the same material, and goes idle only when none is left. A first-steps box walks a new player through this (Skip hides it for good).
    Click a base instead to send the ship to that base (an idle ship goes too). Click a star to send it
    to collect the star.
 3. Spend materials in the Build panel: Miner (small, cheap), Hauler (faster, carries 60), and New base
@@ -18,12 +19,12 @@ Plain HTML, Canvas and JavaScript. No installs, no build step. The only network 
 4. Resources: ore (asteroids), ice (moons and ice planets), crystal (rare planets). Each body is finite.
 5. Upgrade bases in the Bases panel, twice each, for materials: faster unloading and a wider drop-off
    range. An upgraded base looks different (extra rings, more arms, a brighter core).
-6. Top bar: Pause (or Space), Save, Load, New game, Retire, Hangar. Save keeps your own save. The game also
+6. Top bar: Pause (or Space), Scores, Hangar, and a Menu with Save, Load, New game, Retire, Keyboard and Feedback. Click a side panel's heading to fold it. Save keeps your own save. The game also
    autosaves every 10 seconds to a separate slot, and resumes from the newest save when you reopen the
    page. Load uses your own save first, then the autosave. If a save is damaged, the notice stays up
    with the "Loaded" message, and a copy of the damaged save is kept (the last 3, newest first, in
    localStorage under `fleet-game-damaged-saves-v2`). Esc cancels a selection or placement. Keys: see Keyboard controls.
-7. Frame-rate test: open `index.html?stress` for 30 ships mining at once plus 15 alien raiders. The corner shows fps.
+7. Frame-rate test: open `index.html?stress` for 30 ships mining at once plus 15 alien raiders. The corner shows fps (also with `?fps` in a normal game).
    `?stress&sector=4` starts in sector 4 so storms, fog, flares, meteor showers and raids are on screen.
    Stress mode never writes to the save, the players, or the logs.
 
@@ -129,6 +130,7 @@ you earn for 10 seconds or are below 0), **Debt** and, if the timer is on, **Tim
 counts down any warning. The **Credits** panel shows the net breakdown, **Pay debt**, and **Sell 10 / Buy 10** for each
 material (you cannot buy crystal).
 
+- **Opening grace:** in sector 1 nothing is charged for ships or bases until your first delivery (or 2 minutes, whichever comes first). The loan still grows.
 - **Maintenance:** miner 30, hauler 50, warship 90 credits a minute. **Upkeep:** each base besides home 35, plus 10 per tier,
   20 for a shield and 20 for a turret; a home base costs nothing itself. A lost ship or a downed base costs nothing.
   Both grow 4% per sector (capped at x1.36).

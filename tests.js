@@ -10,6 +10,11 @@ function test(name, fn) {
   catch (e) { failed++; console.log("  FAIL " + name + "\n       " + (e && e.message)); }
 }
 
+// The opening grace and auto-retarget have their own section at the end. The tests before it describe the rules
+// without them (steady-state costs, a ship that goes idle when its body is empty), so they are switched off here.
+const GRACE_DEFAULT = G.TUNING.econ.grace, AUTO_DEFAULT = G.TUNING.auto.retarget;
+G.TUNING.econ.grace = null; G.TUNING.auto.retarget = false;
+
 const DT = 1 / 60;
 function run(state, seconds) { for (let i = 0; i < Math.round(seconds / DT); i++) G.step(state, DT); }
 function total(state, k) { return state.stock[k] + state.ships.reduce((n, s) => n + (s.res === k ? s.cargo : 0), 0); }
@@ -3542,7 +3547,7 @@ test("the tree is fully defined in TUNING: 12 nodes, 3 branches of 4 tiers, cost
 test("the balance table has every econ, lose and science key, with the re-run changes", () => {
   const E = G.TUNING.econ;
   assert.deepStrictEqual(E.credit, G.TUNING.score.value);
-  assert.deepStrictEqual(Object.keys(E).sort(), ["bankrupt", "credit", "debt", "exchange", "maint", "netWarnSecs", "oldSaveCredits", "scaleMax", "scalePerSector", "startCredits", "timer", "upkeep"]);
+  assert.deepStrictEqual(Object.keys(E).sort(), ["bankrupt", "credit", "debt", "exchange", "grace", "maint", "netWarnSecs", "oldSaveCredits", "scaleMax", "scalePerSector", "startCredits", "timer", "upkeep"]);
   assert.deepStrictEqual(E.maint, { miner: 30, hauler: 50, warship: 90, shieldship: 140, mothball: 0.2, wakeSecs: 10 });
   assert.deepStrictEqual(E.upkeep, { home: 0, base: 35, perTier: 10, shield: 20, turret: 20, generator: 10 });
   assert.deepStrictEqual(E.debt, { start: 1500, rate: 0.015, every: 60, dueSector: 3, dueTime: 2700, warnSecs: 300 });
@@ -5043,6 +5048,61 @@ test("shield ship and fleet save and load; bad fleet slots are dropped", () => {
   raw.ships[w.id].ws = 0; raw.ships[c.id].lvl = 99;     // pointing at a miner; level out of range
   const o = G.deserialize(JSON.stringify(raw));
   assert.ok(o.ok && o.state.ships[w.id].ws === -1 && o.state.ships[c.id].lvl === 3);
+});
+
+
+// ---- opening grace and auto-retarget (switched off for the tests above, on from here)
+console.log("opening grace and auto-retarget");
+G.TUNING.econ.grace = GRACE_DEFAULT; G.TUNING.auto.retarget = AUTO_DEFAULT;
+test("grace: a new run pays no running costs until the first delivery, then pays as normal", () => {
+  const s = G.newGame(3);
+  assert.strictEqual(G.econGrace(s), true);
+  const c0 = s.credits; run(s, 30);
+  assert.strictEqual(s.credits, c0, "idle for 30 s costs nothing");
+  assert.strictEqual(G.econRates(s).maint, 0);
+  assert.ok(G.econRates(s).interest > 0, "the loan still grows");
+  G.orderShip(s, s.ships[0].id, nearBody(s).id);
+  let guard = 0; while (s.score.mat <= 0 && guard++ < 60 * 120) G.step(s, DT);
+  assert.ok(s.score.mat > 0, "a delivery happened");
+  assert.strictEqual(G.econGrace(s), false);
+  assert.ok(G.econRates(s).maint >= 59.9, "two miners cost 60 a minute again");
+  const c1 = s.credits; run(s, 1);
+  assert.ok(s.credits < c1 + 21, "costs are being charged");
+});
+test("grace: it ends by itself after grace.secs, and never applies after sector 1", () => {
+  const s = G.newGame(3);
+  s.time = G.TUNING.econ.grace.secs; assert.strictEqual(G.econGrace(s), false);
+  const t = G.newGame(3); t.sector = 2; assert.strictEqual(G.econGrace(t), false);
+  const u = G.newGame(3); assert.strictEqual(G.econWarnings(u).some(w => w.cause === "net"), false);
+});
+test("auto-retarget: a miner whose body runs dry moves on to the nearest body of the same material", () => {
+  const s = G.newGame(1), body = nearBody(s), ship = s.ships[0];
+  body.amount = body.max = 30;                       // 1.5 loads
+  const others = s.bodies.filter(b => b.res === "ore" && b !== body)
+    .sort((a, b) => Math.hypot(a.x - body.x, a.y - body.y) - Math.hypot(b.x - body.x, b.y - body.y));
+  G.orderShip(s, ship.id, body.id);
+  let guard = 0; while (body.amount > 0 && guard++ < 60 * 300) G.step(s, DT);
+  assert.strictEqual(body.amount, 0);
+  guard = 0; while (ship.target === body.id && guard++ < 60 * 120) G.step(s, DT);
+  assert.strictEqual(ship.target, others[0].id, "the nearest ore body to the empty one");
+  assert.notStrictEqual(ship.st, G.IDLE);
+  assert.ok(G.drainEvents(s).some(e => e.type === "auto:retarget" && e.ship === ship.id && e.body === others[0].id));
+});
+test("auto-retarget: with nothing of that material left the ship goes idle; it never switches material", () => {
+  const s = G.newGame(1), body = nearBody(s), ship = s.ships[0];
+  for (const b of s.bodies) if (b.res === "ore" && b !== body) b.amount = 0;
+  body.amount = body.max = 20;
+  G.orderShip(s, ship.id, body.id);
+  run(s, 300);
+  assert.strictEqual(ship.st, G.IDLE); assert.strictEqual(ship.target, -1); assert.strictEqual(ship.cargo, 0);
+  assert.ok(s.bodies.some(b => b.res !== "ore" && b.amount > 0), "ice and crystal were left alone");
+});
+test("auto-retarget: a ship flying to a body another ship emptied goes straight to the next one", () => {
+  const s = G.newGame(1), body = nearBody(s), ship = s.ships[0];
+  G.orderShip(s, ship.id, body.id); run(s, 0.5);
+  body.amount = 0; run(s, 0.1);
+  assert.strictEqual(ship.st, G.TO_BODY); assert.notStrictEqual(ship.target, body.id);
+  assert.strictEqual(s.bodies[ship.target].res, "ore");
 });
 
 console.log("\n" + passed + " passed, " + failed + " failed");

@@ -22,21 +22,27 @@
       <button id="b-warp" class="primary" type="button" hidden>Warp to next sector</button>
       <div class="actions">
         <button id="b-pause" type="button">Pause</button>
-        <button id="b-save" type="button">Save</button>
-        <button id="b-load" type="button">Load</button>
-        <button id="b-new" type="button">New game</button>
-        <button id="b-retire" type="button">Retire</button>
         <button id="b-scores" type="button">Scores</button>
         <button id="b-tech" type="button" title="Tech tree (T)" hidden>Tech</button>
         <button id="b-hangar" type="button">Hangar</button>
-        <button id="b-keys" type="button" aria-pressed="false" title="Keyboard mode: numbered targets, flying by hand (K)">Keyboard</button>
-        <button id="b-feedback" type="button">Feedback</button>
+        <div class="menu-wrap">
+          <button id="b-menu" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="menu">Menu &#9662;</button>
+          <div id="menu" hidden>
+            <button id="b-save" type="button">Save</button>
+            <button id="b-load" type="button">Load</button>
+            <button id="b-new" type="button">New game</button>
+            <button id="b-retire" type="button">Retire</button>
+            <button id="b-keys" type="button" aria-pressed="false" title="Keyboard mode: numbered targets, flying by hand (K)">Keyboard</button>
+            <button id="b-feedback" type="button">Feedback</button>
+          </div>
+        </div>
       </div>
     </div>
     <div id="warnbar" role="status" hidden></div>
     <div id="alerts"></div>
     <div id="hint"></div>
     <div id="keys" hidden></div>
+    <div id="guide" role="status" hidden></div>
     <div id="toast" role="status"></div>
     <div id="paused"><span>PAUSED</span><button id="p-feedback" type="button">Feedback</button></div>
     <div id="fps" title="Frames per second, and the slowest recent frame"></div>
@@ -131,25 +137,25 @@
     </div>
   </div>
   <aside id="side">
-    <section class="panel">
+    <section class="panel" data-panel="build">
       <h2>Build</h2>
       <div id="build"></div>
     </section>
-    <section class="panel" id="econ" hidden>
+    <section class="panel grow" data-panel="board">
+      <h2>Mission board <span id="board-count"></span></h2>
+      <ul id="board"></ul>
+    </section>
+    <section class="panel" id="econ" data-panel="econ" hidden>
       <h2>Credits</h2>
       <div id="econ-body"></div>
     </section>
-    <section class="panel">
+    <section class="panel" data-panel="bases">
       <h2 id="bases-title">Bases <span id="bases-note">upgrade for speed and range</span></h2>
       <div id="bases"></div>
     </section>
-    <section class="panel" id="fleets" hidden>
+    <section class="panel" id="fleets" data-panel="fleets" hidden>
       <h2>Shield fleets <span id="fleets-note">fly through solar flares</span></h2>
       <div id="fleets-body"></div>
-    </section>
-    <section class="panel grow">
-      <h2>Mission board <span id="board-count"></span></h2>
-      <ul id="board"></ul>
     </section>
     <details class="panel small help-wrap">
       <summary>Help</summary>

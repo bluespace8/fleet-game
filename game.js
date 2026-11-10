@@ -133,9 +133,12 @@
       timer:  { parMult: 1.5, firstSector: 2, capSector: 10, warnShare: 0.25, warnSecs: 60 },
       exchange: { sell: { ore: 1, ice: 2, crystal: 5 }, buy: { ore: 3, ice: 6 }, step: 10, buyOn: true },
       netWarnSecs: 10,
+      grace: { secs: 120 },                              // sector 1: no running costs until the first delivery, or this many seconds
     },
     // which lose rules are on at the start of a run; copied to state.rules by newGame
     lose: { maintenance: true, upkeep: true, debt: true, timer: false, bankruptcy: true },
+    // a miner or hauler whose body runs dry moves on to the nearest body of the same material instead of going idle
+    auto: { retarget: true },
     // ---- science from conquest (slice a). Raider, turret and guard kills and wave bonuses share the per-sector cap
     // raidCap + raidCapPerSector * (n - firstSector); nests, beacons and "sector secured" are never capped.
     science: {
@@ -885,11 +888,19 @@
     return r * econScale(state.sector) * techMult(state, "baseUpkeep") * energyMult(state);
   }
 
+  // The opening grace: in sector 1 nothing is charged for ships or bases until the first delivery (or grace.secs, whichever
+  // comes first), so a new player is not losing money before their first order. Worked out from saved numbers only.
+  function econGrace(state) {
+    const g = T.econ.grace;
+    return !!g && state.sector === 1 && state.score.mat <= 0 && state.time < g.secs;
+  }
+
   // Credits per minute: maint and upkeep (what is being paid now), interest (what the debt grows by, not paid from credits),
   // net = average income so far - maint - upkeep.
   function econRates(state) {
     const rules = state.rules || {}, E = T.econ;
     let maint = 0, upkeep = 0, interest = 0;
+    if (econGrace(state)) return { maint, upkeep, interest: rules.debt && state.debt > 0 ? state.debt * E.debt.rate * techMult(state, "interest") : 0, net: econIncome(state) };
     if (rules.maintenance) for (let i = 0; i < state.ships.length; i++) maint += shipMaintRate(state, state.ships[i]);
     if (rules.upkeep) for (let i = 0; i < state.bases.length; i++) upkeep += baseUpkeepRate(state, state.bases[i]);
     if (rules.debt && state.debt > 0) interest = state.debt * E.debt.rate * techMult(state, "interest");
@@ -1517,8 +1528,23 @@
   // After unloading: repeat the run if the body still has something, else go idle.
   function afterUnload(state, ship) {
     const body = ship.target >= 0 ? state.bodies[ship.target] : null;
-    if (body && body.amount > 1e-6) ship.st = TO_BODY;
+    if (body && body.amount > 1e-6) { ship.st = TO_BODY; return; }
+    const next = body ? nextBody(state, body) : -1;
+    if (next >= 0) { ship.target = next; ship.st = TO_BODY; emit(state, "auto:retarget", { ship: ship.id, body: next }); }
     else { ship.target = -1; ship.st = IDLE; }
+  }
+
+  // The nearest body to `from` that still holds the same material, or -1. Used when a body runs dry (T.auto.retarget).
+  function nextBody(state, from) {
+    if (!T.auto || !T.auto.retarget) return -1;
+    let best = -1, bd = Infinity;
+    for (let i = 0; i < state.bodies.length; i++) {
+      const b = state.bodies[i];
+      if (b === from || b.res !== from.res || !(b.amount > 1e-6)) continue;
+      const d = Math.hypot(b.x - from.x, b.y - from.y);
+      if (d < bd) { bd = d; best = i; }
+    }
+    return best;
   }
 
   // ---- hazards: health, fog, flares, showers
@@ -1817,7 +1843,9 @@
     if (ship.st === TO_BODY || ship.st === MINING) {
       const body = state.bodies[ship.target];
       if (!body || body.amount <= 1e-6) {          // emptied before or while we were there
-        ship.target = -1;
+        const next = body && ship.cargo < cargoCap(state, def) - 1e-9 && (!ship.res || ship.res === body.res) ? nextBody(state, body) : -1;
+        if (next >= 0) { ship.target = next; ship.st = TO_BODY; emit(state, "auto:retarget", { ship: ship.id, body: next }); return; }
+        if (!body) ship.target = -1;             // an emptied body stays as the target, so afterUnload can move the ship on
         ship.st = TO_BASE;
         return;
       }
@@ -3364,7 +3392,7 @@
     // energy stations, generators and shield ships
     stationCost, siteCount, buildStation, repairStation, damageStation, energyMult, SITE_R,
     assignToShield, releaseFromShield, upgradeShieldShip, shieldUpgradeCost, fleetMembers, fleetCap, shieldRadius, fleetShielded, isSupport,
-    econScale, econRates, stepEconomy, payDebt, sellStock, buyStock, setMothball, econWarpBlock, econOnWarp, timeLimit, econWarnings,
+    econScale, econRates, econGrace, stepEconomy, payDebt, sellStock, buyStock, setMothball, econWarpBlock, econOnWarp, timeLimit, econWarnings,
   };
   return api;
 });
