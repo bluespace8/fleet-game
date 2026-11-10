@@ -271,6 +271,8 @@
   function toast(msg, long) {
     const el = $("toast");
     el.textContent = msg;
+    const bar = $("warnbar");   // sit under the top bar (however many rows it wrapped to) and under the warning banner
+    el.style.top = (topH + 16 + (bar && !bar.hidden ? bar.offsetHeight + 6 : 0)) + "px";
     el.classList.add("show");
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => el.classList.remove("show"), long || msg.length > 50 ? Math.min(9000, 3000 + msg.length * 60) : 2200);
@@ -1089,6 +1091,11 @@
     return pts;
   }
 
+  // Map text is drawn in world units, so on a small window it would shrink with the map. textK() scales it back up
+  // so a label never falls below about 90% of its designed size on screen.
+  function textK() { return Math.max(1, 0.9 / (view.sc || 1)); }
+  function setFont(weight, px) { ctx.font = weight + " " + (px * textK()).toFixed(2) + "px system-ui, sans-serif"; }
+
   // Canvas text. In themed scenes it gets a dark outline so it reads on the light-ish bedding and the rock.
   function labelText(t, x, y) {
     if (themed()) {
@@ -1105,7 +1112,7 @@
     ctx.fillStyle = "rgba(10,11,29,0.85)";
     ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = "#8fd8ff"; ctx.lineWidth = 1.2; ctx.stroke();
-    ctx.textAlign = "center"; ctx.font = "700 11px system-ui, sans-serif"; ctx.fillStyle = "#e6f4ff";
+    ctx.textAlign = "center"; setFont(700, 11); ctx.fillStyle = "#e6f4ff";
     ctx.fillText(NUM_LABEL[n] || (NUM_LABEL[n] = G.targetLabel(n)), x, y + 4);
   }
 
@@ -1160,12 +1167,12 @@
       ctx.beginPath(); ctx.arc(b.x, b.y, ringR + 5 + pulse * 3, 0, Math.PI * 2); ctx.stroke();
     }
     ctx.textAlign = "center";
-    ctx.font = "600 11.5px system-ui, sans-serif";
+    setFont(600, 11.5);
     ctx.fillStyle = "rgba(235,240,255,0.92)";
-    labelText(G.bodyLabel ? G.bodyLabel(b, LB()) : b.name, b.x, b.y + ringR + 15);
-    ctx.font = "10px system-ui, sans-serif";
+    labelText(G.bodyLabel ? G.bodyLabel(b, LB()) : b.name, b.x, b.y + ringR + 4 + 11 * textK());
+    setFont(400, 10);
     ctx.fillStyle = empty ? "rgba(200,210,240,0.5)" : hexA(RES_COLOR[b.res], 0.9);
-    labelText(empty ? "EMPTY" : `${Math.floor(b.amount)} ${(LB().res[b.res] || b.res).toUpperCase()}`, b.x, b.y + ringR + 28);
+    labelText(empty ? "EMPTY" : `${Math.floor(b.amount)} ${(LB().res[b.res] || b.res).toUpperCase()}`, b.x, b.y + ringR + 4 + 24 * textK());
     if (ui.keyboard && !empty) drawNum(b.id + 1, b.x, b.y - ringR - 10);
   }
 
@@ -1187,7 +1194,7 @@
     }
     const L = LB();
     ctx.textAlign = "center";
-    ctx.font = "700 11px system-ui, sans-serif";
+    setFont(700, 11);
     ctx.fillStyle = "rgba(245,238,225,0.95)";
     // just under the sprite: the wheel's stand (and seed ring at Lv 3), or the forge's foundation
     const dy = themeId() === "hamster" ? wheelRadius(home) + (tier >= 2 ? 14 : 10) + 13 : 40;
@@ -1266,7 +1273,7 @@
     ctx.fillStyle = core;
     ctx.beginPath(); ctx.arc(b.x, b.y, cr, 0, Math.PI * 2); ctx.fill();
     ctx.textAlign = "center";
-    ctx.font = "700 11px system-ui, sans-serif";
+    setFont(700, 11);
     ctx.fillStyle = "rgba(235,232,255,0.95)";
     ctx.fillText((i === 0 ? "HOME" : "BASE " + (i + 1)) + (tier ? " " + TIER_NAME[tier] : ""), b.x, b.y + sr * (tier >= 2 ? 2.3 : 1.5) + 16);
   }
@@ -1308,7 +1315,7 @@
       ctx.lineCap = "butt";
     }
     if (b.down) {
-      ctx.textAlign = "center"; ctx.font = "700 12px system-ui, sans-serif"; ctx.fillStyle = "#ff8a8a";
+      ctx.textAlign = "center"; setFont(700, 12); ctx.fillStyle = "#ff8a8a";
       labelText("DOWN - repair it", b.x, b.y + 5);
     }
     if (b.hp < b.maxHp) drawBar(b.x, b.y - sr * 1.7 - 8, 54, b.hp / b.maxHp);
@@ -1355,7 +1362,7 @@
         const a = a0 + k * 2.09;
         ctx.beginPath(); ctx.arc(s.x, s.y, s.r * (0.45 + 0.18 * k), a, a + 1.1); ctx.stroke();
       }
-      ctx.textAlign = "center"; ctx.font = "600 10px system-ui, sans-serif";
+      ctx.textAlign = "center"; setFont(600, 10);
       ctx.fillStyle = ham ? "rgba(255,238,200,0.9)" : "rgba(200,235,255,0.9)";
       ctx.fillText(L.storm.toUpperCase(), s.x, s.y + 4);
       return;
@@ -1371,7 +1378,7 @@
       ctx.beginPath(); ctx.arc(s.x, s.y, s.r * (0.45 + 0.18 * k), a, a + 1.1); ctx.stroke();
     }
     ctx.textAlign = "center";
-    ctx.font = "600 10px system-ui, sans-serif";
+    setFont(600, 10);
     ctx.fillStyle = "rgba(190,205,255,0.7)";
     ctx.fillText("ION STORM", s.x, s.y + 4);
   }
@@ -1385,7 +1392,7 @@
       ctx.strokeStyle = "rgba(255,170,90," + (0.35 + 0.4 * k) + ")"; ctx.lineWidth = 2; ctx.setLineDash([8, 6]);
       ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.stroke();
       ctx.restore();
-      ctx.textAlign = "center"; ctx.font = "700 11px system-ui, sans-serif"; ctx.fillStyle = "rgba(255,190,120,0.95)";
+      ctx.textAlign = "center"; setFont(700, 11); ctx.fillStyle = "rgba(255,190,120,0.95)";
       ctx.fillText(themed() ? LB().shower.toUpperCase() + " IN " + Math.ceil(warn - s.age) : "METEORS IN " + Math.ceil(warn - s.age), s.x, s.y + 4);
       return;
     }
@@ -1577,7 +1584,7 @@
       ctx.beginPath(); ctx.arc(ship.x, ship.y, 22, 0, Math.PI * 2); ctx.stroke();
       ctx.setLineDash([]);
       ctx.textAlign = "left";
-      ctx.font = "600 10.5px system-ui, sans-serif";
+      setFont(600, 10.5);
       ctx.fillStyle = "rgba(240,244,255,0.95)";
       labelText(shipName(ship).toUpperCase(), ship.x + 16, ship.y - 12);
     }
@@ -1707,7 +1714,7 @@
       ctx.globalAlpha = Math.max(0, Math.min(1, (e.age - warn) / 1.5, left / 1.5));
       ctx.drawImage(fogSprite(r), e.x - half, e.y - half, half * 2, half * 2);
       ctx.globalAlpha = 1;
-      ctx.textAlign = "center"; ctx.font = "700 11px system-ui, sans-serif"; ctx.fillStyle = "rgba(230,238,255,0.8)";
+      ctx.textAlign = "center"; setFont(700, 11); ctx.fillStyle = "rgba(230,238,255,0.8)";
       ctx.fillText("FOG: mining slowed", e.x, e.y + 4);
     }
     if (!any) return;
@@ -1733,7 +1740,7 @@
         ctx.strokeStyle = "rgba(180,195,230," + (reduceMotion ? 0.7 : 0.45 + 0.3 * Math.sin(time * 6)) + ")"; ctx.lineWidth = 2; ctx.setLineDash([8, 6]);
         ctx.beginPath(); ctx.arc(w.x, w.y, w.r, 0, Math.PI * 2); ctx.stroke();
         ctx.setLineDash([]);
-        ctx.textAlign = "center"; ctx.font = "700 11px system-ui, sans-serif"; ctx.fillStyle = "rgba(205,215,240,0.95)";
+        ctx.textAlign = "center"; setFont(700, 11); ctx.fillStyle = "rgba(205,215,240,0.95)";
         ctx.fillText("FOG IN " + w.secs, w.x, w.y + 4);
       } else if (w.kind === "raid") {
         const dx = cx - w.x, dy = cy - w.y, d = Math.hypot(dx, dy) || 1, ux = dx / d, uy = dy / d, px = -uy, py = ux;
@@ -1745,7 +1752,7 @@
         ctx.lineTo(w.x + ux * 26 + px * 12, w.y + uy * 26 + py * 12);
         ctx.lineTo(w.x + ux * 26 - px * 12, w.y + uy * 26 - py * 12);
         ctx.closePath(); ctx.fill(); ctx.stroke();
-        ctx.textAlign = "center"; ctx.font = "700 11px system-ui, sans-serif"; ctx.fillStyle = "rgba(255,170,170,0.95)";
+        ctx.textAlign = "center"; setFont(700, 11); ctx.fillStyle = "rgba(255,170,170,0.95)";
         ctx.fillText("RAID IN " + w.secs, w.x + ux * 72, w.y + uy * 72 + 4);
       }
     }
@@ -1828,12 +1835,12 @@
           let soon = Infinity;
           for (const v of n.guardIn) if (v > 0 && v < soon) soon = v;   // a timer stuck at 0 is a guard held back by the map alien limit: not counting down, so not shown
           if (soon < Infinity) {
-            ctx.font = "600 10px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "rgba(255,196,226,0.9)";
+            setFont(600, 10); ctx.textAlign = "center"; ctx.fillStyle = "rgba(255,196,226,0.9)";
             ctx.fillText(Math.ceil(soon) + "s", n.x, n.y + r + 24);
           }
         }
       } else {
-        ctx.font = "600 10px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "rgba(190,250,255,0.9)";
+        setFont(600, 10); ctx.textAlign = "center"; ctx.fillStyle = "rgba(190,250,255,0.9)";
         ctx.fillText("BEACON", n.x, n.y + r + 14);
       }
     }
@@ -1847,7 +1854,7 @@
       if (!s.built) {
         ctx.strokeStyle = "rgba(120,235,160,0.45)"; ctx.lineWidth = 1.5; ctx.setLineDash([4, 4]);
         ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(r, 0); ctx.lineTo(0, r); ctx.lineTo(-r, 0); ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
-        ctx.font = "600 10px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "rgba(150,240,185,0.75)";
+        setFont(600, 10); ctx.textAlign = "center"; ctx.fillStyle = "rgba(150,240,185,0.75)";
         ctx.fillText("ENERGY SITE", 0, r + 13);
       } else {
         const on = !s.down, pulse = reduceMotion ? 0.5 : 0.5 + 0.5 * Math.sin(time * 3 + s.id);
@@ -1862,7 +1869,7 @@
         ctx.beginPath(); ctx.moveTo(2, -9); ctx.lineTo(-5, 2); ctx.lineTo(-1, 2); ctx.lineTo(-3, 9); ctx.lineTo(5, -2); ctx.lineTo(1, -2); ctx.closePath(); ctx.fill();
       }
       ctx.restore();
-      if (s.built && s.down) { ctx.textAlign = "center"; ctx.font = "700 11px system-ui, sans-serif"; ctx.fillStyle = "#ff8a8a"; labelText("DOWN - repair it", s.x, s.y + r + 14); }
+      if (s.built && s.down) { ctx.textAlign = "center"; setFont(700, 11); ctx.fillStyle = "#ff8a8a"; labelText("DOWN - repair it", s.x, s.y + r + 14); }
       if (s.built && s.hp < s.maxHp) drawBar(s.x, s.y - r - 8, 34, s.hp / s.maxHp);
     }
   }
@@ -1878,7 +1885,7 @@
       ctx.beginPath(); ctx.arc(c.x, c.y, R, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
       ctx.strokeStyle = "rgba(130,220,255,0.28)"; ctx.lineWidth = 1;
       for (const m of members) { ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(m.x, m.y); ctx.stroke(); }
-      ctx.textAlign = "center"; ctx.font = "600 10px system-ui, sans-serif"; ctx.fillStyle = "rgba(190,240,255,0.9)";
+      ctx.textAlign = "center"; setFont(600, 10); ctx.fillStyle = "rgba(190,240,255,0.9)";
       ctx.fillText("L" + c.lvl + " " + members.length + "/" + G.fleetCap(c), c.x, c.y - 22);
     }
   }
@@ -1923,6 +1930,15 @@
     return G.RES.filter(r => cost[r]).map(r => `${cost[r]} ${L.res[r]}`).join(", ");
   }
 
+  // The same cost, with each material you are short of marked, so a greyed-out button says what is missing.
+  function costHtml(cost) {
+    const L = LB();
+    return G.RES.filter(r => cost[r]).map(r => {
+      const t = `${cost[r]} ${L.res[r]}`;
+      return cost[r] > game.stock[r] + 1e-9 ? `<span class="lack">${t}</span>` : t;
+    }).join(", ");
+  }
+
   // Replace a panel's buttons without dropping keyboard focus: the focused button (found by its data attribute) gets focus back.
   function setHtml(box, html, attr) {
     const a = document.activeElement;
@@ -1940,8 +1956,8 @@
       ["base", L.newBase, themed() ? "Click an empty spot to place it" : "Click empty space to place it", G.baseCost(game)]];
     const html = items.map(([key, label, note, cost]) => {
       const ok = !game.over && G.canAfford(game, cost);
-      return `<button type="button" class="build-btn${key === "base" && ui.placing ? " active" : ""}" data-build="${key}"${ok ? "" : " disabled"}>
-        <b>${label}</b> <small>${costText(cost)}</small><small>${note}</small></button>`;
+      return `<button type="button" class="build-btn${key === "base" && ui.placing ? " active" : ""}" data-build="${key}"${ok ? "" : " disabled"} title="${note}">
+        <b>${label}</b><small>${costHtml(cost)}</small></button>`;
     }).join("");
     if (html !== buildHtml) { buildHtml = html; setHtml($("build"), html, "data-build"); }
   }
@@ -2080,6 +2096,7 @@
     const box = node.querySelector(".rowx");
     if (!box) return;
     box.hidden = ship.dead;
+    box.classList.toggle("on", ship.id === ui.selected || !!ship.mothballed || ship.wake > 0);   // the button shows only where it matters
     if (ship.dead) return;
     const tag = box.firstChild, btn = box.lastChild, W = G.TUNING.econ.maint.wakeSecs;
     const t = ship.mothballed ? "Mothballed" : ship.wake > 0 ? "Waking " + Math.ceil(ship.wake) + " s" : "";
@@ -2118,7 +2135,8 @@
     dbt.hidden = !showDebt;
     if (showDebt) {
       const pct = +(E.debt.rate * 100 * G.techMult(game, "interest")).toFixed(2);
-      setCached("debt", dbt, `Debt <b>${fmtCr(game.debt)}</b> (+${pct}%/min), due leaving ${lc(L.sector)} ${E.debt.dueSector}`);
+      setCached("debt", dbt, `Debt <b>${fmtCr(game.debt)}</b> · due ${lc(L.sector)} ${E.debt.dueSector}`);
+      dbt.title = `The starting loan grows ${pct}% a minute and must be paid to leave ${lc(L.sector)} ${E.debt.dueSector}`;
       dbt.classList.toggle("amber", level("debt") === "amber"); dbt.classList.toggle("red", level("debt") === "red");
     }
     const lim = G.timeLimit(game), showTime = lim > 0 && !game.won;
@@ -2142,6 +2160,7 @@
     const line = (a, b) => `<div class="eco-line"><span>${a}</span><b>${b}</b></div>`;
     let html = line("Income (run average)", signedCr(income) + "/min") + line("Ships", signedCr(-rates.maint) + "/min") +
       line(L.bases, signedCr(-rates.upkeep) + "/min") + line("Net", signedCr(rates.net) + "/min");
+    if (G.econGrace(game)) html = `<div class="eco-note">Running costs start with your first delivery.</div>` + html;
     if (showDebt) {
       const payable = Math.min(game.debt, Math.max(0, game.credits));
       html += line("Debt interest", "+" + fmtCr(rates.interest) + "/min (adds to the debt)") +
@@ -2242,6 +2261,30 @@
     return Math.hypot(ship.x - b.x, ship.y - b.y) <= G.BASE_R + 10 + G.TUNING.upgrades[b.tier | 0].dock + G.MANUAL_SLACK ? i : -1;
   }
 
+  // First steps: one line at a time for a new player in sector 1 (select, mine, build a ship, build a base). It goes away
+  // for good once finished or skipped (a display preference, kept per browser). Steps only ever move forward.
+  const GUIDE_KEY = "fleet-game-guide-v1";
+  let guideDone = STRESS || readKey(GUIDE_KEY) === "1", guideStep = 0, guideHtml = "";
+  function endGuide() { guideDone = true; store(GUIDE_KEY, "1", "the first-steps choice"); renderGuide(); }
+  function renderGuide() {
+    const box = $("guide");
+    if (guideDone || !game || game.over || game.sector !== 1) { box.hidden = true; return; }
+    const L = LB(), busy = game.ships.some(s => !s.dead && s.st !== G.IDLE), mined = game.score.mat > 0;
+    const done = [ui.selected != null || busy || mined, busy || mined, game.ships.length > 2, game.bases.length > 1];
+    while (guideStep < done.length && done[guideStep]) guideStep++;
+    if (guideStep >= done.length) { endGuide(); return; }
+    const miner = L.ship.miner, ore = String(L.res.ore).toUpperCase();
+    const text = [
+      `Click a ${lc(miner)}: on the map, or in the Mission board on the right.`,
+      `Now click anything marked ${ore}. It mines, hauls home and repeats on its own.`,
+      `Deliveries pay ${lc(L.res.ore)} and credits. Build another ${miner} in the Build panel when you can afford it.`,
+      `Press ${L.newBase}, then click near far-off targets: trips get shorter, and ${G.goalBases(1)} ${lc(L.bases)} clear the ${lc(L.sector)}.`][guideStep];
+    const html = `<b>First steps ${guideStep + 1}/${done.length}</b>${text}<button type="button" id="guide-x" title="Hide these tips for good">Skip</button>`;
+    box.hidden = false; box.style.top = (topH + 16) + "px";
+    if (html !== guideHtml) { guideHtml = html; box.innerHTML = html; }
+  }
+  $("guide").addEventListener("click", ev => { if (ev.target.id === "guide-x") endGuide(); });
+
   // Event warnings (kind and whole seconds left), the solar-flare banner while one runs, and the alien count.
   let alertsHtml = "";
   function renderAlerts() {
@@ -2292,6 +2335,7 @@
     renderScience();
     renderEcon();
     renderAlerts();
+    renderGuide();
     $("b-pause").textContent = ui.paused ? "Resume" : "Pause";
     $("paused").style.display = ui.paused ? "block" : "none";
     const hint = $("hint");
@@ -3150,7 +3194,13 @@
     boardKey = ""; buildHtml = "";
     refresh();
     const row = ui.selected != null && boardRows[ui.selected];   // keep the chosen ship's board row in view (no focus change)
-    if (row && row.li.scrollIntoView) row.li.scrollIntoView({ block: "nearest" });
+    const bd = row && document.getElementById("board");
+    if (bd && row.li.parentNode === bd) {   // scroll only #board itself, never #side or the page
+      const br = bd.getBoundingClientRect(), lr = row.li.getBoundingClientRect();
+      const top = lr.top - br.top - bd.clientTop + bd.scrollTop, bottom = top + lr.height;
+      if (top < bd.scrollTop) bd.scrollTop = top;
+      else if (bottom > bd.scrollTop + bd.clientHeight) bd.scrollTop = bottom - bd.clientHeight;
+    }
   }
 
   function tryPlace(p) {
@@ -3516,7 +3566,10 @@
   }
 
   function focusBuild() {
-    const b = $("build").querySelector("button:not([disabled])") || $("side").querySelector("button:not([disabled])");
+    const usable = el => el.offsetParent !== null && !el.closest("[hidden]");
+    const find = root => root && Array.from(root.querySelectorAll("button:not([disabled])")).find(usable);
+    // Build first, then Credits, Bases and Shield fleets; never the board's per-row buttons
+    const b = find($("build")) || find($("econ")) || find($("bases")) || find($("fleets"));
     if (b) b.focus(); else toast("Nothing to press in the panels yet.");
   }
 
@@ -3631,6 +3684,7 @@
   applyKeyboardUi();
   const profileNotice = loadProfile();
   loadFeedbackList();
+  $("fps").hidden = !(STRESS || /[?&]fps\b/.test(location.search));   // the frame counter is a testing tool
   resize();
   let first = null, notice = "", damaged = false;
   if (!STRESS) {
@@ -3641,6 +3695,35 @@
   const msgs = [profileNotice, notice && (notice.trim() + (first ? (damaged ? " Loaded the other save." : "") : " Started a new game; a copy of the damaged save was kept."))].filter(Boolean);
   if (msgs.length) toast(msgs.join(" "), true);
   requestAnimationFrame(t => { lastT = t; lastSave = t; requestAnimationFrame(loop); });
+
+  // ---------------------------------------------------------------- side panels fold, and the top-bar menu
+  // Click a side panel's heading (or Enter on it) to fold it away. The choice is a display preference, kept per browser.
+  const PANELS_KEY = "fleet-game-panels-v1";
+  let folded = {};
+  try { folded = JSON.parse(localStorage.getItem(PANELS_KEY) || "{}") || {}; } catch (e) { folded = {}; }
+  for (const panel of document.querySelectorAll("#side > section.panel[data-panel]")) {
+    const head = panel.querySelector("h2"), id = panel.dataset.panel;
+    const set = on => { panel.classList.toggle("folded", on); head.setAttribute("aria-expanded", on ? "false" : "true"); };
+    head.tabIndex = 0; head.setAttribute("role", "button"); head.title = "Click to fold or unfold";
+    set(!!folded[id]);
+    const flip = () => {
+      folded[id] = !panel.classList.contains("folded"); set(folded[id]);
+      if (!STRESS) { try { localStorage.setItem(PANELS_KEY, JSON.stringify(folded)); } catch (e) { /* a preference only */ } }
+    };
+    head.addEventListener("click", flip);
+    head.addEventListener("keydown", ev => { if (ev.key === "Enter") { ev.preventDefault(); flip(); } });
+  }
+
+  // The less-used top-bar buttons live in a Menu that drops down. A click outside, Esc, or picking an item closes it.
+  const menuBtn = $("b-menu"), menuBox = $("menu");
+  function setMenu(open) { menuBox.hidden = !open; menuBtn.setAttribute("aria-expanded", open ? "true" : "false"); }
+  menuBtn.addEventListener("click", () => setMenu(menuBox.hidden));
+  menuBox.addEventListener("click", ev => { if (ev.target.closest("button")) setMenu(false); });
+  document.addEventListener("pointerdown", ev => { if (!menuBox.hidden && !ev.target.closest(".menu-wrap")) setMenu(false); });
+  window.addEventListener("keydown", ev => {
+    if (ev.key !== "Escape" || menuBox.hidden) return;
+    ev.stopImmediatePropagation(); setMenu(false); menuBtn.focus();   // Esc closes the menu first, and nothing else
+  }, true);
 
   // for debugging from the console
   window.__fleet = { get game() { return game; }, get profile() { return profile; }, ui };
