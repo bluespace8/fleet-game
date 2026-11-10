@@ -268,3 +268,20 @@ button:disabled { opacity: 0.55; }
 #guide[hidden] { display: none; }
 #guide b { display: block; color: #9aa4e0; letter-spacing: 0.12em; text-transform: uppercase; font-size: 10px; margin-bottom: 2px; }
 #guide button { float: right; margin: 4px 0 0 8px; padding: 1px 7px; font-size: 11px; }
+
+/* ui polish 2: wider side column, headings that cannot overlap their panel, resources that stand out */
+#side { width: 360px; }
+@media (max-width: 1100px) { #side { width: 320px; } }
+@media (max-width: 760px) { #side { width: 240px; } }
+#side h2 { display: flex; align-items: baseline; gap: 4px; }
+#side h2 span { float: none; margin-left: auto; text-align: right; text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 10px; }
+#side h2 #board-count { font-size: 11px; font-weight: 700; }
+.base-row { align-items: flex-start; }
+.base-row .lbl { min-width: 96px; overflow-wrap: anywhere; }
+.base-row > button { flex: none; max-width: 58%; white-space: normal; }
+.base-row > small.done { flex: none; align-self: center; }
+.base-extra button { white-space: nowrap; }
+.res { gap: 6px; padding: 4px; font-size: 14px; border: 1px solid rgba(160, 180, 255, 0.28); background: rgba(10, 11, 29, 0.9); }
+.res > span { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 6px; background: rgba(120, 140, 255, 0.12); color: #c8d0f0; }
+.res b { margin-left: 6px; font-size: 17px; line-height: 1; color: #fff; }
+.res .dot { width: 11px; height: 11px; margin-right: 6px; box-shadow: 0 0 6px currentColor; }
