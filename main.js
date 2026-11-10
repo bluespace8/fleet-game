@@ -181,6 +181,7 @@
     ui.selected = null; ui.placing = false; ui.cursor = null; acc = 0;
     trails.clear(); shapes.clear(); alienAng.clear();
     boardKey = ""; buildHtml = ""; basesHtml = "";
+    cam.z = 1; cam.x = 0; cam.y = 0;   // a new map starts centred at the default zoom
     resize();
   }
 
@@ -296,7 +297,7 @@
   }
 
   // Zoom and pan: cam.z multiplies the fit-to-window scale, (cam.x, cam.y) shifts the map in CSS pixels.
-  const cam = { z: 1, x: 0, y: 0 }, CAM_MIN = 1, CAM_MAX = 6;
+  const cam = { z: 1, x: 0, y: 0 }, CAM_MIN = 0.5, CAM_MAX = 6;   // below 1 the map shrinks, leaving empty space around it
   function applyCam() {
     const ww = game ? game.w : G.TUNING.world.w, wh = game ? game.h : G.TUNING.world.h;
     cam.z = Math.max(CAM_MIN, Math.min(CAM_MAX, cam.z));
@@ -304,9 +305,9 @@
     const mw = ww * view.sc, mh = wh * view.sc, keep = 80;   // keep at least 80px of the map on screen
     cam.x = Math.max(keep - view.fox - mw, Math.min(view.W - keep - view.fox, cam.x));
     cam.y = Math.max(keep - view.foy - mh, Math.min(view.H - keep - view.foy, cam.y));
-    if (cam.z === 1) { cam.x = 0; cam.y = 0; }
     view.ox = view.fox + cam.x; view.oy = view.foy + cam.y;
   }
+  function resetCam() { cam.z = 1; cam.x = 0; cam.y = 0; applyCam(); }   // back to the whole map, centred (Shift+double-click)
   function zoomAt(mx, my, k) {   // mx, my: canvas CSS pixels that stay fixed
     const old = cam.z;
     cam.z = Math.max(CAM_MIN, Math.min(CAM_MAX, cam.z * k));
@@ -1093,7 +1094,7 @@
 
   // Map text is drawn in world units, so on a small window it would shrink with the map. textK() scales it back up
   // so a label never falls below about 90% of its designed size on screen.
-  function textK() { return Math.max(1, 0.9 / (view.sc || 1)); }
+  function textK() { return Math.max(1, 0.9 / (view.sc || 1)) * Math.max(0.7, Math.min(1, cam.z)); }   // zoomed out past the default, labels shrink a little so they crowd less
   function setFont(weight, px) { ctx.font = weight + " " + (px * textK()).toFixed(2) + "px system-ui, sans-serif"; }
 
   // Canvas text. In themed scenes it gets a dark outline so it reads on the light-ish bedding and the rock.
@@ -1922,7 +1923,7 @@
 
   function resLine() {
     const L = LB();
-    return G.RES.map(r => `<span><span class="dot" style="background:${RES_COLOR[r]}"></span>${L.res[r]} <b>${Math.floor(game.stock[r])}</b></span>`).join("");
+    return G.RES.map(r => `<span><span class="dot" style="background:${RES_COLOR[r]};color:${RES_COLOR[r]}"></span>${L.res[r]} <b>${Math.floor(game.stock[r])}</b></span>`).join("");
   }
 
   function costText(cost) {
@@ -3275,7 +3276,7 @@
   });
   window.addEventListener("mouseup", () => { drag = null; setTimeout(() => { dragged = false; }, 0); });
   canvas.addEventListener("contextmenu", ev => ev.preventDefault());
-  canvas.addEventListener("dblclick", ev => { if (ev.shiftKey) { cam.z = 1; applyCam(); } });
+  canvas.addEventListener("dblclick", ev => { if (ev.shiftKey) resetCam(); });
   canvas.addEventListener("mousemove", ev => {
     ui.mouse = toWorld(ev);
     ui.cursor = null;   // the mouse takes the placement ghost back from the keyboard cursor

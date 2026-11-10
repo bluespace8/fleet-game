@@ -23,7 +23,7 @@ Plain HTML, Canvas and JavaScript. No installs, no build step. The only network 
    autosaves every 10 seconds to a separate slot, and resumes from the newest save when you reopen the
    page. Load uses your own save first, then the autosave. If a save is damaged, the notice stays up
    with the "Loaded" message, and a copy of the damaged save is kept (the last 3, newest first, in
-   localStorage under `fleet-game-damaged-saves-v2`). Esc cancels a selection or placement. Keys: see Keyboard controls.
+   localStorage under `fleet-game-damaged-saves-v2`). Esc cancels a selection or placement. Mouse wheel zooms the map (out to half size, in to 6x), dragging moves it at any zoom, and Shift+double-click recentres it. Keys: see Keyboard controls.
 7. Frame-rate test: open `index.html?stress` for 30 ships mining at once plus 15 alien raiders. The corner shows fps (also with `?fps` in a normal game).
    `?stress&sector=4` starts in sector 4 so storms, fog, flares, meteor showers and raids are on screen.
    Stress mode never writes to the save, the players, or the logs.
