@@ -149,8 +149,9 @@
               guards: 3, guardRespawn: 20, guardLeash: 250, regen: 2, regenRange: 220, raidBoost: 0.2,
               minHomeShare: 0.6, nearCrystal: 150 },
     },
-    techCost: [8, 16, 28, 45],     // science per tier 1-4
-    // The tech tree: three branches of four. needs: the node one tier below in the same branch. effects are read with
+    techCost: [8, 16, 28, 45, 70], // science per tier 1-5
+    // The tech tree: three branches. Each has a trunk of five tiers and two spurs (spur: true) that hang off a trunk
+    // node. needs: the one node that must be owned first. effects are read with
     // techMult(state, key) (product of mult) and techAdd(state, key) (sum of add).
     tech: [
       { id: "mil_hulls", name: "Hardened hulls", branch: "mil", tier: 1, needs: null, effects: [{ key: "warshipHp", mult: 1.3 }],
@@ -177,6 +178,25 @@
         text: "Miner and hauler speed +15%." },
       { id: "log_depots", name: "Forward depots", branch: "log", tier: 4, needs: "log_engines", effects: [{ key: "baseCost", mult: 0.85 }],
         text: "New base cost x0.85 (all materials)." },
+      // ---- depth: a capstone at tier 5 on each trunk, and two side nodes ("spurs") per branch that hang off the trunk
+      { id: "mil_doctrine", name: "Flagship doctrine", branch: "mil", tier: 5, needs: "mil_siege", effects: [{ key: "warshipHp", mult: 1.2 }, { key: "warshipDmg", mult: 1.2 }],
+        text: "Warship max HP and damage +20% more, on top of the earlier nodes." },
+      { id: "mil_turrets", name: "Turret autoloaders", branch: "mil", tier: 2, needs: "mil_hulls", spur: true, effects: [{ key: "turretDmg", mult: 1.35 }],
+        text: "Turret damage +35% (6 → 8.1 per shot)." },
+      { id: "mil_repairs", name: "Field repairs", branch: "mil", tier: 3, needs: "mil_targeting", spur: true, effects: [{ key: "repairCost", mult: 0.5 }],
+        text: "Repairing ships, bases and stations costs half." },
+      { id: "ind_refinery", name: "Automated refineries", branch: "ind", tier: 5, needs: "ind_holds", effects: [{ key: "mineRate", mult: 1.2 }, { key: "cargo", mult: 1.1 }],
+        text: "Mining rate +20% more and cargo capacity +10% more." },
+      { id: "ind_yards", name: "Shipyards", branch: "ind", tier: 2, needs: "ind_drills", spur: true, effects: [{ key: "shipCost", mult: 0.85 }],
+        text: "Every new ship costs x0.85 (all materials)." },
+      { id: "ind_fitters", name: "Fitting crews", branch: "ind", tier: 3, needs: "ind_crews", spur: true, effects: [{ key: "fitCost", mult: 0.8 }],
+        text: "Base upgrades and add-ons cost x0.8." },
+      { id: "log_guild", name: "Trade guild", branch: "log", tier: 5, needs: "log_depots", effects: [{ key: "payout", mult: 1.25 }, { key: "baseUpkeep", mult: 0.85 }],
+        text: "Deliveries pay +25% credits, and base upkeep x0.85 more." },
+      { id: "log_brokers", name: "Brokers", branch: "log", tier: 2, needs: "log_credit", spur: true, effects: [{ key: "payout", mult: 1.15 }],
+        text: "Deliveries pay +15% credits." },
+      { id: "log_tugs", name: "Tug crews", branch: "log", tier: 3, needs: "log_docks", spur: true, effects: [{ key: "shipSpeed", mult: 1.1 }],
+        text: "Miner and hauler speed +10% more." },
     ],
   };
 
@@ -233,11 +253,16 @@
     id: "space",
     res: { ore: "ore", ice: "ice", crystal: "crystal" },
     resTitle: { ore: "Ore", ice: "Ice", crystal: "Crystal" },
-    ship: { miner: "Miner", hauler: "Hauler" }, ships: "Ships",
+    ship: { miner: "Miner", hauler: "Hauler", warship: "Warship", shieldship: "Shield ship" }, ships: "Ships",
     base: "base", baseTitle: "Base", bases: "Bases", home: "Home base", newBase: "New base",
     body: { asteroid: "Asteroid", moon: "Moon", iceplanet: "Ice planet", rare: "Rare planet" },
     storm: "Ion storm", shower: "Meteor shower", sector: "Sector", warp: "Warp to next sector",
     edge: "the edge of space",
+    // hazards and defence, energy, science: the newer features
+    addon: { shield: "Shield", turret: "Turret", generator: "Generator" },
+    alien: "Alien", aliens: "Aliens", raid: "Alien raid", nest: "Nest", beacon: "Beacon",
+    fog: "Fog", flare: "Solar flare", site: "Energy site", sites: "Energy sites", station: "Station",
+    science: "Science", tech: "Tech", fleets: "Shield fleets",
   });
   function mergeLabels(base, over) {
     const out = {};
@@ -290,13 +315,13 @@
     return out;
   }
   function baseCost(state) { return scaleCost(T.baseCost, costMult(state.sector) * techMult(state, "baseCost")); }   // tech: Forward depots
-  function addonCost(state, kind) { return T.addons[kind] ? scaleCost(T.addons[kind].cost, costMult(state.sector)) : null; }
+  function addonCost(state, kind) { return T.addons[kind] ? scaleCost(T.addons[kind].cost, costMult(state.sector) * techMult(state, "fitCost")) : null; }   // tech: Fitting crews
   function stationCost(state) { return scaleCost(T.energy.station.cost, costMult(state.sector)); }
-  function shipCost(state, type) { return scaleCost(SHIP_TYPES[type].cost, costMult(state.sector)); }
+  function shipCost(state, type) { return scaleCost(SHIP_TYPES[type].cost, costMult(state.sector) * techMult(state, "shipCost")); }   // tech: Shipyards
   function upgradeCost(state, baseId) {
     const b = state.bases[baseId];
     if (!b || (b.tier | 0) >= MAX_TIER) return null;
-    return scaleCost(T.upgrades[(b.tier | 0) + 1].cost, costMult(state.sector));
+    return scaleCost(T.upgrades[(b.tier | 0) + 1].cost, costMult(state.sector) * techMult(state, "fitCost"));
   }
 
   // ---------------------------------------------------------------- world
@@ -1519,7 +1544,7 @@
 
   function deliver(state, res, amount) {
     state.stock[res] += amount;
-    const cr = amount * (T.econ.credit[res] || 0);       // slice b: the same units also pay credits
+    const cr = amount * (T.econ.credit[res] || 0) * techMult(state, "payout");   // the same units also pay credits (tech: Brokers, Trade guild)
     state.credits += cr; state.econStats.earned += cr;
     state.score.mat += amount * T.score.value[res];
     state.delivered[res] += amount;
@@ -2124,7 +2149,7 @@
       if (b.cd > 0) b.cd = Math.max(0, b.cd - dt);
       if (b.cd > 0 || !state.aliens.length) continue;
       const k = alienIndexNear(state, b.x, b.y, U.range);
-      if (k >= 0 && fireAtAlien(state, b.x, b.y, state.aliens[k], U.shotSpeed, U.dmg, U.range, "turret")) b.cd = U.cd;
+      if (k >= 0 && fireAtAlien(state, b.x, b.y, state.aliens[k], U.shotSpeed, U.dmg * techMult(state, "turretDmg"), U.range, "turret")) b.cd = U.cd;   // tech: Turret autoloaders
     }
   }
 
@@ -2310,7 +2335,7 @@
   }
 
   function repairCost(state, kind, id) {
-    const k = costMult(state.sector);
+    const k = costMult(state.sector) * techMult(state, "repairCost");   // tech: Field repairs
     const thing = kind === "ship" ? state.ships[id] : kind === "base" ? state.bases[id] : kind === "station" ? (state.sites || [])[id] : null;
     const per = kind === "ship" ? T.repair.ship : T.repair.base;
     const out = { ore: 0, ice: 0, crystal: 0 };
@@ -2766,7 +2791,11 @@
           iceplanet: ["Argentum", "Brightbeard Lode", "Silverhall", "Bellowdeep", "Quicksilver"],
           rare: ["Ruby Hollow", "Emerald Heart", "Sapphire Vault", "Diamondmaw", "Opal Cleft", "Garnet Grotto"] },
         labels: { id: "dwarven", res: { ore: "iron", ice: "silver", crystal: "gems" }, resTitle: { ore: "Iron", ice: "Silver", crystal: "Gems" },
-          ship: { miner: "Dwarf", hauler: "Mine cart" }, ships: "Dwarves",
+          ship: { miner: "Dwarf", hauler: "Mine cart", warship: "Axe guard", shieldship: "Shield bearer" }, ships: "Dwarves",
+          addon: { shield: "Rune ward", turret: "Ballista", generator: "Water wheel" },
+          alien: "Goblin", aliens: "Goblins", raid: "Goblin raid", nest: "Goblin warren", beacon: "Cursed totem",
+          fog: "Mine dust", flare: "Earth tremor", site: "Steam vent", sites: "Steam vents", station: "Steam engine",
+          science: "Lore", tech: "Rune lore", fleets: "Shield walls",
           base: "forge", baseTitle: "Forge", bases: "Forges", home: "Great hall", newBase: "New forge",
           body: { asteroid: "Iron vein", moon: "Silver seam", iceplanet: "Silver lode", rare: "Gem geode" },
           storm: "Flooded tunnel", shower: "Cave-in", sector: "Depth", warp: "Dig to next depth", edge: "the cavern wall" } },
@@ -2777,7 +2806,11 @@
           iceplanet: ["Big Blue Bowl", "Cashew Dish", "Pistachio Pan", "Brazil Bowl", "Macadamia Mug"],
           rare: ["Carrot Corner", "Baby Carrot Bed", "Orange Row", "Crunchy Patch", "Garden Gold"] },
         labels: { id: "hamster", res: { ore: "seeds", ice: "nuts", crystal: "carrots" }, resTitle: { ore: "Seeds", ice: "Nuts", crystal: "Carrots" },
-          ship: { miner: "Hamster", hauler: "Big hamster" }, ships: "Hamsters",
+          ship: { miner: "Hamster", hauler: "Big hamster", warship: "Guard hamster", shieldship: "Ball hamster" }, ships: "Hamsters",
+          addon: { shield: "Hidey house", turret: "Seed shooter", generator: "Wheel dynamo" },
+          alien: "Rat", aliens: "Rats", raid: "Rat raid", nest: "Rat nest", beacon: "Squeaky toy",
+          fog: "Fluff cloud", flare: "Vacuum cleaner", site: "Sunny spot", sites: "Sunny spots", station: "Sun lamp",
+          science: "Tricks", tech: "Tricks", fleets: "Hamster balls",
           base: "wheel", baseTitle: "Wheel", bases: "Wheels", home: "Home wheel", newBase: "New wheel",
           body: { asteroid: "Seed pile", moon: "Nut stash", iceplanet: "Nut bowl", rare: "Carrot patch" },
           storm: "Sticky bedding", shower: "Cat swipes", sector: "Cage", warp: "Move to next cage", edge: "the edge of the cage" } },
