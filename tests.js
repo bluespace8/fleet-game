@@ -1107,11 +1107,15 @@ test("the space labels are the game's current wording", () => {
   assert.deepStrictEqual(JSON.parse(JSON.stringify(G.SPACE_LABELS)), {
     id: "space",
     res: { ore: "ore", ice: "ice", crystal: "crystal" }, resTitle: { ore: "Ore", ice: "Ice", crystal: "Crystal" },
-    ship: { miner: "Miner", hauler: "Hauler" }, ships: "Ships",
+    ship: { miner: "Miner", hauler: "Hauler", warship: "Warship", shieldship: "Shield ship" }, ships: "Ships",
     base: "base", baseTitle: "Base", bases: "Bases", home: "Home base", newBase: "New base",
     body: { asteroid: "Asteroid", moon: "Moon", iceplanet: "Ice planet", rare: "Rare planet" },
     storm: "Ion storm", shower: "Meteor shower", sector: "Sector", warp: "Warp to next sector",
-    edge: "the edge of space" });
+    edge: "the edge of space",
+    addon: { shield: "Shield", turret: "Turret", generator: "Generator" },
+    alien: "Alien", aliens: "Aliens", raid: "Alien raid", nest: "Nest", beacon: "Beacon",
+    fog: "Fog", flare: "Solar flare", site: "Energy site", sites: "Energy sites", station: "Station",
+    science: "Science", tech: "Tech", fleets: "Shield fleets" });
   assert.ok(Object.isFrozen(G.SPACE_LABELS) && Object.isFrozen(G.SPACE_LABELS.res), "shared defaults cannot be changed");
 });
 test("labelsFor returns a fresh object each call", () => {
@@ -2926,7 +2930,7 @@ test("a warship costs the scaled price, carries nothing and has its own health",
   const r = G.buildShip(s, "warship");
   assert.ok(r.ok && r.ship.name === "Warship 1" && r.ship.hp === G.SHIP_TYPES.warship.hp && r.ship.wo === "");
   assert.strictEqual(r.ship.id, 2);
-  assert.strictEqual(G.shipLabel(r.ship, G.labelsFor("hamster")), "Warship 1");
+  assert.strictEqual(G.shipLabel(r.ship, G.labelsFor("hamster")), "Guard hamster 1"); assert.strictEqual(G.shipLabel(r.ship, G.labelsFor("dwarven")), "Axe guard 1"); assert.strictEqual(G.shipLabel(r.ship, G.labelsFor("space")), "Warship 1");
   assert.strictEqual(G.jobText(s, r.ship).indexOf("On guard"), 0);
 });
 test("a warship refuses every mining order with a clear reason", () => {
@@ -3516,16 +3520,18 @@ test("a long run never grows the message queue past its cap", () => {
   assert.ok(s.msgs.length <= 50);
 });
 
-test("the tree is fully defined in TUNING: 12 nodes, 3 branches of 4 tiers, costs 8/16/28/45, corrected numbers", () => {
+test("the tree is fully defined in TUNING: 21 nodes, 3 branches with a 5-tier trunk and 2 spurs each, costs 8/16/28/45/70, corrected numbers", () => {
   const nodes = G.TUNING.tech;
-  assert.strictEqual(nodes.length, 12);
-  assert.deepStrictEqual(G.TUNING.techCost, [8, 16, 28, 45]);
-  assert.strictEqual(new Set(nodes.map(n => n.id)).size, 12);
-  const keys = new Set(["warshipHp", "warshipDmg", "warshipMaint", "nestDmg", "mineRate", "shipMaint", "baseUpkeep", "cargo", "overdraft", "interest", "unload", "dock", "shipSpeed", "baseCost"]);
+  assert.strictEqual(nodes.length, 21);
+  assert.deepStrictEqual(G.TUNING.techCost, [8, 16, 28, 45, 70]);
+  assert.strictEqual(new Set(nodes.map(n => n.id)).size, 21);
+  const keys = new Set(["warshipHp", "warshipDmg", "warshipMaint", "nestDmg", "mineRate", "shipMaint", "baseUpkeep", "cargo", "overdraft", "interest", "unload", "dock", "shipSpeed", "baseCost", "turretDmg", "repairCost", "shipCost", "fitCost", "payout"]);
   const used = new Set();
   for (const branch of ["mil", "ind", "log"]) {
-    const col = nodes.filter(n => n.branch === branch);
-    assert.deepStrictEqual(col.map(n => n.tier), [1, 2, 3, 4], branch);
+    const col = nodes.filter(n => n.branch === branch && !n.spur).sort((a, b) => a.tier - b.tier), spurs = nodes.filter(n => n.branch === branch && n.spur);
+    assert.deepStrictEqual(col.map(n => n.tier), [1, 2, 3, 4, 5], branch);
+    assert.deepStrictEqual(spurs.map(n => n.tier).sort(), [2, 3], branch + " spurs");
+    for (const sp of spurs) { const p = nodes.find(n => n.id === sp.needs); assert.ok(p && !p.spur && p.branch === branch && p.tier === sp.tier - 1, sp.id + " hangs off the trunk node one tier below"); }
     col.forEach((n, i) => assert.strictEqual(n.needs, i ? col[i - 1].id : null, n.id + " needs the node below it"));
   }
   for (const n of nodes) {
@@ -4342,7 +4348,7 @@ test("techState: owned, available, short or locked; unknown ids are locked", () 
   s.science = 15;
   assert.strictEqual(G.techState(s, "ind_crews"), "short");
   assert.strictEqual(G.techCost(G.TUNING.tech[0]), 8);
-  assert.deepStrictEqual(G.TUNING.tech.map(n => G.techCost(n)), [8, 16, 28, 45, 8, 16, 28, 45, 8, 16, 28, 45]);
+  assert.deepStrictEqual(G.TUNING.tech.map(n => G.techCost(n)), [8, 16, 28, 45, 8, 16, 28, 45, 8, 16, 28, 45, 70, 16, 28, 70, 16, 28, 70, 16, 28]);
 });
 test("unlockTech: needs the node below and the science; deducts; refuses twice; emits tech:unlock", () => {
   const s = ngame(17, 3);
@@ -4471,7 +4477,7 @@ test("tree: new base cost, and the table of every node's effect", () => {
   assert.strictEqual(eff("ind_modular", "baseUpkeep"), 0.65); assert.strictEqual(eff("log_credit", "overdraft", "add"), -250);
   assert.strictEqual(eff("log_credit", "interest"), 0.5); assert.strictEqual(eff("mil_siege", "nestDmg"), 2);
   assert.strictEqual(eff("mil_hulls", "warshipHp"), 1.3); assert.strictEqual(eff("mil_targeting", "warshipDmg"), 1.25);
-  assert.strictEqual(G.TUNING.tech.length, 12);
+  assert.strictEqual(G.TUNING.tech.length, 21);
 });
 test("the same seed and orders give the same fight, nests and science", () => {
   const a = duel(5, 4, 2, 120), b = duel(5, 4, 2, 120);
@@ -5103,6 +5109,52 @@ test("auto-retarget: a ship flying to a body another ship emptied goes straight 
   body.amount = 0; run(s, 0.1);
   assert.strictEqual(ship.st, G.TO_BODY); assert.notStrictEqual(ship.target, body.id);
   assert.strictEqual(s.bodies[ship.target].res, "ore");
+});
+
+test("deeper tree: the tier-5 capstones and the spurs change the rules they name", () => {
+  const base = G.newGame(21), own = ids => { const s = G.newGame(21); s.tech = ids.slice(); return s; };
+  // spurs need their trunk node, capstones need tier 4
+  const s = G.newGame(21); s.science = 999;
+  assert.strictEqual(G.unlockTech(s, "mil_turrets").ok, false); assert.strictEqual(G.techState(s, "mil_doctrine"), "locked");
+  assert.strictEqual(G.unlockTech(s, "mil_hulls").ok, true);
+  assert.deepStrictEqual(G.unlockTech(s, "mil_turrets"), { ok: true, cost: 16 });
+  assert.strictEqual(G.techCost(G.TUNING.tech.find(n => n.id === "log_guild")), 70);
+  // costs
+  const sc = G.shipCost(base, "miner"), sy = G.shipCost(own(["ind_yards"]), "miner");
+  assert.strictEqual(sy.ore, Math.ceil(sc.ore * 0.85 - 1e-9));
+  const ac = G.addonCost(base, "turret"), af = G.addonCost(own(["ind_fitters"]), "turret");
+  assert.ok(af.ore < ac.ore && af.ore >= Math.floor(ac.ore * 0.8));
+  assert.ok(G.upgradeCost(own(["ind_fitters"]), 0).ore < G.upgradeCost(base, 0).ore);
+  // repairs cost half
+  const hurt = ids => { const g = own(ids); g.ships[0].hp = g.ships[0].maxHp - 20; return G.repairCost(g, "ship", 0); };
+  assert.strictEqual(hurt(["mil_repairs"]).ore, Math.ceil(hurt([]).ore / 2));
+  // deliveries pay more credits, the stock is unchanged
+  const pay = ids => { const g = own(ids); const c0 = g.credits, o0 = g.stock.ore; G.orderShip(g, 0, nearBody(g).id); let n = 0; while (g.score.mat <= 0 && n++ < 60 * 120) G.step(g, DT); return { cr: g.econStats.earned, ore: g.stock.ore - o0 }; };
+  const p0 = pay([]), p1 = pay(["log_brokers"]), p2 = pay(["log_brokers", "log_guild"]);
+  assert.strictEqual(p1.ore, p0.ore); assert.ok(Math.abs(p1.cr - p0.cr * 1.15) < 1e-6); assert.ok(Math.abs(p2.cr - p0.cr * 1.15 * 1.25) < 1e-6);
+  // multipliers stack with the earlier nodes
+  const all = own(["mil_hulls", "mil_doctrine", "mil_targeting", "ind_drills", "ind_refinery", "ind_holds", "log_engines", "log_tugs"]);
+  assert.ok(Math.abs(G.techMult(all, "warshipHp") - 1.3 * 1.2) < 1e-9); assert.ok(Math.abs(G.techMult(all, "warshipDmg") - 1.25 * 1.2) < 1e-9);
+  assert.ok(Math.abs(G.techMult(all, "mineRate") - 1.2 * 1.2) < 1e-9); assert.ok(Math.abs(G.techMult(all, "cargo") - 1.25 * 1.1) < 1e-9);
+  assert.ok(Math.abs(G.techMult(all, "shipSpeed") - 1.15 * 1.1) < 1e-9);
+  assert.ok(Math.abs(G.techMult(own(["mil_turrets"]), "turretDmg") - 1.35) < 1e-9);
+  // a save with the new nodes round-trips
+  const r = G.deserialize(G.serialize(all)); assert.ok(r.ok); assert.deepStrictEqual(r.state.tech, all.tech);
+});
+
+test("themes name the newer things: fighters, add-ons, raiders, nests, hazards, energy, science", () => {
+  const keys = ["alien", "aliens", "raid", "nest", "beacon", "fog", "flare", "site", "sites", "station", "science", "tech", "fleets"];
+  const sp = G.labelsFor("space");
+  for (const id of ["dwarven", "hamster"]) {
+    const L = G.labelsFor(id);
+    for (const k of keys) assert.ok(typeof L[k] === "string" && L[k] && L[k] !== sp[k], id + " " + k);
+    for (const k of ["warship", "shieldship"]) assert.ok(L.ship[k] && L.ship[k] !== sp.ship[k], id + " ship " + k);
+    for (const k of ["shield", "turret", "generator"]) assert.ok(L.addon[k] && L.addon[k] !== sp.addon[k], id + " addon " + k);
+    const s = G.newGame(5); G.addShip(s, "shieldship");
+    assert.strictEqual(G.shipLabel(s.ships[s.ships.length - 1], L), L.ship.shieldship + " 1");
+  }
+  for (const k of ["shield", "turret", "generator"]) assert.strictEqual(sp.addon[k], G.TUNING.addons[k].label);
+  assert.strictEqual(sp.ship.warship, G.TUNING.ships.warship.label); assert.strictEqual(sp.ship.shieldship, G.TUNING.ships.shieldship.label);
 });
 
 console.log("\n" + passed + " passed, " + failed + " failed");

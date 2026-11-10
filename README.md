@@ -70,10 +70,10 @@ The mouse always works. These keys add to it.
 - **Nests and the beacon** sit on the map (a dark pink hive; a cyan diamond). Nests keep guards (filled dots; hollow dots
   count down to the next one back) and heal while no warship is near. To attack one, select a warship and click it, or press **X**
   when no alien is left (it picks the nearest nest or beacon). The warship flies there and shoots it.
-- **Tech tree:** the **Tech** button or **T** opens a window (the game pauses) with three branches of four tiers: Military,
-  Industry, Logistics. A node needs the one below it in its branch and costs 8, 16, 28 or 45 science by tier. Each shows its cost, its
-  effect and its state: Owned, Available, Not enough science, or Locked. **Arrow keys** move between nodes, **Enter** (or a click)
-  buys, and a refused buy says why. **Esc** or **T** closes the window and focus goes back where it was.
+- **Tech tree:** the **Tech** button or **T** opens a window (the game pauses) drawn as a skill tree: a hub in the middle and three branches going outwards, Military,
+  Industry, Logistics. Each branch has a main line of five tiers and two side nodes that hang off it (21 nodes). A node needs the one before it on its line and costs 8, 16, 28, 45 or 70 science by tier. Point at a node to read its cost, its
+  effect and its state: Owned, Available, Not enough science, or Locked. **Arrow keys** move to the nearest node in that direction, **Enter** (or a click)
+  buys, and a refused buy says why. **Esc**, **T** or a click outside the window closes it and focus goes back where it was. The Hangar also closes on a click outside it.
 
 ## Sectors, score and the end of a run
 
@@ -113,8 +113,7 @@ Sector 1 is calm. Every warning shows in the top-left with a 10 second countdown
   Shield range 170. Repair costs 0.5 ore per HP of ship (bases also 0.15 ice), scaled by the sector's cost factor.
   Raiders: sector 3 brings 2 with 40 HP and 4 damage per shot; sector 6, 3 with 76 HP and 7 damage; sector 10 and later,
   5 with 120 HP and 10 damage (all capped at sector 10, so later sectors bring the same raid). An alien kill scores 25 and sometimes drops a star.
-- Saves from before this update load with full health, no add-ons and no hazards running. In a theme the new
-  units keep the space look; their words follow the theme where the rules provide them.
+- Saves from before this update load with full health, no add-ons and no hazards running. The Dwarven and Hamster themes cover these too: axe guards and guard hamsters for warships, shield bearers and ball hamsters, goblins and rats for raiders, and their own words for add-ons, nests, fog, flares, energy sites, science and the tech tree. Nests, beacons and energy sites keep their space shapes.
 - **Score:** points for materials delivered (ore 1, ice 2, crystal 5 each), bases built (100), sectors
   cleared (400 x sector number) and a time bonus for clearing a sector under par. Shown live, with your best.
 - **A run ends** when you retire, when your home base is destroyed, or when you are stranded: nothing left to mine anywhere,

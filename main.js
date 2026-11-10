@@ -883,6 +883,72 @@
     });
   }
 
+  // Themed fighters: the warship, the shield ship and the raider get their own picture in the Dwarven and Hamster themes
+  // (nose along +x, 40 x 40 like the others). Space keeps the hulls above.
+  function paintAxeGuard(g) {
+    paintDwarf(g, "#aeb6c6");                                   // a steel helm instead of the miner's colour
+    g.fillStyle = "#f2ead0";                                    // two horns on it
+    for (const sy of [-1, 1]) { g.beginPath(); g.moveTo(1, sy * 5); g.lineTo(-3.5, sy * 9.5); g.lineTo(4, sy * 6.2); g.closePath(); g.fill(); }
+    g.beginPath(); g.moveTo(9.5, 9.5); g.lineTo(14.5, 3.6); g.quadraticCurveTo(18.5, 9.5, 14.5, 15.4); g.closePath();   // an axe blade over the pick
+    g.fillStyle = "#dfe4ee"; g.fill(); g.strokeStyle = "rgba(0,0,0,0.55)"; g.lineWidth = 1; g.stroke();
+  }
+  function paintShieldBearer(g) {
+    paintDwarf(g, "#6fb8ff");
+    circ(g, 9.5, -8, 7.2, "#2a1608"); circ(g, 9.5, -8, 6.2, "#7a5230");   // a round shield held out in front
+    g.strokeStyle = "#d8c48a"; g.lineWidth = 1.4; g.beginPath(); g.arc(9.5, -8, 5.2, 0, Math.PI * 2); g.stroke();
+    circ(g, 9.5, -8, 2, "#dfe4ee");
+  }
+  function paintGuardHamster(g) {
+    paintHamster(g, false, WAR_COLOR);
+    g.beginPath(); g.arc(7.4, 0, 5.6, Math.PI * 0.5, Math.PI * 1.5); g.closePath();   // a little helmet on the back of the head
+    g.fillStyle = "#aeb6c6"; g.fill(); g.strokeStyle = "rgba(0,0,0,0.55)"; g.lineWidth = 1; g.stroke();
+    circ(g, 3.4, 0, 1.5, "#e0b040");
+    g.strokeStyle = "#6b4a2a"; g.lineWidth = 1.6; g.beginPath(); g.moveTo(-4, 10.5); g.lineTo(15, 10.5); g.stroke();   // a toothpick spear
+    g.fillStyle = "#dfe4ee"; g.beginPath(); g.moveTo(18.5, 10.5); g.lineTo(14.5, 8.6); g.lineTo(14.5, 12.4); g.closePath(); g.fill();
+  }
+  function paintBallHamster(g) {
+    paintHamster(g, false, "#6fb8ff");
+    g.beginPath(); g.arc(0, 0, 17.6, 0, Math.PI * 2);            // rolling inside a clear exercise ball
+    g.fillStyle = "rgba(150,215,255,0.2)"; g.fill();
+    g.strokeStyle = "rgba(200,240,255,0.95)"; g.lineWidth = 1.5; g.stroke();
+    g.strokeStyle = "rgba(255,255,255,0.7)"; g.lineWidth = 1.2; g.beginPath(); g.arc(0, 0, 14.6, -2.5, -1.7); g.stroke();
+  }
+  function paintGoblin(g) {
+    const ol = "#14200c";
+    ell(g, -3, 0, 9.4, 7.4, 0, ol); circ(g, 5, 0, 7.2, ol);
+    ell(g, -3, 0, 8, 6, 0, "#3f6b2a");                          // hunched body
+    g.fillStyle = "#6fa33a";                                    // long ears
+    for (const sy of [-1, 1]) { g.beginPath(); g.moveTo(3, sy * 4.5); g.lineTo(-4, sy * 13); g.lineTo(7.5, sy * 5.6); g.closePath(); g.fill(); g.strokeStyle = ol; g.lineWidth = 1; g.stroke(); }
+    circ(g, 5, 0, 6, "#6fa33a");
+    circ(g, 8.2, -2.3, 1.3, "#ffec6a"); circ(g, 8.2, 2.3, 1.3, "#ffec6a");
+    circ(g, 8.6, -2.3, 0.6, "#3a0a0a"); circ(g, 8.6, 2.3, 0.6, "#3a0a0a");
+    g.strokeStyle = "#dfe4ee"; g.lineWidth = 1.8; g.beginPath(); g.moveTo(6, 9); g.lineTo(16, 9); g.stroke();   // a rusty knife
+    g.strokeStyle = "#6b4a2a"; g.lineWidth = 2.4; g.beginPath(); g.moveTo(3, 9); g.lineTo(6.5, 9); g.stroke();
+  }
+  function paintRat(g) {
+    const ol = "#15151c";
+    g.strokeStyle = "#e09aa0"; g.lineWidth = 1.8; g.lineCap = "round";   // a long bare tail
+    g.beginPath(); g.moveTo(-10, 0); g.quadraticCurveTo(-15, 6, -19, -3); g.stroke();
+    ell(g, -1, 0, 11.4, 7.9, 0, ol); ell(g, 9, 0, 7.4, 5.6, 0, ol); circ(g, 5.5, -5, 4.2, ol); circ(g, 5.5, 5, 4.2, ol);
+    ell(g, -1, 0, 10, 6.5, 0, "#7d7f8a");
+    ell(g, -3, 0, 6, 3.8, 0, "#63656f");
+    circ(g, 5.5, -5, 3, "#6d6f7a"); circ(g, 5.5, 5, 3, "#6d6f7a"); circ(g, 5.5, -5, 1.6, "#e09aa0"); circ(g, 5.5, 5, 1.6, "#e09aa0");
+    ell(g, 9, 0, 6, 4.2, 0, "#8d8f9a");                          // a pointed head
+    circ(g, 11, -1.9, 1, "#ff4040"); circ(g, 11, 1.9, 1, "#ff4040");
+    circ(g, 15, 0, 1.2, "#e0707a");
+  }
+  function themeWarSprite(type) {
+    const id = themeId(), bearer = type === "shieldship";
+    return cached("tw|" + id + "|" + type, 40, 40, 1, g => {
+      if (id === "hamster") (bearer ? paintBallHamster : paintGuardHamster)(g);
+      else (bearer ? paintShieldBearer : paintAxeGuard)(g);
+    });
+  }
+  function themeAlienSprite() {
+    const id = themeId();
+    return cached("ta|" + id, 40, 40, 1, g => (id === "hamster" ? paintRat : paintGoblin)(g));
+  }
+
   // Base sprites. Hamster: a static stand (and a little house at home) plus a wheel that turns. Dwarven: one
   // stone forge / great hall with its hearth glow. Tiers differ by shape, not just brightness.
   const BASE_BOX = 130;
@@ -1506,7 +1572,7 @@
     ctx.rotate(ship.ang);
     ctx.scale(k, k);
     if (war) {   // warship: one cached sprite, with a plain two-tone flame while it moves
-      if (ship.mv === 1) {
+      if (ship.mv === 1 && !themed()) {   // engines only in space: dwarves and hamsters walk
         const len = 9 + (reduceMotion ? 0 : Math.random() * 4);
         ctx.fillStyle = "rgba(255,170,90,0.9)";
         ctx.beginPath(); ctx.moveTo(-9, -3); ctx.lineTo(-9 - len, 0); ctx.lineTo(-9, 3); ctx.closePath(); ctx.fill();
@@ -1514,7 +1580,7 @@
         ctx.beginPath(); ctx.moveTo(-9, -1.4); ctx.lineTo(-9 - len * 0.5, 0); ctx.lineTo(-9, 1.4); ctx.closePath(); ctx.fill();
       }
       ctx.globalAlpha = ship.stun > 0 ? 0.6 : 1;
-      ctx.drawImage(warSprite(), -20, -20, 40, 40);
+      ctx.drawImage(themed() ? themeWarSprite(ship.type) : warSprite(), -20, -20, 40, 40);
       ctx.globalAlpha = 1;
     } else if (themed()) {   // one cached sprite; idle ships are dimmed like the space hull
       ctx.globalAlpha = busy ? 1 : 0.85;
@@ -1632,7 +1698,7 @@
     ctx.save();
     ctx.translate(a.x, a.y); ctx.rotate(ang);
     if (!t && !(a.nest >= 0)) ctx.globalAlpha = 0.6;   // leaving the map (nest guards idle at their nest and stay solid)
-    ctx.drawImage(alienSprite(), -20, -20, 40, 40);
+    ctx.drawImage(themed() ? themeAlienSprite() : alienSprite(), -20, -20, 40, 40);
     ctx.restore();
     if (a.hp < a.maxHp) drawBar(a.x, a.y - 22, 26, a.hp / a.maxHp);
     if (ui.selected != null && isWar(game.ships[ui.selected]) && game.ships[ui.selected].wo === "attack" && game.ships[ui.selected].wt === a.id) {
@@ -1716,7 +1782,7 @@
       ctx.drawImage(fogSprite(r), e.x - half, e.y - half, half * 2, half * 2);
       ctx.globalAlpha = 1;
       ctx.textAlign = "center"; setFont(700, 11); ctx.fillStyle = "rgba(230,238,255,0.8)";
-      ctx.fillText("FOG: mining slowed", e.x, e.y + 4);
+      labelText(LB().fog.toUpperCase() + ": mining slowed", e.x, e.y + 4);
     }
     if (!any) return;
     for (const s of game.ships) {
@@ -1742,7 +1808,7 @@
         ctx.beginPath(); ctx.arc(w.x, w.y, w.r, 0, Math.PI * 2); ctx.stroke();
         ctx.setLineDash([]);
         ctx.textAlign = "center"; setFont(700, 11); ctx.fillStyle = "rgba(205,215,240,0.95)";
-        ctx.fillText("FOG IN " + w.secs, w.x, w.y + 4);
+        labelText(LB().fog.toUpperCase() + " IN " + w.secs, w.x, w.y + 4);
       } else if (w.kind === "raid") {
         const dx = cx - w.x, dy = cy - w.y, d = Math.hypot(dx, dy) || 1, ux = dx / d, uy = dy / d, px = -uy, py = ux;
         const pulse = reduceMotion ? 0.8 : 0.55 + 0.4 * Math.sin(time * 8);
@@ -1754,7 +1820,7 @@
         ctx.lineTo(w.x + ux * 26 - px * 12, w.y + uy * 26 - py * 12);
         ctx.closePath(); ctx.fill(); ctx.stroke();
         ctx.textAlign = "center"; setFont(700, 11); ctx.fillStyle = "rgba(255,170,170,0.95)";
-        ctx.fillText("RAID IN " + w.secs, w.x + ux * 72, w.y + uy * 72 + 4);
+        labelText((themed() ? LB().raid.toUpperCase() : "RAID") + " IN " + w.secs, w.x + ux * 72, w.y + uy * 72 + 4);
       }
     }
   }
@@ -1842,7 +1908,7 @@
         }
       } else {
         setFont(600, 10); ctx.textAlign = "center"; ctx.fillStyle = "rgba(190,250,255,0.9)";
-        ctx.fillText("BEACON", n.x, n.y + r + 14);
+        labelText(LB().beacon.toUpperCase(), n.x, n.y + r + 14);
       }
     }
   }
@@ -1856,7 +1922,7 @@
         ctx.strokeStyle = "rgba(120,235,160,0.45)"; ctx.lineWidth = 1.5; ctx.setLineDash([4, 4]);
         ctx.beginPath(); ctx.moveTo(0, -r); ctx.lineTo(r, 0); ctx.lineTo(0, r); ctx.lineTo(-r, 0); ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
         setFont(600, 10); ctx.textAlign = "center"; ctx.fillStyle = "rgba(150,240,185,0.75)";
-        ctx.fillText("ENERGY SITE", 0, r + 13);
+        labelText(LB().site.toUpperCase(), 0, r + 13);
       } else {
         const on = !s.down, pulse = reduceMotion ? 0.5 : 0.5 + 0.5 * Math.sin(time * 3 + s.id);
         if (on) {
@@ -1952,8 +2018,8 @@
     const L = LB();
     const items = [["miner", L.ship.miner, G.SHIP_TYPES.miner.blurb, G.shipCost(game, "miner")],
       ["hauler", L.ship.hauler, G.SHIP_TYPES.hauler.blurb, G.shipCost(game, "hauler")],
-      ["warship", G.TUNING.ships.warship.label, G.SHIP_TYPES.warship.blurb, G.shipCost(game, "warship")],
-      ["shieldship", G.TUNING.ships.shieldship.label, G.SHIP_TYPES.shieldship.blurb, G.shipCost(game, "shieldship")],
+      ["warship", L.ship.warship, G.SHIP_TYPES.warship.blurb, G.shipCost(game, "warship")],
+      ["shieldship", L.ship.shieldship, G.SHIP_TYPES.shieldship.blurb, G.shipCost(game, "shieldship")],
       ["base", L.newBase, themed() ? "Click an empty spot to place it" : "Click empty space to place it", G.baseCost(game)]];
     const html = items.map(([key, label, note, cost]) => {
       const ok = !game.over && G.canAfford(game, cost);
@@ -1965,24 +2031,24 @@
 
   // Energy sites: build a station (a saving on every running cost) and repair it when it is hurt.
   function renderSites() {
-    const sites = game.sites || [];
+    const sites = game.sites || [], L = LB();
     if (!sites.length) return "";
     const cut = Math.round((1 - G.energyMult(game)) * 100);
-    const head = `<div class="base-row"><span class="lbl"><b>Energy sites</b><small>${cut ? "Running costs cut by " + cut + "%" : "Build a station to cut every running cost. Aliens will attack it."}</small></span></div>`;
+    const head = `<div class="base-row"><span class="lbl"><b>${L.sites}</b><small>${cut ? "Running costs cut by " + cut + "%" : `Build ${an(lc(L.station))} to cut every running cost. ${L.aliens} will attack it.`}</small></span></div>`;
     return head + sites.map((s, i) => {
       let note, btn = "";
       if (!s.built) {
         const c = G.stationCost(game);
-        note = "Empty site";
-        btn = `<button type="button" data-act="stbuild:${i}"${!game.over && G.canAfford(game, c) ? "" : " disabled"} title="Cuts all running costs by ${Math.round(G.TUNING.energy.station.cut * 100)}% while it stands. ${G.TUNING.energy.station.hp} HP: defend it.">Build station<small>${costText(c)}</small></button>`;
+        note = "Empty " + lc(L.site);
+        btn = `<button type="button" data-act="stbuild:${i}"${!game.over && G.canAfford(game, c) ? "" : " disabled"} title="Cuts all running costs by ${Math.round(G.TUNING.energy.station.cut * 100)}% while it stands. ${G.TUNING.energy.station.hp} HP: defend it.">Build ${lc(L.station)}<small>${costText(c)}</small></button>`;
       } else {
-        note = s.down ? "DOWN: no saving until repaired" : s.hp < s.maxHp ? `Station, HP ${Math.ceil(s.hp)}/${s.maxHp}` : "Station running";
+        note = s.down ? "DOWN: no saving until repaired" : s.hp < s.maxHp ? `${L.station}, HP ${Math.ceil(s.hp)}/${s.maxHp}` : L.station + " running";
         if (s.hp < s.maxHp) {
           const c = G.repairCost(game, "station", i);
           btn = `<button type="button" class="fix" data-act="stfix:${i}"${!game.over && G.canAfford(game, c) ? "" : " disabled"}>Repair<small>${costText(c) || "free"}</small></button>`;
         }
       }
-      return `<div class="base-row"><span class="lbl"><b>Energy site ${i + 1}</b><small>${note}</small></span>${btn}</div>`;
+      return `<div class="base-row"><span class="lbl"><b>${L.site} ${i + 1}</b><small>${note}</small></span>${btn}</div>`;
     }).join("");
   }
 
@@ -2001,12 +2067,13 @@
         : `<small class="done">Top level</small>`;
       const rows = mem.map(m => `<button type="button" data-fl="rel:${m.id}" title="Take it out of the fleet">${shipName(m)} &times;</button>`).join("");
       const adds = mem.length < cap ? free.map(w => `<button type="button" data-fl="add:${w.id}:${c.id}" title="Assign to ${shipName(c)}">+ ${shipName(w)}</button>`).join("") : "";
-      return `<div class="base-row"><span class="lbl"><b>${shipName(c)} L${c.lvl}</b><small>${mem.length}/${cap} warships, shield radius ${G.shieldRadius(c)}</small></span>${upBtn}</div><div class="base-extra">${rows}${adds}</div>`;
+      return `<div class="base-row"><span class="lbl"><b>${shipName(c)} L${c.lvl}</b><small>${mem.length}/${cap} ${lc(LB().ship.warship)}s, ${lc(LB().addon.shield)} radius ${G.shieldRadius(c)}</small></span>${upBtn}</div><div class="base-extra">${rows}${adds}</div>`;
     }).join("");
     if (html !== fleetsHtml) { fleetsHtml = html; setHtml($("fleets-body"), html, "data-fl"); }
   }
 
   function renderBases() {
+    const L = LB();
     const html = game.bases.map((b, i) => {
       const cost = G.upgradeCost(game, i), tier = b.tier | 0;
       const label = baseName(i) + (tier ? " " + TIER_NAME[tier] : "");
@@ -2020,9 +2087,9 @@
       // add-ons and repair: a button while it can be bought, plain text once built
       const extra = ["shield", "turret", "generator"].map(kind => {
         const def = G.TUNING.addons[kind];
-        if (b[kind]) return `<small class="done">${def.label} built</small>`;
+        if (b[kind]) return `<small class="done">${L.addon[kind] || def.label} built</small>`;
         const c = G.addonCost(game, kind);
-        return `<button type="button" data-act="add:${i}:${kind}"${!game.over && !b.down && G.canAfford(game, c) ? "" : " disabled"} title="${def.blurb}">${def.label}<small>${costText(c)}</small></button>`;
+        return `<button type="button" data-act="add:${i}:${kind}"${!game.over && !b.down && G.canAfford(game, c) ? "" : " disabled"} title="${def.blurb}">${L.addon[kind] || def.label}<small>${costText(c)}</small></button>`;
       });
       if (b.hp < b.maxHp) {
         const c = G.repairCost(game, "base", i);
@@ -2043,7 +2110,7 @@
     const live = !!game && (game.sector >= G.TUNING.science.firstSector || (game.sciTotal | 0) > 0 || (game.tech && game.tech.length > 0));
     $("sci").hidden = !live; $("b-tech").hidden = !live;
     if (!live) { sciShown = ""; return; }
-    const html = `Science <b>${Math.floor(game.science + 1e-9)}</b>`;
+    const html = `${LB().science} <b>${Math.floor(game.science + 1e-9)}</b>`;
     if (html !== sciShown) { sciShown = html; $("sci").innerHTML = html; }
   }
   function pulseScience() {
@@ -2073,7 +2140,7 @@
       pulseScience(); renderScience();
     } else if (e.type === "tech:unlock") {
       const node = (G.TUNING.tech || []).find(o => o.id === e.id);
-      sciToast("Tech unlocked: " + (node ? node.name : e.id));
+      if (!ui.tech) sciToast("Tech unlocked: " + (node ? node.name : e.id));   // the Tech window says so itself
       renderScience();
     } else if (e.type === "nest:destroyed") sciToast(e.kind === "beacon" ? "Beacon destroyed" : "Nest destroyed");
     else if (e.type === "wave:repelled") sciToast("Raid wave repelled");
@@ -2290,12 +2357,12 @@
   let alertsHtml = "";
   function renderAlerts() {
     const L = LB(), box = $("alerts"), chips = [];
-    const NAME = { fog: "Fog", flare: "Solar flare", raid: "Alien raid", shower: themed() ? L.shower : "Meteor shower" };
+    const NAME = { fog: L.fog, flare: L.flare, raid: L.raid, shower: themed() ? L.shower : "Meteor shower" };
     const list = game.events.length || game.showers.length ? G.eventWarnings(game) : [];
     for (const w of list) chips.push(`<div class="chip warn ${w.kind}">${NAME[w.kind] || w.kind} in <b>${w.secs}</b> s</div>`);
     const fl = game.events.length ? Math.ceil(flareLeft()) : 0;
-    if (fl > 0) chips.push(`<div class="chip flare">Solar flare: ships outside a Shield are stunned (<b>${fl}</b> s)</div>`);
-    if (game.aliens.length) chips.push(`<div class="chip raid">Aliens: <b>${game.aliens.length}</b></div>`);
+    if (fl > 0) chips.push(`<div class="chip flare">${L.flare}: ${shipsWord()} outside ${an(L.addon.shield)} are stunned (<b>${fl}</b> s)</div>`);
+    if (game.aliens.length) chips.push(`<div class="chip raid">${L.aliens}: <b>${game.aliens.length}</b></div>`);
     const html = chips.join("");
     if (html !== alertsHtml) { alertsHtml = html; box.innerHTML = html; }
     box.style.top = (topH + 16) + "px";
@@ -2308,13 +2375,17 @@
     const key = themeId();
     if (key === textKey) return;
     textKey = key;
-    const L = LB(), els = { warp: $("b-warp"), wwarp: $("w-warp"), bases: $("bases-title"), help: $("help") };
+    const L = LB(), els = { warp: $("b-warp"), wwarp: $("w-warp"), bases: $("bases-title"), help: $("help"),
+      fleets: $("fleets").querySelector("h2"), tech: $("b-tech"), ttitle: $("t-title") };
     if (!("warp" in staticText)) for (const k in els) staticText[k] = els[k].innerHTML;
     if (key === "space") { for (const k in els) els[k].innerHTML = staticText[k]; return; }
     els.warp.textContent = L.warp; els.wwarp.textContent = L.warp;
     els.bases.firstChild.nodeValue = L.bases + " ";
+    els.fleets.firstChild.nodeValue = L.fleets + " ";
+    $("fleets-note").textContent = "safe through " + lc(L.flare) + "s";
+    els.tech.textContent = L.tech; els.ttitle.textContent = L.tech;
     els.help.textContent = `Click ${an(shipWord())}, then ${an(lc(L.body.asteroid))} or ${an(lc(L.body.iceplanet))} to mine it, a star to collect it, or ${an(L.base)} to send it there. ` +
-      `Build ${lc(L.bases)} to clear the ${lc(L.sector)}, then ${lc(L.warp)}. Pause: Space. Esc cancels. R repairs. Add ?stress to the address for a 30-${shipWord()}, 15-alien test (?stress&sector=3 for hazards).`;
+      `Build ${lc(L.bases)} to clear the ${lc(L.sector)}, then ${lc(L.warp)}. Pause: Space. Esc cancels. R repairs. Later on, build ${lc(L.addon.shield)}s, ${lc(L.addon.turret)}s and ${lc(L.ship.warship)}s against ${lc(L.flare)}s, ${lc(L.shower)}s and ${lc(L.raid)}s. Add ?stress to the address for a 30-${shipWord()}, 15-${lc(L.alien)} test (?stress&sector=3 for hazards).`;
   }
 
   function refresh() {
@@ -2460,24 +2531,62 @@
   // The tech tree window. openTech belongs to slice a: it sets ui.tech, shows #tech, fills #t-body and moves focus in.
   let techOpener = null;
   const TECH_BRANCH = { mil: "Military", ind: "Industry", log: "Logistics" };
-  const TECH_MARK = { owned: "✓ Owned", available: "● Available", short: "○ Not enough science", locked: "✕ Locked" };
+  const TECH_MARK = { owned: "\u2713 Owned", available: "\u25cf Available", short: "\u25cb Not enough science", locked: "\u2715 Locked" };
   function techNode(id) { return G.TUNING.tech.find(o => o.id === id); }
+  // The tree is drawn as a skill tree: a hub in the middle, one branch up, one down-left, one down-right. A trunk node sits
+  // TECH_STEP further out per tier; a spur sits one step to the side of the trunk, on the ring of its own tier.
+  const TECH_ANGLE = { mil: -90, ind: 150, log: 30 }, TECH_STEP = 58, TECH_W = 580, TECH_H = 512, TECH_CX = 290, TECH_CY = 322;
+  function techPos(o) {
+    const r = o.tier * TECH_STEP;
+    let deg = TECH_ANGLE[o.branch];
+    if (o.spur) deg += (o.tier === 2 ? 1 : -1) * (TECH_STEP / r) * 180 / Math.PI;
+    const t = deg * Math.PI / 180;
+    return { x: Math.round(TECH_CX + Math.cos(t) * r), y: Math.round(TECH_CY + Math.sin(t) * r) };
+  }
+  const techGlyph = o => o.name.split(/\s+/).map(w => w[0]).join("").slice(0, 2).toUpperCase();
+  function techMarkFor(o, st) {
+    const cost = G.techCost(o);
+    if (st === "short") return "\u25cb Need " + Math.ceil(cost - game.science - 1e-9) + " more science";
+    if (st === "locked" && o.needs) return "\u2715 Locked: needs " + techNode(o.needs).name;
+    return TECH_MARK[st];
+  }
+  let techShown = "";   // the node whose details are in the side panel
+  function renderTechInfo(id) {
+    const o = id ? techNode(id) : null, box = $("t-info");
+    if (!box) return;
+    techShown = o ? o.id : "";
+    if (!o) {
+      box.innerHTML = `<h2>Tech tree</h2><p>Start at the hub and work outwards. Each node needs the one before it on its line; the side nodes hang off the main line.</p>
+        <p>Science comes from fighting: raiders, guards, nests, the sector 2 beacon and repelled waves.</p>
+        <p class="note">Point at a node (or move with the arrow keys) to read it. Click or Enter unlocks it. Esc or T closes.</p>`;
+      return;
+    }
+    const st = G.techState(game, o.id);
+    box.innerHTML = `<h2 class="tb-${o.branch}">${TECH_BRANCH[o.branch]} \u00b7 tier ${o.tier}${o.spur ? " \u00b7 side node" : ""}</h2>
+      <h3>${o.name}</h3><p class="ti-cost">${G.techCost(o)} science</p><p>${o.text}</p>
+      <p class="ti-state tn-${st}">${techMarkFor(o, st)}</p>${st === "available" ? '<p class="note">Click it or press Enter to unlock.</p>' : ""}`;
+  }
   function renderTech() {
-    const T = G.TUNING.tech, br = ["mil", "ind", "log"];
-    const sci = Math.floor(game.science + 1e-9);
-    const cols = br.map(b => {
-      const nodes = T.filter(o => o.branch === b).sort((x, y) => x.tier - y.tier).map(o => {
-        const st = G.techState(game, o.id), cost = G.techCost(o);
-        let mark = TECH_MARK[st];
-        if (st === "short") mark = `○ Need ${Math.ceil(cost - game.science - 1e-9)} more`;
-        if (st === "locked" && o.needs) mark = `✕ Locked: needs ${techNode(o.needs).name}`;
-        return `<button type="button" class="tn tn-${st}" data-tech="${o.id}" data-col="${br.indexOf(b)}" data-tier="${o.tier}" aria-disabled="${st === "owned" || st === "available" ? "false" : "true"}">
-          <span class="tn-top"><b>${o.name}</b><span class="tn-cost">${cost} sci</span></span>
-          <span class="tn-fx">${o.text}</span><span class="tn-state">${mark}</span></button>`;
-      }).join("");
-      return `<div class="tcol"><h2>${TECH_BRANCH[b]}</h2>${nodes}</div>`;
+    const T = G.TUNING.tech, sci = Math.floor(game.science + 1e-9);
+    const lines = T.map(o => {
+      const p = techPos(o), q = o.needs ? techPos(techNode(o.needs)) : { x: TECH_CX, y: TECH_CY };
+      const st = G.techState(game, o.id), cls = st === "owned" ? "on" : st === "locked" ? "off" : "next";
+      return `<line class="tl-${cls}" x1="${q.x}" y1="${q.y}" x2="${p.x}" y2="${p.y}"/>`;
     }).join("");
-    setHtml($("t-body"), `<p class="note">Science <b>${sci}</b>. It comes from fighting: raiders, guards, nests, the sector 2 beacon and repelled waves. Arrow keys move, Enter buys, Esc or T closes.</p><div class="tgrid">${cols}</div>`, "data-tech");
+    const nodes = T.map(o => {
+      const p = techPos(o), st = G.techState(game, o.id), cost = G.techCost(o);
+      return `<button type="button" class="tn tn-${st} tb-${o.branch}${o.spur ? " tn-spur" : ""}" data-tech="${o.id}" data-x="${p.x}" data-y="${p.y}" style="left:${p.x}px;top:${p.y}px"
+        aria-disabled="${st === "owned" || st === "available" ? "false" : "true"}" aria-label="${o.name}, ${TECH_BRANCH[o.branch]} tier ${o.tier}, ${cost} science. ${o.text} ${techMarkFor(o, st)}">
+        <b>${st === "owned" ? "\u2713" : techGlyph(o)}</b><small>${st === "owned" ? "" : cost}</small></button>`;
+    }).join("");
+    const names = Object.keys(TECH_BRANCH).map(b => `<span class="tbr tbr-${b} tb-${b}">${TECH_BRANCH[b]}</span>`).join("");
+    const owned = game.tech ? game.tech.length : 0;
+    setHtml($("t-body"), `<div class="ttree"><div class="tmap" style="width:${TECH_W}px;height:${TECH_H}px">
+      <svg viewBox="0 0 ${TECH_W} ${TECH_H}" width="${TECH_W}" height="${TECH_H}" aria-hidden="true">${lines}</svg>
+      <div class="thub" style="left:${TECH_CX}px;top:${TECH_CY}px"><b>${sci}</b><small>science</small></div>${names}${nodes}</div>
+      <div class="tside"><div id="t-info"></div><p class="note">${owned} of ${T.length} unlocked</p></div></div>`, "data-tech");
+    const a = document.activeElement;
+    renderTechInfo(a && a.dataset && a.dataset.tech ? a.dataset.tech : techShown);
   }
   function techMsg(msg, bad) {
     const el = $("t-msg");
@@ -2487,7 +2596,7 @@
     if (!game || ui.tech || ui.feedback || ui.hangar || ui.dlg.length) return;
     techOpener = document.activeElement;
     ui.tech = true;
-    techMsg("");
+    techMsg(""); techShown = "";
     renderTech();
     $("tech").hidden = false;
     $("win").hidden = true; $("end").hidden = true;
@@ -2504,19 +2613,32 @@
     techMsg(`${node.name} unlocked for ${r.cost} science.`);
     pumpMsgs();   // the game is paused here, so the loop would not
     saveNow();
+    buildHtml = ""; basesHtml = "";   // costs in the side panels may have changed
     renderTech(); renderScience();
   }
-  // Arrow keys walk the grid: left and right change branch at the same tier, up and down change tier.
+  // Arrow keys move to the nearest node in that direction on the map (the tree is not a grid).
   function techArrow(ev) {
     if (ev.key === "Enter" && ev.repeat) { ev.preventDefault(); return; }   // holding Enter must not re-buy and wipe the "unlocked" message
     const dirs = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }, d = dirs[ev.key];
     const a = document.activeElement;
     if (!d || !a || !a.dataset || a.dataset.tech == null) return;
     ev.preventDefault();
-    const col = +a.dataset.col + d[0], tier = +a.dataset.tier + d[1];
-    const n = $("t-body").querySelector(`[data-col="${col}"][data-tier="${tier}"]`);
-    if (n) n.focus();
+    const x = +a.dataset.x, y = +a.dataset.y;
+    let best = null, bs = Infinity;
+    for (const n of $("t-body").querySelectorAll("[data-tech]")) {
+      if (n === a) continue;
+      const dx = +n.dataset.x - x, dy = +n.dataset.y - y;
+      const along = dx * d[0] + dy * d[1], across = Math.abs(dx * d[1]) + Math.abs(dy * d[0]);
+      if (along < 12) continue;                       // not in that direction
+      const score = along + across * 2;               // prefer nodes straight ahead
+      if (score < bs) { bs = score; best = n; }
+    }
+    if (best) { best.focus(); renderTechInfo(best.dataset.tech); }
   }
+  for (const type of ["focusin", "mouseover"]) $("t-body").addEventListener(type, ev => {
+    const b = ev.target.closest && ev.target.closest("[data-tech]");
+    if (b && b.dataset.tech !== techShown) renderTechInfo(b.dataset.tech);
+  });
   $("t-body").addEventListener("keydown", techArrow);
   $("t-body").addEventListener("click", ev => {
     const b = ev.target.closest && ev.target.closest("[data-tech]");
@@ -2609,6 +2731,9 @@
     if (game) refresh();
   });
   $("h-close").addEventListener("click", closeHangar);
+  // A click on the dimmed backdrop (outside the card) closes the Hangar and the Tech window, like their Close buttons.
+  $("hangar").addEventListener("mousedown", ev => { if (ev.target === $("hangar")) closeHangar(); });
+  $("tech").addEventListener("mousedown", ev => { if (ev.target === $("tech")) closeTech(); });
   $("b-hangar").addEventListener("click", () => (ui.hangar ? closeHangar() : openHangar()));
   $("b-tech").addEventListener("click", () => (ui.tech ? closeTech() : openTech()));
   $("t-close").addEventListener("click", closeTech);
