@@ -206,11 +206,12 @@
   function warp() {
     const r = G.warpToNextSector(game, labelArg());
     if (!r.ok) return toast(r.reason);
+    const sold = (game.msgs || []).find(e => e.type === "warp:sold");   // stock over the warp limit was sold (see G.warpKeep); read before refresh drains the queue
     ui.winShown = false; ui.winOpen = false; $("win").hidden = true;
     resetView();
     saveNow();
     refresh();
-    toast(LB().sector + " " + game.sector + ": further out, harder" + hazardNote(game.sector), true);
+    toast(LB().sector + " " + game.sector + ": further out, harder" + hazardNote(game.sector) + (sold ? " Stock over the warp limit was sold for " + fmtCr(sold.credits) + " cr." : ""), true);
   }
 
   // What is new in a sector, for the warp toast: storms, then fog and flares, then showers and the first raiders.
@@ -2226,7 +2227,7 @@
     const X = E.exchange, n = X.step, can = !game.over;
     const income = rates.net + rates.maint + rates.upkeep;
     const line = (a, b) => `<div class="eco-line"><span>${a}</span><b>${b}</b></div>`;
-    let html = line("Income (run average)", signedCr(income) + "/min") + line("Ships", signedCr(-rates.maint) + "/min") +
+    let html = line("Income (last minute)", signedCr(income) + "/min") + line("Ships", signedCr(-rates.maint) + "/min") +
       line(L.bases, signedCr(-rates.upkeep) + "/min") + line("Net", signedCr(rates.net) + "/min");
     if (G.econGrace(game)) html = `<div class="eco-note">Running costs start with your first delivery.</div>` + html;
     if (showDebt) {
@@ -2431,11 +2432,12 @@
   function showWin() {
     ui.winShown = true; ui.winOpen = true;
     const c = game.clearInfo || { sector: game.sector, sectorPts: 0, timePts: 0, secs: Math.floor(game.sectorTime) };
-    const L = LB(), sec = lc(L.sector);
+    const L = LB(), sec = lc(L.sector), keep = G.warpKeep({ sector: c.sector });
     $("win-title").textContent = L.sector + " " + c.sector + " cleared";
     $("win-text").textContent = `${G.goalBases(c.sector)} ${lc(L.bases)} built in ${Math.floor(c.secs / 60)}m ${c.secs % 60}s. ` +
       `+${c.sectorPts} for the ${sec}, +${c.timePts} time bonus. Score so far ${G.scoreTotal(game)}. ` +
-      (themed() ? `Go on to ${sec} ${c.sector + 1}` : `Warp to sector ${c.sector + 1}`) + `: a bigger map, with less to mine and higher prices.`;
+      (themed() ? `Go on to ${sec} ${c.sector + 1}` : `Warp to sector ${c.sector + 1}`) + `: a bigger map, with less to mine and higher prices. ` +
+      `Only ${keep.ore} ${L.res.ore}, ${keep.ice} ${L.res.ice} and ${keep.crystal} ${L.res.crystal} come with you; anything over that is sold for credits.`;
     $("win").hidden = modal();
     focusCard();
   }

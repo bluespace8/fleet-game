@@ -39,6 +39,7 @@
                     blurb: "Shields itself and the warships assigned to it from solar flares. No gun." },
     },
     baseCost: { ore: 120, ice: 40, crystal: 15 },
+    warp: { keepBases: 2 },    // stock carried through a warp: this many bases' worth per material; the rest is sold
     // difficulty by sector (n = 1 is the original game)
     difficulty: {
       goalFirst: 5, goalPerSector: 1, goalMax: 10,   // bases to build to clear the sector
@@ -85,14 +86,15 @@
     aliens: { firstSector: 3, r: 11, sense: 330, range: 150, edge: 20, cd: 1.6, shotSpeed: 300,
               stay: 90,                                                    // seconds a raider stays; then it flies to the nearest map edge and is gone
               speedFirst: 55, speedPerSector: 3, speedMax: 85,
-              countFirst: 2, countEvery: 2, countMax: 6, capSector: 10,     // count: first + floor((min(n, capSector) - firstSector) / every), capped
+              firstRaid: 1,                                                // raiders in the very first raid of a run
+              countFirst: 2, countEvery: 2, countMax: 6, capSector: 10,    // count: first + floor((min(n, capSector) - firstSector) / every), capped
               holdFrac: 0.8, offMap: 50, markR: 40,                                   // hold distance as a share of range; shots vanish this far off the map
               hpFirst: 40, hpPerSector: 12, hpMax: 120,
               dmgFirst: 4, dmgPerSector: 1, dmgMax: 10,
               max: 24, score: 25, starChance: 0.12, maxStars: 12 },
     // shots, damage and health
     combat: { maxShots: 90, shotLife: 1.2, shotReach: 1.25, shipR: 9, fxMax: 16, fxLife: 0.4,
-              baseHp: 160, homeHp: 300 },
+              baseHp: 160, homeHp: 400 },
     // base add-ons, bought per base (costs scale with the sector like other costs)
     addons: {
       shield: { label: "Shield", range: 170, cost: { ore: 60, ice: 40, crystal: 0 }, blurb: "Ships near it ignore solar flares." },
@@ -116,23 +118,25 @@
     // stars to collect
     stars: { min: 3, max: 6, minHome: 380, edge: 50, bodyClear: 30, apart: 90 },
     score: { value: { ore: 1, ice: 2, crystal: 5 }, base: 100, sector: 400,
-             parFirst: 420, parPerSector: 120, timePerSec: 2 },
+             parFirst: 300, parPerSector: 120, timePerSec: 2 },
     endCheckEvery: 1,          // seconds between stranded checks
     bank: { claimedKeep: 400, backups: 3 },
     logs: { runs: 500, buys: 500, players: 50, nameMax: 24, minSecs: 5 },
     msgs: { max: 50 },         // cap on the transient message queue (state.msgs, see emit)
     // ---- credits and running costs (slice b). Per minute unless noted. econScale(n) multiplies maintenance and upkeep.
     econ: {
-      credit: { ore: 1, ice: 2, crystal: 5 },            // credits paid per unit delivered
+      credit: { ore: 1, ice: 2, crystal: 5 },            // credits paid per unit delivered, before payout
+      payout: 0.9,                                       // share of that actually paid: the one knob for how fast credits pile up
       startCredits: 250, oldSaveCredits: 500,
       scalePerSector: 0.04, scaleMax: 1.36,              // running costs x min(max, 1 + per*(n-1))
       maint:  { miner: 30, hauler: 50, warship: 90, shieldship: 140, mothball: 0.2, wakeSecs: 10 },   // cr per minute; mothball: share still paid
       upkeep: { home: 0, base: 35, perTier: 10, shield: 20, turret: 20, generator: 10 },   // cr per minute
-      debt:   { start: 1500, rate: 0.015, every: 60, dueSector: 3, dueTime: 2700, warnSecs: 300 },
+      debt:   { start: 2000, rate: 0.015, every: 60, dueSector: 3, dueTime: 2700, warnSecs: 300 },
       bankrupt: { floor: -250, grace: 60, blockShipsBelow: 0 },
       timer:  { parMult: 1.5, firstSector: 2, capSector: 10, warnShare: 0.25, warnSecs: 60 },
       exchange: { sell: { ore: 1, ice: 2, crystal: 5 }, buy: { ore: 3, ice: 6 }, step: 10, buyOn: true },
       netWarnSecs: 10,
+      incomeWindow: 60,                                  // seconds the income rate is averaged over (see econIncome)
       grace: { secs: 120 },                              // sector 1: no running costs until the first delivery, or this many seconds
     },
     // which lose rules are on at the start of a run; copied to state.rules by newGame
@@ -149,7 +153,7 @@
               guards: 3, guardRespawn: 20, guardLeash: 250, regen: 2, regenRange: 220, raidBoost: 0.2,
               minHomeShare: 0.6, nearCrystal: 150 },
     },
-    techCost: [8, 16, 28, 45, 70], // science per tier 1-5
+    techCost: [5, 10, 18, 28, 45], // science per tier 1-5
     // The tech tree: three branches. Each has a trunk of five tiers and two spurs (spur: true) that hang off a trunk
     // node. needs: the one node that must be owned first. effects are read with
     // techMult(state, key) (product of mult) and techAdd(state, key) (sum of add).
@@ -475,7 +479,7 @@
       science: 0, sciTotal: 0, sciSector: 0, tech: [], nests: [], waveSeq: 0, waves: {},
       sites: [],                                        // energy sites and the field stations on them (see generateSites)
       // credits and the lose rules (slice b); rules is a copy of TUNING.lose
-      credits: T.econ.startCredits, debt: T.econ.debt.start, debtTick: T.econ.debt.every, brokeFor: 0, netNegFor: 0,
+      credits: T.econ.startCredits, debt: T.econ.debt.start, debtTick: T.econ.debt.every, brokeFor: 0, netNegFor: 0, income: 0,
       rules: Object.assign({}, T.lose), econStats: { earned: 0, maint: 0, upkeep: 0, interest: 0, repaid: 0 },
       msgs: [],                                         // transient messages for the UI (see emit); never saved
       delivered: { ore: 0, ice: 0, crystal: 0 },        // units handed in, by type
@@ -876,7 +880,11 @@
 
   // Credits per minute earned so far, averaged over the whole run (score.mat is every unit delivered at its credit value, so
   // old saves have it too). It is worked out from saved numbers only, so a saved and reloaded game plays on identically.
-  function econIncome(state) { return state.score.mat / Math.max(1, state.time) * 60; }
+  function runIncome(state) { return state.score.mat / Math.max(1, state.time) * 60; }
+  // Credits per minute being earned now: a moving average over about the last incomeWindow seconds (state.income, saved
+  // with the game, fed by deliver and decayed by stepEconomy), so losing ships shows in the rate at once. A state without
+  // it (an old save, a hand-made test state) falls back to the run average.
+  function econIncome(state) { return typeof state.income === "number" && isFinite(state.income) ? state.income : runIncome(state); }
 
   function econClock(secs) { const s = Math.max(0, Math.ceil(secs - 1e-9)); return Math.floor(s / 60) + ":" + (s % 60 < 10 ? "0" : "") + (s % 60); }
   function econFmt(n) { return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
@@ -940,7 +948,7 @@
     let c = 0;
     for (let i = 0; i < state.ships.length; i++) {
       const s = state.ships[i];
-      if (!s.dead && s.cargo > 0 && s.res) c += s.cargo * (T.econ.credit[s.res] || 0);
+      if (!s.dead && s.cargo > 0 && s.res) c += s.cargo * (T.econ.credit[s.res] || 0) * T.econ.payout * techMult(state, "payout");
     }
     return c;
   }
@@ -958,6 +966,8 @@
   function stepEconomy(state, dt) {
     if (state.over || !(dt > 0)) return;
     const E = T.econ, rules = state.rules, stats = state.econStats;
+
+    if (typeof state.income === "number") state.income *= Math.exp(-dt / E.incomeWindow);   // the income average forgets
 
     // maintenance and upkeep
     const rates = econRates(state);
@@ -1279,6 +1289,22 @@
     return state.won;
   }
 
+  // What may be carried through the warp, per material: enough for T.warp.keepBases bases at the next sector's price.
+  // Without a cap a player could strip the cleared map, then place the whole next goal at once for the full time bonus.
+  function warpKeep(state) { return scaleCost(T.baseCost, costMult(state.sector + 1) * T.warp.keepBases); }
+  // Sell whatever is over that at the Sell prices. Called by the warp, after the cargo is handed in.
+  function sellSurplus(state) {
+    const keep = warpKeep(state), sold = { ore: 0, ice: 0, crystal: 0 };
+    let credits = 0;
+    for (const r of RES) {
+      const over = Math.floor(state.stock[r] - keep[r] + 1e-9);
+      if (over < 1) continue;
+      state.stock[r] -= over; sold[r] = over; credits += over * T.econ.exchange.sell[r];
+    }
+    if (credits > 0) { state.credits += credits; emit(state, "warp:sold", { sold, credits }); }
+    return credits;
+  }
+
   // Cleared the goal: move the fleet and the stock to a new, harder map one step further out.
   function warpToNextSector(state, labels) {
     if (state.over) return { ok: false, reason: "This run is over." };
@@ -1290,6 +1316,7 @@
       s.cargo = 0; s.res = ""; s.st = IDLE; s.target = -1; s.dest = -1; s.star = -1; s.wait = 0; s.hitCd = 0; s.mv = 0; s.mm = 0; s.ix = 0; s.iy = 0;
       s.stun = 0; s.rep = 0; s.cd = 0; s.wo = ""; s.wt = -1;   // the new map has no flares, repairs or aliens in progress
     }
+    sellSurplus(state);                          // only a small stockpile fits through the warp
     api.scienceOnWarp(state);                    // slice a: the "sector secured" bonus
     api.econOnWarp(state);                       // slice b: the debt is paid at its due point
     buildSector(state, state.sector + 1);
@@ -1544,8 +1571,9 @@
 
   function deliver(state, res, amount) {
     state.stock[res] += amount;
-    const cr = amount * (T.econ.credit[res] || 0) * techMult(state, "payout");   // the same units also pay credits (tech: Brokers, Trade guild)
+    const cr = amount * (T.econ.credit[res] || 0) * T.econ.payout * techMult(state, "payout");   // the same units also pay credits (tech: Brokers, Trade guild)
     state.credits += cr; state.econStats.earned += cr;
+    if (typeof state.income === "number") state.income += cr * 60 / T.econ.incomeWindow;
     state.score.mat += amount * T.score.value[res];
     state.delivered[res] += amount;
   }
@@ -1992,6 +2020,8 @@
       e.x = side === 0 ? edge : side === 1 ? w - edge : edge + u * (w - 2 * edge);
       e.y = side === 2 ? edge : side === 3 ? h - edge : edge + u * (h - 2 * edge);
       e.r = T.aliens.markR; e.dur = 0; e.power = alienCount(n);
+      // the first raid of a run, in the sector that introduces raiders, is a scout party: a lesson, not a wipe
+      if (n === T.aliens.firstSector && state.waveSeq === 0 && have("raid") === 0) e.power = Math.min(e.power, T.aliens.firstRaid);
       const live = liveNests(state);
       if (live.length) {      // a known direction: the map edge nearest one of the live nests (the one picked by the same draw)
         const nest = live[Math.min(live.length - 1, Math.floor(u * live.length))];
@@ -2755,6 +2785,7 @@
     state.debtTick = pre3 ? E.debt.every : Math.min(E.debt.every, Math.max(0, num(raw.debtTick, E.debt.every)));
     state.brokeFor = pre3 ? 0 : Math.min(1e6, Math.max(0, num(raw.brokeFor, 0)));
     state.netNegFor = pre3 ? 0 : Math.min(1e6, Math.max(0, num(raw.netNegFor, 0)));
+    state.income = Math.min(1e9, Math.max(0, num(raw.income, runIncome(state))));   // saves from before the moving average
     const rr = !pre3 && isObj(raw.rules) ? raw.rules : {};
     for (const k of Object.keys(T.lose)) {
       state.rules[k] = state.stress ? false : typeof rr[k] === "boolean" ? rr[k] : pre3 && k === "debt" ? false : T.lose[k];
@@ -3421,7 +3452,7 @@
     // science, tech and lose-rule plumbing (see "contract" above)
     END_REASONS, emit, drainEvents, endRun, hasTech, techMult, techAdd,
     scienceFor, awardScience, onAlienKilled, generateNests, stepNests, damageNest, techState, unlockTech, scienceOnWarp,
-    raidScienceCap, techCost, cargoCap, unloadRate, dockRange, nestById, liveNests, orderTarget, NEST_ORDER, NEST_GEO,
+    raidScienceCap, techCost, warpKeep, cargoCap, unloadRate, dockRange, nestById, liveNests, orderTarget, NEST_ORDER, NEST_GEO,
     // energy stations, generators and shield ships
     stationCost, siteCount, buildStation, repairStation, damageStation, energyMult, SITE_R,
     assignToShield, releaseFromShield, upgradeShieldShip, shieldUpgradeCost, fleetMembers, fleetCap, shieldRadius, fleetShielded, isSupport,
