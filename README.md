@@ -71,7 +71,7 @@ The mouse always works. These keys add to it.
   count down to the next one back) and heal while no warship is near. To attack one, select a warship and click it, or press **X**
   when no alien is left (it picks the nearest nest or beacon). The warship flies there and shoots it.
 - **Tech tree:** the **Tech** button or **T** opens a window (the game pauses) drawn as a skill tree: a hub in the middle and three branches going outwards, Military,
-  Industry, Logistics. Each branch has a main line of five tiers and two side nodes that hang off it (21 nodes). A node needs the one before it on its line and costs 8, 16, 28, 45 or 70 science by tier. Point at a node to read its cost, its
+  Industry, Logistics. Each branch has a main line of five tiers and two side nodes that hang off it (21 nodes). A node needs the one before it on its line and costs 5, 10, 18, 28 or 45 science by tier. Point at a node to read its cost, its
   effect and its state: Owned, Available, Not enough science, or Locked. **Arrow keys** move to the nearest node in that direction, **Enter** (or a click)
   buys, and a refused buy says why. **Esc**, **T** or a click outside the window closes it and focus goes back where it was. The Hangar also closes on a click outside it.
 
@@ -79,7 +79,9 @@ The mouse always works. These keys add to it.
 
 - **Sector goal:** build the number of bases shown in the top bar (5 in sector 1, one more each sector,
   up to 10). A "Warp to next sector" button then appears (top bar, and on the sector-cleared card).
-  Warping keeps your fleet and your stock, and drops you at a new seeded map, further out.
+  Warping keeps your fleet, and drops you at a new seeded map, further out. Only two bases' worth of each material
+  (at the next sector's price) fits through the warp; anything over that is sold at the Sell prices, so the next
+  goal has to be mined on the new map. The sector-cleared card shows the limit.
 - **Each sector is harder:** the map is bigger and bodies sit further from home, each body holds less,
   crystal bodies are fewer (but richer; every map still holds at least 1.3 times what its goal costs), and ships, bases and upgrades cost more.
   Difficulty plateaus after sector 10: from there the goal (10 bases), costs and map are the same every sector, so a run can go on as long as you can. Sector 1 plays as the original game.
@@ -108,14 +110,14 @@ Sector 1 is calm. Every warning shows in the top-left with a 10 second countdown
 - **Warships (Build panel):** carry nothing and mine nothing, fire at aliens in range on their own, and take orders:
   click an alien to attack, click empty space to patrol there, **Shift+click** another ship to escort it, or click
   a base to guard it. They can also be flown by hand (F). Mining orders are refused with a message.
-- **Combat numbers** (all in `TUNING`): ships have 30 (miner), 45 (hauler) or 90 (warship) HP; bases 160, home 300.
+- **Combat numbers** (all in `TUNING`): ships have 30 (miner), 45 (hauler) or 90 (warship) HP; bases 160, home 400.
   Turret 6 damage every 0.6 s, range 190, blocks 70 percent of meteor hits. Warship 9 damage every 0.7 s, range 170.
   Shield range 170. Repair costs 0.5 ore per HP of ship (bases also 0.15 ice), scaled by the sector's cost factor.
-  Raiders: sector 3 brings 2 with 40 HP and 4 damage per shot; sector 6, 3 with 76 HP and 7 damage; sector 10 and later,
+  Raiders: the very first raid of a run is a single scout; after that sector 3 brings 2 with 40 HP and 4 damage per shot; sector 6, 3 with 76 HP and 7 damage; sector 10 and later,
   5 with 120 HP and 10 damage (all capped at sector 10, so later sectors bring the same raid). An alien kill scores 25 and sometimes drops a star.
 - Saves from before this update load with full health, no add-ons and no hazards running. The Dwarven and Hamster themes cover these too: axe guards and guard hamsters for warships, shield bearers and ball hamsters, goblins and rats for raiders, and their own words for add-ons, nests, fog, flares, energy sites, science and the tech tree. Nests, beacons and energy sites keep their space shapes.
 - **Score:** points for materials delivered (ore 1, ice 2, crystal 5 each), bases built (100), sectors
-  cleared (400 x sector number) and a time bonus for clearing a sector under par. Shown live, with your best.
+  cleared (400 x sector number) and a time bonus for clearing a sector under par (5 minutes in sector 1, 2 more each sector). Shown live, with your best.
 - **A run ends** when you retire, when your home base is destroyed, or when you are stranded: nothing left to mine anywhere,
   nothing in any hold, and not enough materials for another base (or every miner and hauler is lost and you cannot afford
   another). Alien kills add to the score. The run-end screen shows the score breakdown and the
@@ -123,8 +125,8 @@ Sector 1 is calm. Every warning shows in the top-left with a 10 second countdown
 
 ## Credits, running costs and the ways to lose
 
-Credits are a second currency. Every unit you deliver also pays credits (ore 1, ice 2, crystal 5); running costs take
-them away. Top bar: **credits** with the net rate ("1,240 cr (+180/min)", amber when you have been spending more than
+Credits are a second currency. Every unit you deliver also pays credits (ore 1, ice 2, crystal 5, times the 0.9 payout in `TUNING.econ.payout`); running costs take
+them away. Top bar: **credits** with the net rate ("1,240 cr (+180/min)": income over about the last minute, less running costs; amber when you have been spending more than
 you earn for 10 seconds or are below 0), **Debt** and, if the timer is on, **Time left**. A banner under the top bar
 counts down any warning. The **Credits** panel shows the net breakdown, **Pay debt**, and **Sell 10 / Buy 10** for each
 material (you cannot buy crystal).
@@ -137,7 +139,7 @@ material (you cannot buy crystal).
   range); elsewhere it says "Dock at a base first". The ship parks there, keeps its cargo (nothing is delivered) and drops
   its orders. It then costs 20% of its maintenance. Wake it to work again after 10 seconds. A mothballed or waking
   ship takes no orders.
-- **Debt:** you start with a loan of 1,500 that grows 1.5% a minute (compounded every 60 s). It is due when you leave sector 3:
+- **Debt:** you start with a loan of 2,000 that grows 1.5% a minute (compounded every 60 s). It is due when you leave sector 3:
   the warp is refused if credits plus the cargo still aboard fall short (the message says by how much), and paid
   automatically when they cover it. Backstop: still unpaid at 45 minutes (2,700 s) and you cannot pay, the run ends.
 - **Bankruptcy:** below -250 credits for 60 seconds in a row ends the run. Getting back above clears the clock.

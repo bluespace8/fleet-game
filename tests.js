@@ -447,20 +447,22 @@ test("the goal opens the warp, not before", () => {
   assert.ok(r.ok && r.sector === 2);
   assert.strictEqual(s.sector, 2);
 });
-test("warping makes a new, bigger map and keeps ships, stock and score", () => {
+test("warping makes a new, bigger map and keeps ships, score and two bases worth of stock", () => {
   const s = G.newGame(3);
   const oldBodies = JSON.stringify(s.bodies);
   buildGoal(s);
-  s.stock.ore = 777;
+  s.stock.ore = 777; s.stock.ice = 10;
   s.ships[0].cargo = 5; s.ships[0].res = "ice"; s.ships[0].st = G.TO_BASE;
   const score0 = G.scoreTotal(s), ice0 = s.stock.ice;
+  const keep = G.warpKeep(s), cr0 = s.credits;
   assert.ok(G.warpToNextSector(s).ok);
   assert.strictEqual(s.bases.length, 1);
   assert.ok(s.w > 1600 && s.h > 1000);
   assert.notStrictEqual(JSON.stringify(s.bodies), oldBodies);
   assert.strictEqual(s.ships.length, 2);
   assert.ok(s.ships.every(sh => sh.st === G.IDLE && sh.cargo === 0));
-  assert.strictEqual(s.stock.ore, 777);
+  assert.strictEqual(s.stock.ore, keep.ore, "two bases worth carries over");
+  assert.ok(s.credits >= cr0 + (777 - keep.ore) * G.TUNING.econ.exchange.sell.ore - 1e-6, "the rest is sold");
   assert.strictEqual(s.stock.ice, ice0 + 5, "cargo is handed in");
   assert.ok(G.scoreTotal(s) >= score0);
   assert.ok(!s.won);
@@ -3337,7 +3339,7 @@ test("VERSION is 3 and a new game has every contract field, in front of delivere
   assert.ok(keys.indexOf("delivered") < keys.indexOf("starsPaid"));
   assert.strictEqual(s.science, 0); assert.strictEqual(s.sciTotal, 0); assert.strictEqual(s.sciSector, 0);
   assert.deepStrictEqual(s.tech, []); assert.deepStrictEqual(s.nests, []); assert.deepStrictEqual(s.waves, {}); assert.strictEqual(s.waveSeq, 0);
-  assert.strictEqual(s.credits, 250); assert.strictEqual(s.debt, 1500); assert.strictEqual(s.debtTick, 60);
+  assert.strictEqual(s.credits, 250); assert.strictEqual(s.debt, 2000); assert.strictEqual(s.debtTick, 60);
   assert.strictEqual(s.brokeFor, 0); assert.strictEqual(s.netNegFor, 0);
   assert.deepStrictEqual(s.econStats, { earned: 0, maint: 0, upkeep: 0, interest: 0, repaid: 0 });
   for (const sh of s.ships) { assert.strictEqual(sh.mothballed, false); assert.strictEqual(sh.wake, 0); }
@@ -3520,10 +3522,10 @@ test("a long run never grows the message queue past its cap", () => {
   assert.ok(s.msgs.length <= 50);
 });
 
-test("the tree is fully defined in TUNING: 21 nodes, 3 branches with a 5-tier trunk and 2 spurs each, costs 8/16/28/45/70, corrected numbers", () => {
+test("the tree is fully defined in TUNING: 21 nodes, 3 branches with a 5-tier trunk and 2 spurs each, costs 5/10/18/28/45, corrected numbers", () => {
   const nodes = G.TUNING.tech;
   assert.strictEqual(nodes.length, 21);
-  assert.deepStrictEqual(G.TUNING.techCost, [8, 16, 28, 45, 70]);
+  assert.deepStrictEqual(G.TUNING.techCost, [5, 10, 18, 28, 45]);
   assert.strictEqual(new Set(nodes.map(n => n.id)).size, 21);
   const keys = new Set(["warshipHp", "warshipDmg", "warshipMaint", "nestDmg", "mineRate", "shipMaint", "baseUpkeep", "cargo", "overdraft", "interest", "unload", "dock", "shipSpeed", "baseCost", "turretDmg", "repairCost", "shipCost", "fitCost", "payout"]);
   const used = new Set();
@@ -3553,10 +3555,10 @@ test("the tree is fully defined in TUNING: 21 nodes, 3 branches with a 5-tier tr
 test("the balance table has every econ, lose and science key, with the re-run changes", () => {
   const E = G.TUNING.econ;
   assert.deepStrictEqual(E.credit, G.TUNING.score.value);
-  assert.deepStrictEqual(Object.keys(E).sort(), ["bankrupt", "credit", "debt", "exchange", "grace", "maint", "netWarnSecs", "oldSaveCredits", "scaleMax", "scalePerSector", "startCredits", "timer", "upkeep"]);
+  assert.deepStrictEqual(Object.keys(E).sort(), ["bankrupt", "credit", "debt", "exchange", "grace", "incomeWindow", "maint", "netWarnSecs", "oldSaveCredits", "payout", "scaleMax", "scalePerSector", "startCredits", "timer", "upkeep"]);
   assert.deepStrictEqual(E.maint, { miner: 30, hauler: 50, warship: 90, shieldship: 140, mothball: 0.2, wakeSecs: 10 });
   assert.deepStrictEqual(E.upkeep, { home: 0, base: 35, perTier: 10, shield: 20, turret: 20, generator: 10 });
-  assert.deepStrictEqual(E.debt, { start: 1500, rate: 0.015, every: 60, dueSector: 3, dueTime: 2700, warnSecs: 300 });
+  assert.deepStrictEqual(E.debt, { start: 2000, rate: 0.015, every: 60, dueSector: 3, dueTime: 2700, warnSecs: 300 });
   assert.deepStrictEqual(E.bankrupt, { floor: -250, grace: 60, blockShipsBelow: 0 });
   assert.deepStrictEqual(E.timer, { parMult: 1.5, firstSector: 2, capSector: 10, warnShare: 0.25, warnSecs: 60 });
   assert.deepStrictEqual(E.exchange, { sell: { ore: 1, ice: 2, crystal: 5 }, buy: { ore: 3, ice: 6 }, step: 10, buyOn: true });
@@ -3770,13 +3772,13 @@ test("warpToNextSector calls scienceOnWarp and econOnWarp once, with the old sec
   const s = hgame(25, 3);
   buildGoal(s);
   s.ships[1].cargo = 7; s.ships[1].res = "ore";
-  const ore = s.stock.ore;
+  const ore = s.stock.ore, keepOre = G.warpKeep(s).ore;
   const log = [];
   withSpy("scienceOnWarp", st => { log.push(["sci", st.sector]); return 0; }, sc => withSpy("econOnWarp", st => { log.push(["econ", st.sector, st.stock.ore]); }, ec => {
     assert.ok(G.warpToNextSector(s).ok);
     assert.strictEqual(sc.length, 1); assert.strictEqual(ec.length, 1);
   }));
-  assert.deepStrictEqual(log, [["sci", 3], ["econ", 3, ore + 7]], "after the cargo is handed in, before the new map");
+  assert.deepStrictEqual(log, [["sci", 3], ["econ", 3, Math.min(ore + 7, keepOre)]], "after the cargo is handed in, before the new map");
   assert.strictEqual(s.sector, 4);
   const w = hgame(25, 3);
   withSpy("scienceOnWarp", () => 0, sc => { assert.ok(!G.warpToNextSector(w).ok); assert.strictEqual(sc.length, 0, "not when the warp is refused"); });
@@ -3805,7 +3807,7 @@ test("with the stubs the game plays as before: no credits drain, no science, no 
   assert.ok(!s.over);
   assert.ok(s.econStats.earned > 0); near(s.credits, 250 + s.econStats.earned, 1e-6, "only deliveries change credits");
   assert.strictEqual(s.science, 0); assert.strictEqual(s.sciTotal, 0); assert.ok(s.nests.every(n => !n.dead && n.hp === n.max), "nothing touched the nests"); assert.deepStrictEqual(s.tech, []);
-  assert.strictEqual(s.debt, 1500); assert.strictEqual(s.debtTick, 60);
+  assert.strictEqual(s.debt, 2000); assert.strictEqual(s.debtTick, 60);
   assert.strictEqual(s.msgs.length, 0);
   assert.ok(s.stats.ore > 0, "and the miners worked");
 });
@@ -4339,37 +4341,37 @@ test("techState: owned, available, short or locked; unknown ids are locked", () 
   assert.strictEqual(G.techState(s, "ind_drills"), "short");
   assert.strictEqual(G.techState(s, "ind_crews"), "locked");
   assert.strictEqual(G.techState(s, "nope"), "locked"); assert.strictEqual(G.techState(s, 7), "locked"); assert.strictEqual(G.techState(s, "__proto__"), "locked");
-  s.science = 8;
+  s.science = 5;
   assert.strictEqual(G.techState(s, "ind_drills"), "available");
   assert.strictEqual(G.techState(s, "ind_crews"), "locked", "locked even with the science: the node below is missing");
   s.science = 100; s.tech.push("ind_drills");
   assert.strictEqual(G.techState(s, "ind_drills"), "owned");
   assert.strictEqual(G.techState(s, "ind_crews"), "available");
-  s.science = 15;
+  s.science = 9;
   assert.strictEqual(G.techState(s, "ind_crews"), "short");
-  assert.strictEqual(G.techCost(G.TUNING.tech[0]), 8);
-  assert.deepStrictEqual(G.TUNING.tech.map(n => G.techCost(n)), [8, 16, 28, 45, 8, 16, 28, 45, 8, 16, 28, 45, 70, 16, 28, 70, 16, 28, 70, 16, 28]);
+  assert.strictEqual(G.techCost(G.TUNING.tech[0]), 5);
+  assert.deepStrictEqual(G.TUNING.tech.map(n => G.techCost(n)), [5, 10, 18, 28, 5, 10, 18, 28, 5, 10, 18, 28, 45, 10, 18, 45, 10, 18, 45, 10, 18]);
 });
 test("unlockTech: needs the node below and the science; deducts; refuses twice; emits tech:unlock", () => {
   const s = ngame(17, 3);
-  s.science = 7;
+  s.science = 4;
   assert.deepStrictEqual(G.unlockTech(s, "ind_drills"), { ok: false, reason: "Need 1 more science." });
-  assert.deepStrictEqual(s.tech, []); assert.strictEqual(s.science, 7);
-  s.science = 8; s.sciTotal = 8;
+  assert.deepStrictEqual(s.tech, []); assert.strictEqual(s.science, 4);
+  s.science = 5; s.sciTotal = 5;
   G.drainEvents(s);
-  assert.deepStrictEqual(G.unlockTech(s, "ind_drills"), { ok: true, cost: 8 });
-  assert.strictEqual(s.science, 0); assert.strictEqual(s.sciTotal, 8, "the total does not go down");
+  assert.deepStrictEqual(G.unlockTech(s, "ind_drills"), { ok: true, cost: 5 });
+  assert.strictEqual(s.science, 0); assert.strictEqual(s.sciTotal, 5, "the total does not go down");
   assert.deepStrictEqual(s.tech, ["ind_drills"]);
   assert.deepStrictEqual(G.drainEvents(s), [{ type: "tech:unlock", id: "ind_drills" }]);
   s.science = 100;
   assert.deepStrictEqual(G.unlockTech(s, "ind_modular"), { ok: false, reason: "Needs Lean crews." });
   assert.deepStrictEqual(G.unlockTech(s, "ind_drills"), { ok: false, reason: "Efficient drills is already yours." });
   assert.strictEqual(G.unlockTech(s, "nope").ok, false); assert.strictEqual(G.unlockTech(s, undefined).ok, false); assert.strictEqual(G.unlockTech(s, "__proto__").ok, false);
-  assert.strictEqual(G.unlockTech(s, "ind_crews").ok, true); assert.strictEqual(s.science, 84);
+  assert.strictEqual(G.unlockTech(s, "ind_crews").ok, true); assert.strictEqual(s.science, 90);
   assert.strictEqual(G.unlockTech(s, "ind_modular").ok, true); assert.strictEqual(G.unlockTech(s, "ind_holds").ok, true);
-  assert.strictEqual(s.science, 84 - 28 - 45);
+  assert.strictEqual(s.science, 90 - 18 - 28);
   const t = ngame(17, 3); t.science = 3.5;
-  assert.strictEqual(G.unlockTech(t, "log_credit").reason, "Need 5 more science.");
+  assert.strictEqual(G.unlockTech(t, "log_credit").reason, "Need 2 more science.");
   const back = G.deserialize(G.serialize(s)).state;
   assert.deepStrictEqual(back.tech, s.tech); assert.strictEqual(back.science, s.science);
   s.over = true; assert.strictEqual(G.unlockTech(s, "log_credit").reason, "This run is over.");
@@ -4611,12 +4613,12 @@ function dropOff(s, ship, res, n) {   // a loaded ship right at home, heading in
   ship.x = h.x + 30; ship.y = h.y; ship.cargo = n; ship.res = res; ship.st = G.TO_BASE; ship.dest = -1;
 }
 
-test("credits are paid on delivery: 20 ore pays 20, then 10 crystal pays 50", () => {
-  const s = egame(3, 1, [], 0);
+test("credits are paid on delivery: 20 ore pays 20 x payout, then 10 crystal pays 50 x payout", () => {
+  const s = egame(3, 1, [], 0), P = G.TUNING.econ.payout;
   dropOff(s, s.ships[0], "ore", 20); erun(s, 3);
-  near(s.credits, 20, 1e-6); near(s.econStats.earned, 20, 1e-6);
+  near(s.credits, 20 * P, 1e-6); near(s.econStats.earned, 20 * P, 1e-6);
   dropOff(s, s.ships[0], "crystal", 10); erun(s, 3);
-  near(s.credits, 70, 1e-6);
+  near(s.credits, 70 * P, 1e-6);
 });
 test("maintenance: two idle miners cost 60 a minute, scaled by sector (x1.16 at sector 5)", () => {
   const s = egame(3, 1, ["maintenance"]); erun(s, 60);
@@ -4709,13 +4711,13 @@ test("debt due at the sector 3 warp: refused with the shortfall, auto-paid when 
   const r = G.warpToNextSector(s);
   assert.strictEqual(r.ok, false); assert.ok(/500/.test(r.reason), r.reason); assert.strictEqual(s.sector, 3);
   assert.strictEqual(G.econWarpBlock(s) !== "", true);
-  s.ships[0].cargo = 200; s.ships[0].res = "ore";            // 200 cr aboard: still 300 short
-  assert.ok(/300/.test(G.econWarpBlock(s)));
-  s.ships[0].cargo = 500;                                    // exactly enough with the cargo
+  s.ships[0].cargo = 200; s.ships[0].res = "ore"; s.stock = { ore: 0, ice: 0, crystal: 0 };   // 180 cr aboard (payout 0.9): still 320 short
+  assert.ok(/320/.test(G.econWarpBlock(s)));
+  s.ships[0].cargo = 100; s.ships[0].res = "crystal"; s.credits = 1050;   // 450 cr aboard: exactly enough with the cargo
   assert.strictEqual(G.econWarpBlock(s), "");
-  const w = G.warpToNextSector(s); assert.ok(w.ok, w.reason);
-  assert.strictEqual(s.debt, 0); assert.strictEqual(s.sector, 4); near(s.credits, 1000 + 500 - 1500, 1e-6);
-  const t = egame(3, 3, ["debt"], 2000); t.debt = 1500; t.won = true;
+  const kc = G.warpKeep(s).crystal, w = G.warpToNextSector(s); assert.ok(w.ok, w.reason);
+  assert.strictEqual(s.debt, 0); assert.strictEqual(s.sector, 4); near(s.credits, (100 - kc) * 5, 1e-6, "the loan is paid, and the crystal over the warp limit is sold");
+  const t = egame(3, 3, ["debt"], 2000); t.debt = 1500; t.won = true; t.stock = { ore: 0, ice: 0, crystal: 0 };
   assert.ok(G.warpToNextSector(t).ok); assert.strictEqual(t.debt, 0); near(t.credits, 500, 1e-6);
   const u = egame(3, 2, ["debt"], 0); u.debt = 1500; u.won = true;
   assert.strictEqual(G.econWarpBlock(u), "", "before sector 3 the warp is free");
@@ -4760,12 +4762,12 @@ test("overdrawn (credits < 0) blocks new ships and add-ons but not new bases", (
 });
 test("timer: off by default; from sector 2, 1.5 x parTime (capped at sector 10); times out only when not won", () => {
   const s = egame(3, 2, ["timer"]); s.stock.ore = 9999;
-  near(G.timeLimit(s), 1.5 * G.parTime(2), 1e-9); near(G.timeLimit(s), 810, 1e-9);
+  near(G.timeLimit(s), 1.5 * G.parTime(2), 1e-9); near(G.timeLimit(s), 630, 1e-9);
   assert.strictEqual(G.timeLimit(G.newGame(1, 1)), 0, "sector 1 is exempt");
   const d = G.newGame(3, 2); assert.strictEqual(G.timeLimit(d), 0, "off by default");
   const hi = egame(3, 12, ["timer"]); near(G.timeLimit(hi), 1.5 * G.parTime(10), 1e-9);
-  s.sectorTime = 800; erun(s, 5); assert.ok(!s.over);
-  s.sectorTime = 809; erun(s, 2); assert.ok(s.over); assert.strictEqual(s.endReason, "timeout");
+  s.sectorTime = 620; erun(s, 5); assert.ok(!s.over);
+  s.sectorTime = 629; erun(s, 2); assert.ok(s.over); assert.strictEqual(s.endReason, "timeout");
   const w = egame(3, 2, ["timer"]); w.stock.ore = 9999; w.won = true; w.sectorTime = 800; erun(w, 20); assert.ok(!w.over, "won in time");
   const off = egame(3, 2, []); off.stock.ore = 9999; off.sectorTime = 8100; erun(off, 5); assert.ok(!off.over);
 });
@@ -5117,8 +5119,8 @@ test("deeper tree: the tier-5 capstones and the spurs change the rules they name
   const s = G.newGame(21); s.science = 999;
   assert.strictEqual(G.unlockTech(s, "mil_turrets").ok, false); assert.strictEqual(G.techState(s, "mil_doctrine"), "locked");
   assert.strictEqual(G.unlockTech(s, "mil_hulls").ok, true);
-  assert.deepStrictEqual(G.unlockTech(s, "mil_turrets"), { ok: true, cost: 16 });
-  assert.strictEqual(G.techCost(G.TUNING.tech.find(n => n.id === "log_guild")), 70);
+  assert.deepStrictEqual(G.unlockTech(s, "mil_turrets"), { ok: true, cost: 10 });
+  assert.strictEqual(G.techCost(G.TUNING.tech.find(n => n.id === "log_guild")), 45);
   // costs
   const sc = G.shipCost(base, "miner"), sy = G.shipCost(own(["ind_yards"]), "miner");
   assert.strictEqual(sy.ore, Math.ceil(sc.ore * 0.85 - 1e-9));
@@ -5155,6 +5157,60 @@ test("themes name the newer things: fighters, add-ons, raiders, nests, hazards, 
   }
   for (const k of ["shield", "turret", "generator"]) assert.strictEqual(sp.addon[k], G.TUNING.addons[k].label);
   assert.strictEqual(sp.ship.warship, G.TUNING.ships.warship.label); assert.strictEqual(sp.ship.shieldship, G.TUNING.ships.shieldship.label);
+});
+
+console.log("balance pass: moving income, scout raid, warp stock limit");
+test("income is a moving average: a delivery shows at once and fades within minutes, unlike the run average", () => {
+  const s = egame(3, 1, ["maintenance"], 0), P = G.TUNING.econ.payout;
+  assert.strictEqual(s.income, 0);
+  dropOff(s, s.ships[0], "ore", 20); erun(s, 3);
+  const inc = G.econRates(s);
+  assert.ok(s.income > 20 * P * 0.9 && s.income <= 20 * P, "20 ore within the 60 s window reads as about " + 20 * P + " a minute, got " + s.income);
+  near(inc.net, s.income - inc.maint, 1e-9);
+  for (const sh of s.ships) { sh.st = G.IDLE; sh.target = -1; }
+  erun(s, 300);
+  assert.ok(s.income < 0.5, "five idle minutes later the rate is near 0, got " + s.income);
+  assert.ok(s.score.mat / s.time * 60 > 3, "while the run average still shows income");
+  assert.ok(G.econRates(s).net < 0);
+  const back = G.deserialize(G.serialize(s)).state;
+  assert.strictEqual(back.income, s.income, "saved with the game");
+  const raw = JSON.parse(G.serialize(s)); delete raw.income;
+  near(G.deserialize(JSON.stringify(raw)).state.income, s.score.mat / s.time * 60, 1e-6, "a save without it starts from the run average");
+});
+test("the first raid of a run, in sector 3, is a single scout; later raids and later sectors are full strength", () => {
+  const nextRaid = s => {
+    for (let i = 0; i < 4000; i++) {
+      s.events = s.events.filter(e => e.kind === "raid");
+      if (s.events.length) return s.events[0];
+      s.eventIn = 0.001; G.step(s, HDT);
+    }
+    throw new Error("no raid rolled");
+  };
+  const s = hgame(8, 3);
+  assert.strictEqual(nextRaid(s).power, G.TUNING.aliens.firstRaid); assert.strictEqual(G.TUNING.aliens.firstRaid, 1);
+  s.events = []; s.aliens = []; s.waveSeq = 1;
+  assert.strictEqual(nextRaid(s).power, G.alienCount(3));
+  const t = hgame(8, 4);
+  assert.strictEqual(nextRaid(t).power, G.alienCount(4), "a run that starts later gets no scout");
+  assert.strictEqual(G.TUNING.combat.homeHp, 400);
+});
+test("the warp carries two bases' worth of each material at the next sector's price; the rest is sold at the Sell prices", () => {
+  const s = hgame(3, 1); buildGoal(s);
+  s.stock = { ore: 5000, ice: 5000, crystal: 500 };
+  const keep = G.warpKeep(s);
+  assert.deepStrictEqual(keep, { ore: Math.round(120 * 1.08 * 2), ice: Math.round(40 * 1.08 * 2), crystal: Math.round(15 * 1.08 * 2) });
+  G.drainEvents(s);
+  assert.ok(G.warpToNextSector(s).ok);
+  assert.deepStrictEqual(s.stock, keep);
+  const want = (5000 - keep.ore) * 1 + (5000 - keep.ice) * 2 + (500 - keep.crystal) * 5;
+  near(s.credits, want, 1e-6);
+  const m = s.msgs.find(e => e.type === "warp:sold");
+  assert.ok(m && m.credits === want && m.sold.ore === 5000 - keep.ore);
+  assert.ok(!G.canAfford(s, { ore: 0, ice: 0, crystal: G.baseCost(s).crystal * G.goalBases(2) }), "the next goal cannot be bought from the carried stock");
+  const t = hgame(3, 1); buildGoal(t); t.stock = { ore: 100, ice: 20, crystal: 5 }; G.drainEvents(t);
+  assert.ok(G.warpToNextSector(t).ok);
+  assert.deepStrictEqual(t.stock, { ore: 100, ice: 20, crystal: 5 }); assert.strictEqual(t.credits, 0);
+  assert.ok(!t.msgs.some(e => e.type === "warp:sold"), "a stock under the limit is untouched");
 });
 
 console.log("\n" + passed + " passed, " + failed + " failed");
